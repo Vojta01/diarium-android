@@ -87,6 +87,18 @@ class UsageSyncWorker(
         val stats = usageStats.dayStats(date)
         if (stats.optInt("totalSec", 0) <= 0 && stats.optInt("unlocks", 0) <= 0) return
 
+        // save-entry requires user_id, which must match the JWT's `sub` claim.
+        val jwtSub = try {
+            val payloadB64 = token.split(".").getOrNull(1) ?: return
+            val decoded = String(
+                android.util.Base64.decode(payloadB64, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP)
+            )
+            JSONObject(decoded).optString("sub")
+        } catch (_: Exception) {
+            return
+        }
+        if (jwtSub.isBlank()) return
+
         val appsArr = stats.optJSONArray("apps") ?: org.json.JSONArray()
         val topApps = org.json.JSONArray()
         for (i in 0 until appsArr.length()) {
@@ -100,7 +112,7 @@ class UsageSyncWorker(
         }
 
         val payload = JSONObject().apply {
-            put("user_id", "")
+            put("user_id", jwtSub)
             put("date", date)
             put("phone_screen_time", stats.optLong("totalSec"))
             put("phone_unlocks", stats.optLong("unlocks"))

@@ -3,9 +3,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    // Fire up FCM by dropping app/google-services.json into the app module.
-    // Without the file the app still builds (push simply stays unregistered).
-    id("com.google.gms.google-services") apply false
+    // Firebase Cloud Messaging (google-services.json is in app/)
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -56,7 +55,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    // Firebase Cloud Messaging — active once google-services.json is present
-    // implementation(platform("com.google.firebase:firebase-bom:32.7.0"))
-    // implementation("com.google.firebase:firebase-messaging")
+    // Firebase Cloud Messaging
+    implementation(platform("com.google.firebase:firebase-bom:32.7.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }
