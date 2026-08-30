@@ -24,6 +24,17 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # google-services.json is NOT in the repo (never commit client keys).
+      # Inject it from the GOOGLE_SERVICES_JSON repo secret (base64) when present.
+      - name: Restore google-services.json from secret
+        run: |
+          if [ -n "${{ secrets.GOOGLE_SERVICES_JSON }}" ]; then
+            echo "${{ secrets.GOOGLE_SERVICES_JSON }}" | base64 -d > app/google-services.json
+            echo "google-services.json restored ($(wc -c < app/google-services.json) bytes)"
+          else
+            echo "GOOGLE_SERVICES_JSON not set — building without FCM"
+          fi
+
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
