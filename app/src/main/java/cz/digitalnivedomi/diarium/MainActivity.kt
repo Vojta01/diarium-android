@@ -131,11 +131,18 @@ class MainActivity : AppCompatActivity() {
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val url = request.url
-            if (url.scheme == "https" || url.scheme == "http") return false
+            val urlStr = url.toString()
+            // Supabase OAuth: open in Chrome Custom Tab (Google blocks OAuth inside
+            // embedded WebViews). The redirect diarium://auth-callback returns here.
+            if (urlStr.contains("/auth/v1/authorize") || urlStr.contains("accounts.google.com/o/oauth2")) {
+                authManager.startSignIn(urlStr)
+                return true
+            }
             if (url.scheme == BuildConfig.AUTH_SCHEME) {
                 authManager.handleAuthCallback(url)
                 return true
             }
+            if (url.scheme == "https" || url.scheme == "http") return false
             try {
                 startActivity(Intent(Intent.ACTION_VIEW, url))
             } catch (_: Exception) {

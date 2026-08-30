@@ -42,8 +42,10 @@ class UsageSyncWorker(
         .build()
 
     override suspend fun doWork(): Result {
-        val token = sessionStore.accessToken() ?: return Result.failure() // not logged in yet
-        if (!usageStats.hasUsageAccess()) return Result.failure() // permission not granted
+        // Not logged in yet (or session expired) — retry later so the daily
+        // backfill still happens once the user signs in.
+        val token = sessionStore.accessToken() ?: return Result.retry()
+        if (!usageStats.hasUsageAccess()) return Result.retry() // permission not granted yet
 
         val mode = inputData.getString("mode") ?: "today"
         return withContext(Dispatchers.IO) {

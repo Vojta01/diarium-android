@@ -28,11 +28,32 @@ class AuthManager(
             "&redirect_to=${Uri.encode("${BuildConfig.AUTH_SCHEME}://${BuildConfig.AUTH_HOST}")}"
     }
 
-    fun startSignIn() {
+    /** Launch the OAuth flow in a Chrome Custom Tab. */
+    fun startSignIn(originalUrl: String? = null) {
+        val target = if (originalUrl != null) {
+            // Reuse the web app's authorize URL but swap redirect_to to our deep link,
+            // so tokens arrive at diarium://auth-callback where we can capture them.
+            val uri = Uri.parse(originalUrl)
+            val builder = uri.buildUpon().clearQuery()
+            val queryParams = ArrayList<Pair<String, String?>>()
+            uri.queryParameterNames.forEach { name ->
+                if (name != "redirect_to") {
+                    queryParams.add(name to uri.getQueryParameter(name))
+                }
+            }
+            queryParams.forEach { (k, v) -> builder.appendQueryParameter(k, v ?: "") }
+            builder.appendQueryParameter(
+                "redirect_to",
+                "${BuildConfig.AUTH_SCHEME}://${BuildConfig.AUTH_HOST}"
+            ).build().toString()
+        } else {
+            oauthUrl()
+        }
+
         val builder = CustomTabsIntent.Builder()
         builder.setShowTitle(true)
         val customTabsIntent = builder.build()
-        customTabsIntent.launchUrl(activity, Uri.parse(oauthUrl()))
+        customTabsIntent.launchUrl(activity, Uri.parse(target))
     }
 
     /**
@@ -90,5 +111,12 @@ class AuthManager(
                 null
             )
         }
+
+        // Kick off an immediate usage sync now that we are authenticated.
+        androidx.work.WorkManager.getInstance(activity).enqueue(
+            androidx.work.OneTimeWorkRequestBuilder<cz.digitalnivedomi.diarium.sync.UsageSyncWorker>()
+                .setInputData(androidx.work.Data.Builder().putString("mode", "today").build())
+                .build()
+        )
     }
 }
