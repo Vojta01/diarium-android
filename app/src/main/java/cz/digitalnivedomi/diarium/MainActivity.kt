@@ -23,6 +23,8 @@ import androidx.webkit.WebViewFeature
 import cz.digitalnivedomi.diarium.auth.AuthManager
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.fcm.FcmTokenRegistrar
+import cz.digitalnivedomi.diarium.notifications.NotificationSettingsActivity
+import cz.digitalnivedomi.diarium.notifications.NotificationScheduler
 import cz.digitalnivedomi.diarium.stats.UsageStatsProvider
 import cz.digitalnivedomi.diarium.sync.SyncScheduler
 import cz.digitalnivedomi.diarium.webview.BridgeJavaScriptInterface
@@ -60,6 +62,8 @@ class MainActivity : AppCompatActivity() {
 
         // Seed the daily sync jobs on first launch (21:00 snapshot, 07:00 backfill).
         SyncScheduler.ensureScheduled(this)
+        // (Re)arm local notification alarms — after install and after upgrades.
+        NotificationScheduler.rescheduleAll(this)
 
         val client = DiariumWebViewClient()
         webView.apply {
