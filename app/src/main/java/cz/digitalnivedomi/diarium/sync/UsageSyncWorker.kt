@@ -103,14 +103,19 @@ class UsageSyncWorker(
 
         val appsArr = stats.optJSONArray("apps") ?: org.json.JSONArray()
         val topApps = org.json.JSONArray()
+        // Send the top 15 apps (>=30 s each) so the chart's "remaining time"
+        // slice stays small. Top-5 left ~95% of the day labeled "other".
+        var sent = 0
         for (i in 0 until appsArr.length()) {
             val a = appsArr.getJSONObject(i)
+            if (a.optLong("timeSec") < 30) continue
             val o = JSONObject().apply {
                 put("app", a.getString("app"))
                 put("minutes", a.getLong("timeSec") / 60.0)
             }
             topApps.put(o)
-            if (topApps.length() >= 5) break
+            sent++
+            if (sent >= 15) break
         }
 
         val payload = JSONObject().apply {

@@ -8,6 +8,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import cz.digitalnivedomi.diarium.BuildConfig
 import java.util.Calendar
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
@@ -38,14 +39,22 @@ class SyncScheduler {
             // Morning: yesterday backfill at ~07:00
             scheduleDaily(context, WORK_MORNING, 7, 0, "yesterday")
 
-            // One-time backfill of last 7 days (in case of reinstall/new device)
+            // One-time backfill of last 7 days (in case of reinstall/new
+            // device OR app update — re-runs whenever the version changes so
+            // improved collection (e.g. top-15 apps) refreshes older rows).
+            val prefs = context.getSharedPreferences("diarium_sync", Context.MODE_PRIVATE)
+            val lastVersion = prefs.getString("last_backfill_version", null)
+            val currentVersion = BuildConfig.VERSION_NAME
+            val policy = if (lastVersion == currentVersion) ExistingWorkPolicy.KEEP else ExistingWorkPolicy.REPLACE
+            prefs.edit().putString("last_backfill_version", currentVersion).apply()
+
             val init = OneTimeWorkRequestBuilder<UsageSyncWorker>()
                 .setInitialDelay(5, TimeUnit.MINUTES)
                 .setConstraints(constraints)
                 .setInputData(androidx.work.Data.Builder().putString("mode", "backfill").build())
                 .addTag(WORK_INIT)
                 .build()
-            wm.enqueueUniqueWork(WORK_INIT, ExistingWorkPolicy.KEEP, init)
+            wm.enqueueUniqueWork(WORK_INIT, policy, init)
         }
 
         private fun scheduleDaily(context: Context, name: String, hour: Int, minute: Int, mode: String) {
