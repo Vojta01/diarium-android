@@ -3,8 +3,13 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    // Firebase Cloud Messaging (google-services.json is in app/)
-    id("com.google.gms.google-services")
+}
+
+// Apply the Firebase plugin only when the (non-committed) google-services.json
+// is present in the working tree — CI injects it from a repo secret
+// (GOOGLE_SERVICES_JSON, base64) so FCM builds work without committing keys.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 android {
