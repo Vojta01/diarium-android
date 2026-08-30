@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Diarium</string>
+    <string name="usage_access_title">Povol přístup ke statistikám používání</string>
+    <string name="usage_access_message">Aby Diarium mohlo zobrazovat přesné statistiky času stráveného v aplikacích (jako Digitální rovnováha), potřebuje přístup k údajům o používání. Klikni na Diarium a povol přístup.</string>
+    <string name="usage_access_open">Otevřít nastavení</string>
+</resources>

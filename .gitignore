@@ -1,0 +1,22 @@
+# Build outputs
+build/
+app/build/
+*.apk
+*.aab
+
+# Local machine configuration (SDK paths, secrets) — never commit
+local.properties
+
+# Firebase credentials — user-provided, never commit
+google-services.json
+*.p12
+*.json.serviceaccount
+
+# IDE
+.idea/
+*.iml
+.gradle/
+.kotlin/
+
+# OS
+.DS_Store
