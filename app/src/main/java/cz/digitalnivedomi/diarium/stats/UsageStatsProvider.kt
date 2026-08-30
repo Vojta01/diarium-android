@@ -48,6 +48,38 @@ class UsageStatsProvider(private val context: Context) {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
+    /**
+     * Usage-access state for onboarding copy:
+     *  - MODE_ALLOWED → granted
+     *  - MODE_DENIED  → the system remembers an explicit denial; it persists
+     *    even after reinstalling (the toggle shows greyed out). User must
+     *    uninstall + reinstall once, or the app can't be granted again.
+     *  - else        → not decided yet, a normal prompt is possible.
+     */
+    @Suppress("DEPRECATION")
+    fun usageAccessState(): String {
+        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow(
+                AppOpsManager.OPSTR_GET_USAGE_STATS,
+                android.os.Process.myUid(),
+                context.packageName
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            appOps.checkOpNoThrow(
+                AppOpsManager.OPSTR_GET_USAGE_STATS,
+                android.os.Process.myUid(),
+                context.packageName
+            )
+        }
+        return when (mode) {
+            AppOpsManager.MODE_ALLOWED -> "allowed"
+            AppOpsManager.MODE_ERRORED -> "denied" // system remembers explicit denial
+            else -> "undecided"
+        }
+    }
+
     fun openUsageAccessSettings() {
         try {
             val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)

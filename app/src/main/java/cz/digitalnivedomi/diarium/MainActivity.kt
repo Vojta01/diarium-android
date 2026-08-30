@@ -1,9 +1,12 @@
 package cz.digitalnivedomi.diarium
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import android.webkit.ValueCallback
@@ -11,7 +14,10 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import cz.digitalnivedomi.diarium.auth.AuthManager
@@ -39,6 +45,9 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val REQUEST_FILE = 1001
+        const val REQUEST_NOTIFICATIONS = 1002
+        private const val PREFS = "diarium_onboarding"
+        private const val KEY_USAGE_PROMPTED = "usage_prompted"
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -76,6 +85,13 @@ class MainActivity : AppCompatActivity() {
             sessionStore.sessionJson()?.let { session ->
                 view.evaluateJavascript("window.__diariumInjectSession && window.__diariumInjectSession($session)", null)
             }
+            // Ask for notification permission (Android 13+) and usage access
+            // once the app UI is visible — not earlier.
+            if (!permissionsRequested) {
+                permissionsRequested = true
+                requestNotificationPermissionIfNeeded()
+            }
+            checkUsageAccessAndPrompt()
         }
 
         // Auth deep link may arrive on cold start.
@@ -178,4 +194,78 @@ class MainActivity : AppCompatActivity() {
     fun openUsageAccessSettings() {
         usageStats.openUsageAccessSettings()
     }
+
+    private var permissionsRequested = false
+
+    /** Android 13+ (API 33) requires a runtime request for notifications. */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                requestPermissions(
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    REQUEST_NOTIFICATIONS
+                )
+            }
+        }
+    }
+
+    /**
+     * Onboarding for usage access. Called after first page load and after the
+     * user returns from Settings (onStart). Shows a dialog that either opens
+     * Settings or — if the system permanently recorded a denial — explains
+     * that a one-time uninstall + reinstall is required.
+     */
+    private fun checkUsageAccessAndPrompt() {
+        if (usageStats.hasUsageAccess()) {
+            // Grant arrived → remember we prompted so we don't nag.
+            prefs().edit().remove(KEY_USAGE_PROMPTED).apply()
+            return
+        }
+        val prefs = prefs()
+        if (prefs.getBoolean(KEY_USAGE_PROMPTED, false)) return // asked once already
+        prefs.edit().putBoolean(KEY_USAGE_PROMPTED, true).apply()
+
+        val state = usageStats.usageAccessState()
+        val title: String
+        val message: String
+        val actionLabel: String
+        if (state == "denied") {
+            title = "Systém odepřel přístup ke statistikám"
+            message = "Android si pamatuje zamítnutí přístupu k údajům o využití a přepínač " +
+                "je proto šedý a neklikatelný. Stačí jednou odinstalovat Diarium a znovu ho " +
+                "nainstalovat — pak přístup povolíš normálně.\n\n" +
+                "Bez přístupu k údajům o využití chybí statistiky času v aplikacích."
+            actionLabel = "Porozuměl jsem"
+        } else {
+            title = "Povol statistiky používání telefonu"
+            message = "Aby Diarium zobrazovalo přesné statistiky (čas v aplikacích, odemknutí), " +
+                "potřebuje přístup k údajům o využití — stejné oprávnění, jaké se zobrazuje " +
+                "v Digitální rovnováze.\n\n1. Klepni na „Otevřít nastavení\"\n" +
+                "2. Najdi Diarium a zapni přepínač"
+            actionLabel = "Otevřít nastavení"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton(actionLabel) { _, _ ->
+                if (state != "denied") usageStats.openUsageAccessSettings()
+            }
+            .setNegativeButton("Později", null)
+            .setCancelable(true)
+            .show()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Re-check after returning from Settings / re-entering the app.
+        if (!usageStats.hasUsageAccess()) {
+            prefs().edit().remove(KEY_USAGE_PROMPTED).apply() // allow re-prompt
+        }
+    }
+
+    private fun prefs() = getSharedPreferences(PREFS, MODE_PRIVATE)
 }
