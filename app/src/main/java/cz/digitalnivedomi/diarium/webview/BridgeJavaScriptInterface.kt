@@ -3,6 +3,7 @@ package cz.digitalnivedomi.diarium.webview
 import android.app.Activity
 import android.webkit.JavascriptInterface
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.notifications.NotificationSettingsActivity
 import cz.digitalnivedomi.diarium.stats.UsageStatsProvider
 import org.json.JSONObject
 
@@ -51,4 +52,13 @@ class BridgeJavaScriptInterface(
     /** Session JSON as stored for the web app (same shape the web uses). */
     @JavascriptInterface
     fun getSession(): String? = sessionStore.sessionJson()
+
+    /** Open the native notification settings screen (called from web UI). */
+    @JavascriptInterface
+    fun openNotificationSettings() {
+        activity.runOnUiThread {
+            val intent = android.content.Intent(activity, NotificationSettingsActivity::class.java)
+            activity.startActivity(intent)
+        }
+    }
 }

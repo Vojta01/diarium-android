@@ -10,6 +10,9 @@
         tools:ignore="ProtectedPermissions" />
     <!-- Optional: FCM push (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Exact local notification times (Android 12+; falls back to a window if denied) -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="true"
@@ -52,5 +55,24 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- Notification settings screen -->
+        <activity
+            android:name=".notifications.NotificationSettingsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Diarium" />
+
+        <!-- Local notification alarms -->
+        <receiver
+            android:name=".notifications.NotificationAlarmReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".notifications.NotificationBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
