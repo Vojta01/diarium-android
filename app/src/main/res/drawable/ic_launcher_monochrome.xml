@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome mask for themed launchers: just the crescent -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="54"
+        android:translateY="54">
+        <path
+            android:fillColor="#000000"
+            android:pathData="M 0 -23.1
+                             A 21 21 0 1 1 0 23.1
+                             A 16.8 17.85 0 1 0 0 -23.1 Z" />
+    </group>
+</vector>
