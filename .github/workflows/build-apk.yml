@@ -27,16 +27,21 @@ jobs:
       # google-services.json is NOT in the repo (never commit client keys).
       # Inject it from the GOOGLE_SERVICES_JSON repo secret (base64) when present.
       - name: Restore google-services.json from secret
+        shell: bash
         run: |
-          if [ -n "${{ secrets.GOOGLE_SERVICES_JSON }}" ]; then
-            echo "${{ secrets.GOOGLE_SERVICES_JSON }}" | base64 -d > app/google-services.json
-            echo "google-services.json restored ($(wc -c < app/google-services.json) bytes)"
-          else
-            echo "GOOGLE_SERVICES_JSON not set — building without FCM"
+          if [ -z "${{ secrets.GOOGLE_SERVICES_JSON }}" ]; then
+            echo "::error::GOOGLE_SERVICES_JSON secret is not set — FCM build requires it"
+            exit 1
           fi
+          echo "${{ secrets.GOOGLE_SERVICES_JSON }}" | tr -d ' \n' | base64 -d > app/google-services.json
+          python3 -c "import json;json.load(open('app/google-services.json'))" \
+            || { echo "::error::Decoded google-services.json is not valid JSON"; exit 1; }
+          echo "google-services.json restored ($(wc -c < app/google-services.json) bytes)"
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug
+        run: |
+          ./gradlew assembleDebug
+          echo "APK size: $(du -h app/build/outputs/apk/debug/app-debug.apk | cut -f1) ($(wc -c < app/build/outputs/apk/debug/app-debug.apk) bytes)"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
