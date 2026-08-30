@@ -7,10 +7,11 @@ app/build/
 # Local machine configuration (SDK paths, secrets) — never commit
 local.properties
 
-# Firebase credentials — user-provided, never commit
-google-services.json
-*.p12
+# Firebase credentials
+# Client config (google-services.json) IS committed — it contains only client
+# identifiers already shipped inside the APK. NEVER commit service accounts:
 *.json.serviceaccount
+*.p12
 
 # IDE
 .idea/
