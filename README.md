@@ -1,66 +1,91 @@
 # Diarium Android
 
-Nativní obal pro Diarium (https://diarium-two.vercel.app) — WebView + nativní
-most pro přesné statistiky používání telefonu z `UsageStatsManager`
-(stejná data, která ukazuje Android Digitální rovnováha).
+**Native Android wrapper for the [Diarium](https://diarium-two.vercel.app) web app — with accurate per-app usage statistics read directly from the device.**
 
-## Proč
+Diarium is a daily check-in / mood & habit tracking app. This Android application wraps its web UI in a native WebView and adds a small bridge that reads the phone's real usage statistics (per-app screen time, total screen time, unlock count) from `UsageStatsManager` — the same source Android's Digital Wellbeing uses.
 
-Screen-time data sbíraná přes Home Assistant (senzory `interactive` /
-`last_used_app`) se systematicky liší od Android `UsageStatsManager`:
-HA měří dobu svícení obrazovky a „poslední aplikaci", ne skutečný čas
-strávený v aplikacích. Tento wrapper čte statistiky **přímo u zdroje**
-a posílá je do Diaria přes `/api/save-entry` — bez HA v cestě.
+## Why a native wrapper?
 
-## Funkce
+A plain PWA running in a browser **cannot** read per-app usage data: the `PACKAGE_USAGE_STATS` permission is only granted to real installed apps. This wrapper:
 
-- ✅ WebView s celým Diariem (stejné UI, auth, Supabase)
-- ✅ `UsageStatsProvider` — per-app čas, celkový čas, odemknutí (UsageStatsManager)
-- ✅ Automatický denní sync: **21:00** snapshot dneška, **07:00** backfill včera,
-      po instalaci backfill posledních 7 dní
-- ✅ OAuth přes Chrome Custom Tabs + deep link `diarium://auth-callback`
-- 🔜 FCM push notifikace (vyžaduje `google-services.json`, viz níže)
+- loads the existing Diarium web app in a WebView (same UI, same Supabase, no rebuild of the web app),
+- exposes a JavaScript bridge (`window.AndroidBridge`) to the web app,
+- reads exact usage statistics at the source and pushes them to the Diarium API — no Home Assistant or third-party telemetry in the path.
 
-## Build
+## Features
+
+| Feature | How |
+|---|---|
+| Web UI | Full Diarium web app inside a WebView (JS, DOM storage, file picker) |
+| Per-app screen time | `UsageStatsManager.queryUsageStats(...)` — foreground time per package, app labels via `PackageManager` |
+| Total screen time | Sum of per-app foreground time (matches Android Digital Wellbeing, launcher/system apps excluded) |
+| Unlock count | `UsageEvents` — `EVENT_SCREEN_INTERACTIVE` |
+| Daily sync | 21:00 snapshot of today + 07:00 backfill of yesterday (WorkManager) + 7-day backfill on install + sync right after login |
+| Push out | Data pushed to `/api/save-entry` with the user's own JWT (`sub` from token as `user_id`) — no server secrets in the APK |
+| Sign-in | OAuth via Chrome Custom Tab + deep link back to the app (Google blocks OAuth inside embedded WebViews) |
+| Notifications | Native FCM push (reminders, AI reports) with token registration to the backend |
+
+## Architecture
+
+```
+Diarium Android (Kotlin)
+ ├── WebView ──► Diarium web app (existing UI, auth, Supabase)
+ ├── UsageStatsProvider ──► UsageStatsManager (per-app time, unlocks)
+ ├── BridgeJavaScriptInterface = window.AndroidBridge
+ │     readUsageStats(date) · getUsageAccess() · openUsageAccessSettings() · getSession()
+ ├── SyncScheduler / UsageSyncWorker (WorkManager)
+ │     21:00 today snapshot · 07:00 yesterday backfill · install backfill
+ ├── AuthManager (Chrome Custom Tab + diarium://auth-callback deep link)
+ └── FCM service (registered tokens → /api/push/subscribe)
+            │
+            ▼
+     Diarium API → /api/save-entry (user JWT) → Supabase
+```
+
+## Requirements / build
+
+- JDK 17+, Android SDK (platform 34)
+- `local.properties` with `sdk.dir=...` (or standard `ANDROID_HOME`)
 
 ```bash
-# lokální konfigurace (nepovinná — default je /opt/android-sdk)
-# echo "sdk.dir=/path/to/android-sdk" > local.properties
-
+git clone git@github.com:Vojta01/diarium-android.git
+cd diarium-android
 ./gradlew assembleDebug
 # → app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Instalace (sideload)
+## Install (sideload)
 
-1. Zkopíruj APK do telefonu a otevři ho (nebo `adb install app-debug.apk`).
-2. Povol „neznámé zdroje" pro instalátor.
-3. Po prvním spuštění: **Nastavení → Aplikace → Speciální přístup →
-   Přístup k využití → Diarium → povol**. Bez toho nemůže číst statistiky.
-4. Přihlas se přes Google (Custom Tab → vrátí se do app).
+1. Copy the APK to your phone and open it (allow unknown sources when prompted; or `adb install app-debug.apk`).
+2. Grant usage access: **Settings → Apps → Special access → Usage access → Diarium → On**.
+   Without this the app can't read statistics (the web app simply won't fill the screen-time chart).
+3. Sign in with Google — a Custom Tab opens and returns the session to the app.
+4. After login the app syncs the last 7 days; afterwards it syncs daily automatically.
 
-## Povinné konfigurace v Supabase
+## Configuration
 
-V **Authentication → URL Configuration → Redirect URLs** musí být:
+All values are compiled in at build time in `app/build.gradle.kts` (`buildConfigField`):
 
-```
-diarium://auth-callback
-```
+| Field | Purpose |
+|---|---|
+| `DIARIUM_URL` | Web app URL loaded in the WebView |
+| `AUTH_SCHEME`, `AUTH_HOST` | Deep-link scheme/host for the OAuth callback (e.g. `diarium://auth-callback`) |
+| `SUPABASE_REF` | Supabase project ref (used for the web app's localStorage session key) |
+| `SUPABASE_URL` | Supabase URL used to open the OAuth authorize flow |
+| `SAVE_ENTRY_URL` | API endpoint that receives the usage stats push |
 
-## Firebase (FCM push — volitelné, fáze 2)
+If the web app uses Supabase Google OAuth with a custom redirect scheme, add the scheme (e.g. `diarium://auth-callback`) to the Supabase **Allowed Redirect URLs** — otherwise sign-in can't return to the app.
 
-1. Založ projekt na https://console.firebase.google.com (bez Analytics)
-2. Přidej Android app s package name `cz.digitalnivedomi.diarium`
-3. Stáhni `google-services.json` → umísti do `app/`
-4. Stáhni service account JSON → nastav na Vercelu jako
-   `FIREBASE_SERVICE_ACCOUNT` (server jím posílá notifikace)
-5. Odkomentuj Firebase dependency v `app/build.gradle.kts` a service v manifestu
+## Push notifications (FCM)
 
-## Server (Vercel)
+- Add your `google-services.json` under `app/` and uncomment the Firebase plugin/dependencies in `app/build.gradle.kts` and the service in `AndroidManifest.xml`.
+- The app registers its FCM token at `/api/push/subscribe` (platform `android`) and the backend sends native notifications via the FCM HTTP v1 API.
 
-Po nasazení nativního zdroje **zastav starý HA cron** (Hermes job
-„Diarium screen time sync", e8085d86665e), aby se data nepřepisovala.
+## Known limitations
 
-## Licence
+- Web-push (browser push API) does not work inside a WebView; native FCM covers notifications instead.
+- Usage statistics require Android 8+ (API 26).
+
+## License
 
 MIT
