@@ -61,10 +61,13 @@ jobs:
           path: apk
 
       - name: Rename APK for release
-        run: mv apk/app-debug.apk apk/diarium-v1.0.0.apk
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          mv apk/app-debug.apk "apk/diarium-${VER}.apk"
+          echo "APK_FILE=diarium-${VER}.apk" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: apk/diarium-v1.0.0.apk
+          files: apk/${{ env.APK_FILE }}
           generate_release_notes: true
