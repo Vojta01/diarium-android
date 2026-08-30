@@ -118,5 +118,8 @@ class AuthManager(
                 .setInputData(androidx.work.Data.Builder().putString("mode", "today").build())
                 .build()
         )
+
+        // Re-register the FCM token now that we have a session to attach it to.
+        cz.digitalnivedomi.diarium.fcm.FcmTokenRegistrar.register(activity.applicationContext)
     }
 }

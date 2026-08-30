@@ -22,6 +22,7 @@ import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import cz.digitalnivedomi.diarium.auth.AuthManager
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.fcm.FcmTokenRegistrar
 import cz.digitalnivedomi.diarium.stats.UsageStatsProvider
 import cz.digitalnivedomi.diarium.sync.SyncScheduler
 import cz.digitalnivedomi.diarium.webview.BridgeJavaScriptInterface
@@ -85,6 +86,9 @@ class MainActivity : AppCompatActivity() {
             sessionStore.sessionJson()?.let { session ->
                 view.evaluateJavascript("window.__diariumInjectSession && window.__diariumInjectSession($session)", null)
             }
+            // Explicitly register the FCM token (onNewToken may not fire after
+            // a fresh install) — harmless when the user is not logged in yet.
+            FcmTokenRegistrar.register(this)
             // Ask for notification permission (Android 13+) and usage access
             // once the app UI is visible — not earlier.
             if (!permissionsRequested) {
