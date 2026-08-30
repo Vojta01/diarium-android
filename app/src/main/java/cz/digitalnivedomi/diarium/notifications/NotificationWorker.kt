@@ -121,7 +121,7 @@ class NotificationWorker(
             "?date=eq.$date&select=id&limit=1"
         val req = Request.Builder()
             .url(url)
-            .header("apikey", BuildConfig.SUPABASE_URL)
+            .header("apikey", BuildConfig.SUPABASE_ANON_KEY)
             .header("Authorization", "Bearer $token")
             .build()
         client.newCall(req).execute().use { resp ->
@@ -137,7 +137,7 @@ class NotificationWorker(
             "?type=eq.$type&select=id,created_at&order=created_at.desc&limit=1"
         val req = Request.Builder()
             .url(url)
-            .header("apikey", BuildConfig.SUPABASE_URL)
+            .header("apikey", BuildConfig.SUPABASE_ANON_KEY)
             .header("Authorization", "Bearer $token")
             .build()
         client.newCall(req).execute().use { resp ->

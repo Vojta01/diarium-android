@@ -30,8 +30,9 @@ android {
         buildConfigField("String", "AUTH_HOST", "\"auth-callback\"")
         // Supabase project ref (used for the localStorage session key name)
         buildConfigField("String", "SUPABASE_REF", "\"vmqbslghzgfotwhzgawa\"")
-        buildConfigField("String", "SUPABASE_URL", "\"https://vmqbslghzgfotwhzgawa.supabase.co\"")
-        buildConfigField("String", "SAVE_ENTRY_URL", "\"https://diarium-two.vercel.app/api/save-entry\"")
+                buildConfigField("String", "SUPABASE_URL", "\"https://vmqbslghzgfotwhzgawa.supabase.co\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtcWJzbGdoemdmb3R3aHpnYXdhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyNjg1ODQsImV4cCI6MjA5Njg0NDU4NH0.t6MyER-5umBKDaHYFHmzfWXBM6VjT9mSsRFlpQJ3gGk\"")
+                buildConfigField("String", "SAVE_ENTRY_URL", "\"https://diarium-two.vercel.app/api/save-entry\"")
     }
 
     buildTypes {

@@ -154,6 +154,11 @@ class NotificationSettingsActivity : AppCompatActivity() {
 
     private fun persist() {
         store.save(prefs)
+        // A settings change re-arms alarms AND clears today's "already
+        // reminded" marker, so tuning the time lets the user test again
+        // the same day (the marker is what suppressed the 20:00 reminder
+        // after the earlier afternoon test).
+        store.setLastReminderDate(null)
         NotificationScheduler.rescheduleAll(this)
     }
 
