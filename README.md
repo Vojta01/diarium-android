@@ -1,90 +1,96 @@
-# Diarium Android
+# Diarium for Android
 
-**Native Android wrapper for the [Diarium](https://diarium-two.vercel.app) web app — with accurate per-app usage statistics read directly from the device.**
+**Your daily check-in: mood, habits, screen time — all in one place.**
 
-Diarium is a daily check-in / mood & habit tracking app. This Android application wraps its web UI in a native WebView and adds a small bridge that reads the phone's real usage statistics (per-app screen time, total screen time, unlock count) from `UsageStatsManager` — the same source Android's Digital Wellbeing uses.
+Diarium is a private daily journal and habit tracker for Android. Every evening you
+take a minute to check in: how was your day, what did you do, how do you feel. Diarium
+turns those small daily records into trends, correlations and AI-written reflections so
+you can actually see what makes your days better.
 
-## Why a native wrapper?
+## What it does
 
-A plain PWA running in a browser **cannot** read per-app usage data: the `PACKAGE_USAGE_STATS` permission is only granted to real installed apps. This wrapper:
+### 📝 Daily check-in
+- Mood on a 1–5 scale with emoji, plus optional stress, sleep quality, gratitude, and a note
+- Pick activities (cooking, family, reading, exercise…) and habits (sleep 7h+, no alcohol…)
+- Scales for energy and productivity (custom scales supported)
+- Templates for common entries — quick one-tap check-ins
+- Photos + notes — your day, your way
 
-- loads the existing Diarium web app in a WebView (same UI, same Supabase, no rebuild of the web app),
-- exposes a JavaScript bridge (`window.AndroidBridge`) to the web app,
-- reads exact usage statistics at the source and pushes them to the Diarium API — no Home Assistant or third-party telemetry in the path.
+### 📊 Screen time & phone usage
+- Daily screen time, per-app time, and unlock count — measured the same way
+  Android Digital Wellbeing measures it (foreground time per app)
+- Screens show a 7-day window with an interactive daily breakdown: tap any day to see
+  which apps you used and for how long
+- Data lives on your device and syncs to your Diarium account automatically
 
-## Features
+### 📈 Insights
+- Mood trends with a 7-day moving average
+- Activity and habit correlations (what actually improves your mood)
+- Screen-time analysis, unlock patterns, yearly pixel calendar
+- **AI reflections**: a short weekly and monthly summary written by AI from your data —
+  patterns you might not notice yourself
 
-| Feature | How |
-|---|---|
-| Web UI | Full Diarium web app inside a WebView (JS, DOM storage, file picker) |
-| Per-app screen time | `UsageStatsManager.queryUsageStats(...)` — foreground time per package, app labels via `PackageManager` |
-| Total screen time | Sum of per-app foreground time (matches Android Digital Wellbeing, launcher/system apps excluded) |
-| Unlock count | `UsageEvents` — `EVENT_SCREEN_INTERACTIVE` |
-| Daily sync | 21:00 snapshot of today + 07:00 backfill of yesterday (WorkManager) + 7-day backfill on install + sync right after login |
-| Push out | Data pushed to `/api/save-entry` with the user's own JWT (`sub` from token as `user_id`) — no server secrets in the APK |
-| Sign-in | OAuth via Chrome Custom Tab + deep link back to the app (Google blocks OAuth inside embedded WebViews) |
-| Notifications | Native FCM push (reminders, AI reports) with token registration to the backend |
+### 🔔 Reminders
+- Daily check-in reminder so you never lose your streak
+- Native notifications: tap to open the app and fill in your day
 
-## Architecture
+## Why Android-native
 
-```
-Diarium Android (Kotlin)
- ├── WebView ──► Diarium web app (existing UI, auth, Supabase)
- ├── UsageStatsProvider ──► UsageStatsManager (per-app time, unlocks)
- ├── BridgeJavaScriptInterface = window.AndroidBridge
- │     readUsageStats(date) · getUsageAccess() · openUsageAccessSettings() · getSession()
- ├── SyncScheduler / UsageSyncWorker (WorkManager)
- │     21:00 today snapshot · 07:00 yesterday backfill · install backfill
- ├── AuthManager (Chrome Custom Tab + diarium://auth-callback deep link)
- └── FCM service (registered tokens → /api/push/subscribe)
-            │
-            ▼
-     Diarium API → /api/save-entry (user JWT) → Supabase
-```
+Phone usage statistics (`PACKAGE_USAGE_STATS`) can only be read by a real installed
+app — a browser page cannot. Diarium is a native Android app precisely so it can read
+exact per-app screen time directly on your device and show you accurate numbers,
+without any third-party services in the path. Your usage data goes straight to your
+Diarium account, nowhere else.
 
-## Requirements / build
+## Requirements
 
-- JDK 17+, Android SDK (platform 34)
-- `local.properties` with `sdk.dir=...` (or standard `ANDROID_HOME`)
+- Android 8.0+ (API 26)
+- Google login (used only to identify your Diarium account)
+- Usage access permission (Settings → Special access → Usage access → Diarium) — required
+  for screen-time statistics; everything else works without it
+
+## Install
+
+1. Download the APK (see Releases / GitHub Actions artifacts) and open it
+2. Allow installation from unknown sources when prompted
+3. Sign in with Google
+4. Grant usage access when asked (or later in Settings)
+5. Done — Diarium syncs the last 7 days right away and then keeps your stats fresh daily
+
+> Sideloading from GitHub is for personal builds. For distribution through a store the
+> app can be signed and published normally.
+
+## Build from source
 
 ```bash
-git clone git@github.com:Vojta01/diarium-android.git
-cd diarium-android
+# Requirements: JDK 17+, Android SDK (platform 34)
+echo "sdk.dir=/path/to/android-sdk" > local.properties   # or set ANDROID_HOME
+
 ./gradlew assembleDebug
 # → app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Install (sideload)
+GitHub Actions builds the APK on every push to `main` (see the Actions tab) and
+attaches it to tagged releases.
 
-1. Copy the APK to your phone and open it (allow unknown sources when prompted; or `adb install app-debug.apk`).
-2. Grant usage access: **Settings → Apps → Special access → Usage access → Diarium → On**.
-   Without this the app can't read statistics (the web app simply won't fill the screen-time chart).
-3. Sign in with Google — a Custom Tab opens and returns the session to the app.
-4. After login the app syncs the last 7 days; afterwards it syncs daily automatically.
+## Privacy
 
-## Configuration
+- Your check-ins and statistics belong to you and are stored in your Diarium account
+- Screen-time data is read on-device and synced to your account — never sent anywhere else
+- No ads, no trackers
 
-All values are compiled in at build time in `app/build.gradle.kts` (`buildConfigField`):
+## Tech notes (for contributors)
 
-| Field | Purpose |
-|---|---|
-| `DIARIUM_URL` | Web app URL loaded in the WebView |
-| `AUTH_SCHEME`, `AUTH_HOST` | Deep-link scheme/host for the OAuth callback (e.g. `diarium://auth-callback`) |
-| `SUPABASE_REF` | Supabase project ref (used for the web app's localStorage session key) |
-| `SUPABASE_URL` | Supabase URL used to open the OAuth authorize flow |
-| `SAVE_ENTRY_URL` | API endpoint that receives the usage stats push |
+The app is a Kotlin/Android project: the UI is delivered as a web app inside a WebView
+(same codebase as Diarium's web version), with a native bridge (`window.AndroidBridge`)
+for usage statistics, OAuth via Chrome Custom Tabs, WorkManager-based daily sync, and
+optional FCM push. See `app/build.gradle.kts` for configurable values (API endpoints,
+auth scheme, Supabase project ref).
 
-If the web app uses Supabase Google OAuth with a custom redirect scheme, add the scheme (e.g. `diarium://auth-callback`) to the Supabase **Allowed Redirect URLs** — otherwise sign-in can't return to the app.
-
-## Push notifications (FCM)
-
-- Add your `google-services.json` under `app/` and uncomment the Firebase plugin/dependencies in `app/build.gradle.kts` and the service in `AndroidManifest.xml`.
-- The app registers its FCM token at `/api/push/subscribe` (platform `android`) and the backend sends native notifications via the FCM HTTP v1 API.
-
-## Known limitations
-
-- Web-push (browser push API) does not work inside a WebView; native FCM covers notifications instead.
-- Usage statistics require Android 8+ (API 26).
+### Known limitations
+- Browser-style web push is not available inside a WebView; native FCM notifications
+  cover reminders and reports instead
+- Usage statistics require Android 8+ (API 26)
 
 ## License
 
