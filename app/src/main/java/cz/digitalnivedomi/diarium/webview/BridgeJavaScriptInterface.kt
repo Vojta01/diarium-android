@@ -61,19 +61,4 @@ class BridgeJavaScriptInterface(
             activity.startActivity(intent)
         }
     }
-
-    /** Force an immediate 7-day usage backfill (called from the web UI refresh button). */
-    @JavascriptInterface
-    fun forceBackfill() {
-        activity.runOnUiThread {
-            val constraints = androidx.work.Constraints.Builder()
-                .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
-                .build()
-            val work = androidx.work.OneTimeWorkRequestBuilder<cz.digitalnivedomi.diarium.sync.UsageSyncWorker>()
-                .setConstraints(constraints)
-                .setInputData(androidx.work.Data.Builder().putString("mode", "backfill").build())
-                .build()
-            androidx.work.WorkManager.getInstance(activity).enqueue(work)
-        }
-    }
 }
