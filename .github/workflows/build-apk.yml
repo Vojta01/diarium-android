@@ -3,7 +3,11 @@ name: Build APK
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -40,8 +44,11 @@ jobs:
           name: diarium-android-apk
           path: apk
 
+      - name: Rename APK for release
+        run: mv apk/app-debug.apk apk/diarium-v1.0.0.apk
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: apk/app-debug.apk
+          files: apk/diarium-v1.0.0.apk
           generate_release_notes: true
