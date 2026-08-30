@@ -112,10 +112,11 @@ class AuthManager(
             )
         }
 
-        // Kick off an immediate usage sync now that we are authenticated.
+        // Kick off an immediate usage backfill now that we are authenticated,
+        // so the last 7 days appear in the chart right away (not only today).
         androidx.work.WorkManager.getInstance(activity).enqueue(
             androidx.work.OneTimeWorkRequestBuilder<cz.digitalnivedomi.diarium.sync.UsageSyncWorker>()
-                .setInputData(androidx.work.Data.Builder().putString("mode", "today").build())
+                .setInputData(androidx.work.Data.Builder().putString("mode", "backfill").build())
                 .build()
         )
 
