@@ -54,7 +54,11 @@ class UsageSyncWorker(
                     "today" -> pushDay(canonicalToday(), token)
                     "yesterday" -> pushDay(canonicalYesterday(), token)
                     "backfill" -> {
-                        for (i in 1..7) pushDay(canonicalPastDay(i), token)
+                        // i=0 is TODAY — the chart must show the current day
+                        // even before the 21:00 job fires. (Previously this
+                        // loop started at 1, so today was never pushed and the
+                        // current day stayed empty until the evening job.)
+                        for (i in 0..7) pushDay(canonicalPastDay(i), token)
                     }
                     else -> pushDay(canonicalToday(), token)
                 }
