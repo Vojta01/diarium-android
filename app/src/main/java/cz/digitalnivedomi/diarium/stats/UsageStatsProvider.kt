@@ -118,6 +118,7 @@ class UsageStatsProvider(private val context: Context) {
 
         // System/launcher packages that Digital Wellbeing does not count as "app time".
         val ignored = setOf(
+            "android", // Android system package (not an app)
             "com.google.android.apps.nexuslauncher", // Pixel launcher
             "com.android.launcher3",
             "com.urbandroid.sleep", // sleep tracking lockscreen
