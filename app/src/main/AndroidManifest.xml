@@ -14,6 +14,17 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Android 11+ package visibility: enumerate launcher apps so we can
+         resolve their real display labels (Google, Telegram, …) from
+         UsageStats package names. Without this, getApplicationLabel()
+         throws NameNotFoundException and we fall back to the raw package name. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
