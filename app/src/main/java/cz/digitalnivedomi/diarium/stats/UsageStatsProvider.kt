@@ -125,6 +125,20 @@ class UsageStatsProvider(private val context: Context) {
             "com.android.systemui",
             "com.google.android.inputmethod.latin", // Gboard
             "com.android.permissioncontroller",
+            "com.google.android.as", // Android System Intelligence
+            "com.google.android.gms", // Google Play services
+            "com.google.android.googlequicksearchbox", // Launcher search widget placeholder
+        )
+
+        // Known package→friendly label fallbacks for apps where package
+        // visibility hides the real label (Android 11+).
+        val knownLabels = mapOf(
+            "org.telegram.messenger" to "Telegram",
+            "com.google.android.apps.maps" to "Mapy",
+            "com.google.android.apps.photos" to "Fotky",
+            "com.google.android.dialer" to "Telefon",
+            "com.google.android.gm" to "Gmail",
+            "com.android.browser" to "Prohlížeč",
         )
 
         for (s in stats) {
@@ -133,11 +147,14 @@ class UsageStatsProvider(private val context: Context) {
             // Only count when the app was actually in the foreground.
             val sec = s.totalTimeInForeground / 1000
             if (sec < 2) continue
-            val label = try {
+            val label = knownLabels[pkg] ?: try {
                 val info = pm.getApplicationInfo(pkg, 0)
                 pm.getApplicationLabel(info).toString()
             } catch (_: PackageManager.NameNotFoundException) {
-                pkg.substringAfterLast('.').ifBlank { pkg }
+                // Fall back to a prettified package tail instead of the raw
+                // last segment (e.g. "googlequicksearchbox" → "Google" is
+                // handled above; "com.myapp.activity" → "activity" stays).
+                knownLabels[pkg] ?: pkg.substringAfterLast('.').ifBlank { pkg }
             }
             perApp[pkg] = (label to sec)
             totalSec += sec
