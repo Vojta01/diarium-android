@@ -14,6 +14,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -42,9 +43,11 @@ class UsageSyncWorker(
         .build()
 
     override suspend fun doWork(): Result {
-        // Not logged in yet (or session expired) — retry later so the daily
-        // backfill still happens once the user signs in.
-        val token = sessionStore.accessToken() ?: return Result.retry()
+        // Not logged in yet (or session expired beyond refresh) — retry later
+        // so the daily backfill still happens once the user signs in.
+        // validAccessToken() transparently refreshes an expired access token
+        // via Supabase before any push is attempted.
+        val token = sessionStore.validAccessToken() ?: return Result.retry()
         if (!usageStats.hasUsageAccess()) return Result.retry() // permission not granted yet
 
         val mode = inputData.getString("mode") ?: "today"
@@ -139,7 +142,13 @@ class UsageSyncWorker(
 
         client.newCall(request).execute().use { resp ->
             if (!resp.isSuccessful) {
-                Log.w("DiariumSync", "push $date → HTTP ${resp.code}")
+                // Fail LOUDLY: a 401 means the token is invalid (or session
+                // revoked) and the job must be retried — the next run will
+                // refresh the token via SessionStore.validAccessToken().
+                // Previously this only logged the code and returned success,
+                // so WorkManager believed the push worked and NEVER retried.
+                Log.w("DiariumSync", "push $date → HTTP ${resp.code}, retrying")
+                throw IOException("push failed for $date: HTTP ${resp.code}")
             }
         }
     }

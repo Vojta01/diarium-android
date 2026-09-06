@@ -27,6 +27,7 @@ class SyncScheduler {
         private const val WORK_EVENING = "diarium.sync.evening"
         private const val WORK_MORNING = "diarium.sync.morning"
         private const val WORK_INIT = "diarium.sync.init"
+        const val WORK_BOOT = "diarium.sync.boot"
 
         fun ensureScheduled(context: Context) {
             val wm = WorkManager.getInstance(context)
