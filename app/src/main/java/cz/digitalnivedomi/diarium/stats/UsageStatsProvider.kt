@@ -27,6 +27,31 @@ import java.util.TimeZone
  */
 class UsageStatsProvider(private val context: Context) {
 
+    // System/launcher packages that Digital Wellbeing does not count as "app time".
+    private val ignored = setOf(
+        "android", // Android system package (not an app)
+        "com.google.android.apps.nexuslauncher", // Pixel launcher
+        "com.android.launcher3",
+        "com.urbandroid.sleep", // sleep tracking lockscreen
+        "com.android.systemui",
+        "com.google.android.inputmethod.latin", // Gboard
+        "com.android.permissioncontroller",
+        "com.google.android.as", // Android System Intelligence
+        "com.google.android.gms", // Google Play services
+        "com.google.android.googlequicksearchbox", // Launcher search widget placeholder
+    )
+
+    // Known package→friendly label fallbacks for apps where package
+    // visibility hides the real label (Android 11+).
+    private val knownLabels = mapOf(
+        "org.telegram.messenger" to "Telegram",
+        "com.google.android.apps.maps" to "Mapy",
+        "com.google.android.apps.photos" to "Fotky",
+        "com.google.android.dialer" to "Telefon",
+        "com.google.android.gm" to "Gmail",
+        "com.android.browser" to "Prohlížeč",
+    )
+
     /** Whether the user has granted "usage access" to this app. */
     @Suppress("DEPRECATION")
     fun hasUsageAccess(): Boolean {
@@ -93,6 +118,16 @@ class UsageStatsProvider(private val context: Context) {
      * Per-app stats for [date] in local timezone (full calendar day).
      * Returns JSON:
      *   { date, totalSec, unlocks, apps: [{package, app, timeSec, timeHuman}] }
+     *
+     * EVENT-BASED (matches Digital Wellbeing exactly):
+     *   - totalSec = display-ON time (SCREEN_INTERACTIVE → SCREEN_NON_INTERACTIVE)
+     *   - unlocks  = count of SCREEN_INTERACTIVE events
+     *   - per-app  = ACTIVITY_RESUMED → ACTIVITY_PAUSED, only while screen is ON
+     * This replaces the old queryUsageStats().totalTimeInForeground approach,
+     * which aggregates whole usage "day buckets" and over-counts (a reboot or
+     * an interval that spans the query window inflates totals; screen-off
+     * foreground time also leaked in). The Wellbeing numbers and the old
+     * values differed by ~2.5× on some days.
      */
     fun dayStats(date: String): JSONObject {
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
@@ -110,54 +145,68 @@ class UsageStatsProvider(private val context: Context) {
         result.put("available", hasUsageAccess())
 
         val pm = context.packageManager
-        val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, dayStart, dayEnd)
         val apps = JSONArray()
 
         var totalSec = 0L
+        var unlocks = 0L
+        var screenOnSince = -1L
         val perApp = LinkedHashMap<String, Pair<String, Long>>() // package → (label, sec)
+        val active = HashMap<String, Long>() // package → last ACTIVITY_RESUMED ts
 
-        // System/launcher packages that Digital Wellbeing does not count as "app time".
-        val ignored = setOf(
-            "android", // Android system package (not an app)
-            "com.google.android.apps.nexuslauncher", // Pixel launcher
-            "com.android.launcher3",
-            "com.urbandroid.sleep", // sleep tracking lockscreen
-            "com.android.systemui",
-            "com.google.android.inputmethod.latin", // Gboard
-            "com.android.permissioncontroller",
-            "com.google.android.as", // Android System Intelligence
-            "com.google.android.gms", // Google Play services
-            "com.google.android.googlequicksearchbox", // Launcher search widget placeholder
-        )
-
-        // Known package→friendly label fallbacks for apps where package
-        // visibility hides the real label (Android 11+).
-        val knownLabels = mapOf(
-            "org.telegram.messenger" to "Telegram",
-            "com.google.android.apps.maps" to "Mapy",
-            "com.google.android.apps.photos" to "Fotky",
-            "com.google.android.dialer" to "Telefon",
-            "com.google.android.gm" to "Gmail",
-            "com.android.browser" to "Prohlížeč",
-        )
-
-        for (s in stats) {
-            val pkg = s.packageName ?: continue
-            if (pkg in ignored) continue
-            // Only count when the app was actually in the foreground.
-            val sec = s.totalTimeInForeground / 1000
+        val events = usm.queryEvents(dayStart, dayEnd)
+        val ev = UsageEvents.Event()
+        while (events.hasNextEvent()) {
+            events.getNextEvent(ev)
+            val ts = ev.timeStamp
+            when (ev.eventType) {
+                UsageEvents.Event.SCREEN_INTERACTIVE -> {
+                    unlocks++
+                    if (screenOnSince == -1L) screenOnSince = ts
+                }
+                UsageEvents.Event.SCREEN_NON_INTERACTIVE -> {
+                    if (screenOnSince != -1L) {
+                        totalSec += (ts - screenOnSince).coerceAtLeast(0) / 1000
+                        screenOnSince = -1L
+                    }
+                    active.clear() // app intervals end once the screen goes off
+                }
+                UsageEvents.Event.ACTIVITY_RESUMED -> {
+                    val pkg = ev.packageName ?: continue
+                    if (pkg in ignored) continue
+                    if (screenOnSince != -1L) active[pkg] = ts else active.remove(pkg)
+                }
+                UsageEvents.Event.ACTIVITY_PAUSED -> {
+                    val pkg = ev.packageName ?: continue
+                    val start = active.remove(pkg) ?: continue
+                    if (start < 0) continue
+                    val sec = ((ts - start).coerceAtLeast(0)) / 1000
+                    if (sec < 2) continue
+                    val label = knownLabels[pkg] ?: try {
+                        val info = pm.getApplicationInfo(pkg, 0)
+                        pm.getApplicationLabel(info).toString()
+                    } catch (_: PackageManager.NameNotFoundException) {
+                        knownLabels[pkg] ?: pkg.substringAfterLast('.').ifBlank { pkg }
+                    }
+                    val prev = perApp[pkg]
+                    perApp[pkg] = (label to (prev?.second ?: 0L) + sec)
+                }
+            }
+        }
+        // Close an interval still open at midnight (screen on past dayEnd).
+        if (screenOnSince != -1L) {
+            totalSec += (dayEnd - screenOnSince).coerceAtLeast(0) / 1000
+        }
+        for ((pkg, start) in active) {
+            val sec = ((dayEnd - start).coerceAtLeast(0)) / 1000
             if (sec < 2) continue
-            val label = knownLabels[pkg] ?: try {
+            val label = try {
                 val info = pm.getApplicationInfo(pkg, 0)
                 pm.getApplicationLabel(info).toString()
             } catch (_: PackageManager.NameNotFoundException) {
-                // Fall back to a prettified package tail instead of the raw
-                // last segment (e.g. "googlequicksearchbox" → "Google" is
-                // handled above; "com.myapp.activity" → "activity" stays).
                 knownLabels[pkg] ?: pkg.substringAfterLast('.').ifBlank { pkg }
             }
-            perApp[pkg] = (label to sec)
-            totalSec += sec
+            val prev = perApp[pkg]
+            perApp[pkg] = (label to (prev?.second ?: 0L) + sec)
         }
 
         for ((pkg, pair) in perApp) {
@@ -172,15 +221,6 @@ class UsageStatsProvider(private val context: Context) {
         result.put("totalSec", totalSec)
         result.put("totalHuman", human(totalSec))
         result.put("apps", apps)
-
-        // Unlock count via usage events (EVENT_SCREEN_INTERACTIVE = screen unlocked).
-        var unlocks = 0L
-        val events = usm.queryEvents(dayStart, dayEnd)
-        val ev = UsageEvents.Event()
-        while (events.hasNextEvent()) {
-            events.getNextEvent(ev)
-            if (ev.eventType == UsageEvents.Event.SCREEN_INTERACTIVE) unlocks++
-        }
         result.put("unlocks", unlocks)
 
         return result
