@@ -91,15 +91,24 @@ class NotificationWorker(
     }
 
     // ── Weekly / monthly reports ───────────────────────────────
+    // App-driven: at the scheduled time the APP calls the report endpoint
+    // with the user's own JWT (no server crons anymore). The endpoint
+    // generates the report and stores it, then we poll and notify.
 
     private fun handleReport(type: String) {
         val prefs = prefsStore.load()
         val enabled = if (type == "weekly") prefs.weeklyEnabled else prefs.monthlyEnabled
         if (!enabled) return
 
-        val latest = latestReport(type) ?: return
         val marker = if (type == "weekly") prefs.lastWeeklyNotifiedId else prefs.lastMonthlyNotifiedId
-        if (latest.getString("id") == marker) return // already notified
+        var latest = latestReport(type)
+
+        // No fresh report yet — trigger generation from the app itself.
+        if (latest == null || latest.getString("id") == marker) {
+            triggerReport(type)
+            latest = latestReport(type)
+        }
+        if (latest == null || latest.getString("id") == marker) return // still nothing new
 
         if (type == "weekly") prefsStore.setLastWeeklyId(latest.getString("id"))
         else prefsStore.setLastMonthlyId(latest.getString("id"))
@@ -113,10 +122,25 @@ class NotificationWorker(
         )
     }
 
+    /** Calls the report generation endpoint authenticated with the user JWT. */
+    private fun triggerReport(type: String): Boolean {
+        val token = sessionStore.validAccessToken() ?: return false
+        val url = "${BuildConfig.DIARIUM_URL}/api/cron/ai-report?type=$type"
+        val req = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $token")
+            .build()
+        return try {
+            client.newCall(req).execute().use { resp -> resp.isSuccessful }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     // ── Supabase queries (user JWT, RLS-secured) ────────────────
 
     private fun hasSavedEntry(date: String): Boolean {
-        val token = sessionStore.accessToken() ?: return false
+        val token = sessionStore.validAccessToken() ?: return false
         val url = "${BuildConfig.SUPABASE_URL}/rest/v1/entries" +
             "?date=eq.$date&select=id&limit=1"
         val req = Request.Builder()
@@ -132,7 +156,7 @@ class NotificationWorker(
     }
 
     private fun latestReport(type: String): org.json.JSONObject? {
-        val token = sessionStore.accessToken() ?: return null
+        val token = sessionStore.validAccessToken() ?: return null
         val url = "${BuildConfig.SUPABASE_URL}/rest/v1/ai_reports" +
             "?type=eq.$type&select=id,created_at&order=created_at.desc&limit=1"
         val req = Request.Builder()

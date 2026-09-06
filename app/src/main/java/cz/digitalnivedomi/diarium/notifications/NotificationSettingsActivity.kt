@@ -13,6 +13,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import cz.digitalnivedomi.diarium.BuildConfig
 import cz.digitalnivedomi.diarium.R
 
 /**
@@ -32,9 +33,14 @@ class NotificationSettingsActivity : AppCompatActivity() {
     private lateinit var weeklyTime: TextView
     private lateinit var monthlyEnabled: SwitchCompat
     private lateinit var monthlyTime: TextView
+    private lateinit var screenSyncEnabled: SwitchCompat
+    private lateinit var screenSyncEveningTime: TextView
+    private lateinit var screenSyncMorningTime: TextView
     private lateinit var openOnTap: SwitchCompat
     private lateinit var soundSwitch: SwitchCompat
     private lateinit var systemStatus: TextView
+    private lateinit var appVersion: TextView
+    private lateinit var appVersionCode: TextView
 
     private val dayNames = listOf("Po", "Út", "St", "Čt", "Pá", "So", "Ne")
 
@@ -55,9 +61,14 @@ class NotificationSettingsActivity : AppCompatActivity() {
         weeklyTime = findViewById(R.id.weeklyTime)
         monthlyEnabled = findViewById(R.id.monthlyEnabled)
         monthlyTime = findViewById(R.id.monthlyTime)
+        screenSyncEnabled = findViewById(R.id.screenSyncEnabled)
+        screenSyncEveningTime = findViewById(R.id.screenSyncEveningTime)
+        screenSyncMorningTime = findViewById(R.id.screenSyncMorningTime)
         openOnTap = findViewById(R.id.openOnTap)
         soundSwitch = findViewById(R.id.soundSwitch)
         systemStatus = findViewById(R.id.systemStatus)
+        appVersion = findViewById(R.id.appVersion)
+        appVersionCode = findViewById(R.id.appVersionCode)
 
         renderPrefs()
 
@@ -89,6 +100,19 @@ class NotificationSettingsActivity : AppCompatActivity() {
                 prefs = prefs.copy(monthlyTimeMinutes = h * 60 + m); persist(); renderPrefs()
             }, prefs.monthlyTimeMinutes / 60, prefs.monthlyTimeMinutes % 60, true).show()
         }
+        screenSyncEnabled.setOnCheckedChangeListener { _, checked ->
+            prefs = prefs.copy(screenSyncEnabled = checked); persist()
+        }
+        screenSyncEveningTime.setOnClickListener {
+            TimePickerDialog(this, { _, h, m ->
+                prefs = prefs.copy(screenSyncEveningMinutes = h * 60 + m); persist(); renderPrefs()
+            }, prefs.screenSyncEveningMinutes / 60, prefs.screenSyncEveningMinutes % 60, true).show()
+        }
+        screenSyncMorningTime.setOnClickListener {
+            TimePickerDialog(this, { _, h, m ->
+                prefs = prefs.copy(screenSyncMorningMinutes = h * 60 + m); persist(); renderPrefs()
+            }, prefs.screenSyncMorningMinutes / 60, prefs.screenSyncMorningMinutes % 60, true).show()
+        }
         openOnTap.setOnCheckedChangeListener { _, checked ->
             prefs = prefs.copy(openAppOnTap = checked); persist()
         }
@@ -108,8 +132,13 @@ class NotificationSettingsActivity : AppCompatActivity() {
         weeklyTime.text = fmtTime(prefs.weeklyTimeMinutes)
         monthlyEnabled.isChecked = prefs.monthlyEnabled
         monthlyTime.text = fmtTime(prefs.monthlyTimeMinutes)
+        screenSyncEnabled.isChecked = prefs.screenSyncEnabled
+        screenSyncEveningTime.text = fmtTime(prefs.screenSyncEveningMinutes)
+        screenSyncMorningTime.text = fmtTime(prefs.screenSyncMorningMinutes)
         openOnTap.isChecked = prefs.openAppOnTap
         soundSwitch.isChecked = prefs.sound
+        appVersion.text = "Verze ${BuildConfig.VERSION_NAME}"
+        appVersionCode.text = "versionCode ${BuildConfig.VERSION_CODE}"
         renderDayChips()
     }
 
@@ -160,6 +189,8 @@ class NotificationSettingsActivity : AppCompatActivity() {
         // after the earlier afternoon test).
         store.setLastReminderDate(null)
         NotificationScheduler.rescheduleAll(this)
+        // Screen time sync times may have changed — re-arm the WorkManager jobs
+        cz.digitalnivedomi.diarium.sync.SyncScheduler.ensureScheduled(this)
     }
 
     private fun fmtTime(minutes: Int): String {

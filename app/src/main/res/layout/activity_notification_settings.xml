@@ -238,6 +238,78 @@
                 android:textSize="15sp" />
         </LinearLayout>
 
+        <!-- ── Screen time sync ── -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Screen time (Digital Wellbeing)"
+            android:textColor="#818cf8"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Synchronizovat data z Wellbeing"
+                android:textColor="#e5e7eb"
+                android:textSize="15sp" />
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/screenSyncEnabled"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Večerní snímek (dnešek)"
+                android:textColor="#9ca3af"
+                android:textSize="14sp" />
+            <TextView
+                android:id="@+id/screenSyncEveningTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="#1f2937"
+                android:padding="10dp"
+                android:textColor="#ffffff"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Ranní doplnění (včerejšek)"
+                android:textColor="#9ca3af"
+                android:textSize="14sp" />
+            <TextView
+                android:id="@+id/screenSyncMorningTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="#1f2937"
+                android:padding="10dp"
+                android:textColor="#ffffff"
+                android:textSize="15sp" />
+        </LinearLayout>
+
         <!-- ── Behavior ── -->
         <TextView
             android:layout_width="wrap_content"
@@ -282,6 +354,45 @@
                 android:id="@+id/soundSwitch"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <!-- ── O aplikaci ── -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="O aplikaci"
+            android:textColor="#818cf8"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="#1f2937"
+            android:orientation="vertical"
+            android:padding="12dp">
+            <TextView
+                android:id="@+id/appVersion"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="#ffffff"
+                android:textSize="14sp" />
+            <TextView
+                android:id="@+id/appVersionCode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="#9ca3af"
+                android:textSize="12sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Vše spouští tato aplikace — žádné serverové crony. Časy si nastavuješ tady."
+                android:textColor="#9ca3af"
+                android:textSize="12sp" />
         </LinearLayout>
 
     </LinearLayout>
