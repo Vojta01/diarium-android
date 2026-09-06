@@ -17,11 +17,12 @@ you can actually see what makes your days better.
 - Photos + notes — your day, your way
 
 ### 📊 Screen time & phone usage
-- Daily screen time, per-app time, and unlock count — measured the same way
-  Android Digital Wellbeing measures it (foreground time per app)
+- Daily screen time, per-app time, and unlock count — measured exactly the same way
+  Android Digital Wellbeing measures it (display-on time, per-app foreground time)
 - Screens show a 7-day window with an interactive daily breakdown: tap any day to see
   which apps you used and for how long
-- Data lives on your device and syncs to your Diarium account automatically
+- Data lives on your device and syncs to your Diarium account automatically at times
+  you choose (default: evening snapshot of today + morning backfill of yesterday)
 
 ### 📈 Insights
 - Mood trends with a 7-day moving average
@@ -30,9 +31,17 @@ you can actually see what makes your days better.
 - **AI reflections**: a short weekly and monthly summary written by AI from your data —
   patterns you might not notice yourself
 
-### 🔔 Reminders
-- Daily check-in reminder so you never lose your streak
-- Native notifications: tap to open the app and fill in your day
+### 🔔 Reminders & automation — everything runs on your phone
+No server-side crons are involved. The app schedules everything locally and lets you
+set the times in its Settings screen (opened from the web UI via the notification
+settings button):
+- **Daily check-in reminder** — pick the time and days of week; the smart reminder
+  skips days you already filled in
+- **Weekly AI reflection** — pick the day and time; the app generates the report
+  on the spot and notifies you when it's ready
+- **Monthly AI reflection** — pick the time on the 1st of the month
+- **Screen time sync** — pick evening and morning times, or switch it off
+  (on-open backfill of the last 7 days always runs so charts self-heal)
 
 ## Why Android-native
 
@@ -51,7 +60,7 @@ Diarium account, nowhere else.
 
 ## Install
 
-1. Download the APK (see Releases / GitHub Actions artifacts) and open it
+1. Download the APK (see Releases) and open it
 2. Allow installation from unknown sources when prompted
 3. Sign in with Google
 4. Grant usage access when asked (or later in Settings)
@@ -60,13 +69,21 @@ Diarium account, nowhere else.
 > Sideloading from GitHub is for personal builds. For distribution through a store the
 > app can be signed and published normally.
 
+## Versioning
+
+Each tagged release (`v1.2.3`) is built by GitHub Actions and published as
+`diarium-1.2.3.apk`. The app's real version (shown in Settings → O aplikaci and in
+Android's App info) is derived from the tag, so you can always tell which build you
+have installed. Screenshots of the app in this repo may lag behind the latest version.
+
 ## Build from source
 
 ```bash
 # Requirements: JDK 17+, Android SDK (platform 34)
 echo "sdk.dir=/path/to/android-sdk" > local.properties   # or set ANDROID_HOME
 
-./gradlew assembleDebug
+# Optional: set the version (defaults to 1.0.0)
+APP_VERSION_NAME=1.2.3 APP_VERSION_CODE=10203 ./gradlew assembleDebug
 # → app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -83,13 +100,14 @@ attaches it to tagged releases.
 
 The app is a Kotlin/Android project: the UI is delivered as a web app inside a WebView
 (same codebase as Diarium's web version), with a native bridge (`window.AndroidBridge`)
-for usage statistics, OAuth via Chrome Custom Tabs, WorkManager-based daily sync, and
-optional FCM push. See `app/build.gradle.kts` for configurable values (API endpoints,
-auth scheme, Supabase project ref).
+for usage statistics, OAuth via Chrome Custom Tabs, AlarmManager + WorkManager-based
+scheduling (all times user-configurable — no server crons), and local notifications.
+See `app/build.gradle.kts` for configurable values (API endpoints, auth scheme,
+Supabase project ref).
 
 ### Known limitations
-- Browser-style web push is not available inside a WebView; native FCM notifications
-  cover reminders and reports instead
+- Browser-style web push is not available inside a WebView; notifications are shown
+  natively by the app itself (reminders + AI report alerts), scheduled locally
 - Usage statistics require Android 8+ (API 26)
 
 ## License
