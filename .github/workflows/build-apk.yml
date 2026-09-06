@@ -47,12 +47,13 @@ jobs:
             MAJOR=$(echo "$VER" | cut -d. -f1)
             MINOR=$(echo "$VER" | cut -d. -f2)
             PATCH=$(echo "$VER" | cut -d. -f3)
-            echo "APP_VERSION_NAME=${VER}" >> "$GITHUB_ENV"
-            echo "APP_VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))" >> "$GITHUB_ENV"
+            export APP_VERSION_NAME="${VER}"
+            export APP_VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
           else
             echo "Not a tag — using default version 1.0.0"
-            echo "APP_VERSION_CODE=10000" >> "$GITHUB_ENV"
+            export APP_VERSION_CODE=10000
           fi
+          echo "Building with APP_VERSION_NAME=${APP_VERSION_NAME:-1.0.0} APP_VERSION_CODE=${APP_VERSION_CODE}"
           ./gradlew assembleDebug
           echo "APK size: $(du -h app/build/outputs/apk/debug/app-debug.apk | cut -f1) ($(wc -c < app/build/outputs/apk/debug/app-debug.apk) bytes)"
 
