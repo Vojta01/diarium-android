@@ -31,14 +31,23 @@ class SyncScheduler {
 
         fun ensureScheduled(context: Context) {
             val wm = WorkManager.getInstance(context)
+            val notifPrefs = cz.digitalnivedomi.diarium.notifications.NotificationPrefsStore(context).load()
+
+            if (!notifPrefs.screenSyncEnabled) {
+                // Sync disabled by the user in app settings — cancel both jobs
+                wm.cancelUniqueWork(WORK_EVENING)
+                wm.cancelUniqueWork(WORK_MORNING)
+                return
+            }
+
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
 
-            // Evening: today's snapshot at ~21:00
-            scheduleDaily(context, WORK_EVENING, 21, 0, "today")
-            // Morning: yesterday backfill at ~07:00
-            scheduleDaily(context, WORK_MORNING, 7, 0, "yesterday")
+            // Evening: today's snapshot (user-configurable time from app settings)
+            scheduleDaily(context, WORK_EVENING, notifPrefs.screenSyncEveningMinutes / 60, notifPrefs.screenSyncEveningMinutes % 60, "today")
+            // Morning: yesterday backfill (user-configurable time from app settings)
+            scheduleDaily(context, WORK_MORNING, notifPrefs.screenSyncMorningMinutes / 60, notifPrefs.screenSyncMorningMinutes % 60, "yesterday")
 
             // One-time backfill of the last 7 days — re-run whenever the app is
             // opened (version change OR last run older than 6 h). This makes the

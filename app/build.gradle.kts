@@ -20,8 +20,8 @@ android {
         applicationId = "cz.digitalnivedomi.diarium"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = System.getenv("APP_VERSION_NAME") ?: "1.0.0"
 
         // App runs the remote web app inside a WebView wrapper.
         buildConfigField("String", "DIARIUM_URL", "\"https://diarium-two.vercel.app\"")

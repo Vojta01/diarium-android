@@ -40,6 +40,19 @@ jobs:
 
       - name: Build debug APK
         run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            # v1.2.3 → versionName 1.2.3, versionCode 10203
+            VER="${GITHUB_REF_NAME#v}"
+            echo "Version from tag: ${VER}"
+            MAJOR=$(echo "$VER" | cut -d. -f1)
+            MINOR=$(echo "$VER" | cut -d. -f2)
+            PATCH=$(echo "$VER" | cut -d. -f3)
+            echo "APP_VERSION_NAME=${VER}" >> "$GITHUB_ENV"
+            echo "APP_VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))" >> "$GITHUB_ENV"
+          else
+            echo "Not a tag — using default version 1.0.0"
+            echo "APP_VERSION_CODE=10000" >> "$GITHUB_ENV"
+          fi
           ./gradlew assembleDebug
           echo "APK size: $(du -h app/build/outputs/apk/debug/app-debug.apk | cut -f1) ($(wc -c < app/build/outputs/apk/debug/app-debug.apk) bytes)"
 
