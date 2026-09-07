@@ -192,12 +192,18 @@ class UsageStatsProvider(private val context: Context) {
                 }
             }
         }
-        // Close an interval still open at midnight (screen on past dayEnd).
+        // Close an interval still open when the query window ends.
+        // CRITICAL: for today the window end is NOW, not midnight — closing
+        // at dayEnd extrapolated the running screen session (and any still-
+        // open app) all the way to 00:00, producing e.g. 15h54m of a day
+        // that was only 6h old (Instagram 862 min of a morning sync).
+        val now = System.currentTimeMillis()
+        val closeAt = if (dayEnd > now) now else dayEnd
         if (screenOnSince != -1L) {
-            totalSec += (dayEnd - screenOnSince).coerceAtLeast(0) / 1000
+            totalSec += (closeAt - screenOnSince).coerceAtLeast(0) / 1000
         }
         for ((pkg, start) in active) {
-            val sec = ((dayEnd - start).coerceAtLeast(0)) / 1000
+            val sec = ((closeAt - start).coerceAtLeast(0)) / 1000
             if (sec < 2) continue
             val label = try {
                 val info = pm.getApplicationInfo(pkg, 0)
