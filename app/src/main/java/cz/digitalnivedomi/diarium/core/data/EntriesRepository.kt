@@ -120,7 +120,7 @@ class EntriesRepository(
         val rows = resp.asJsonArray() ?: throw IllegalStateException("Server vrátil neplatnou odpověď.")
         return (0 until rows.length()).map { index ->
             val row = rows.getJSONObject(index)
-            DatedEntry(row.optString("date"), fromRow(row))
+            DatedEntry(row.plainString("date"), fromRow(row))
         }
     }
 
@@ -218,20 +218,20 @@ class EntriesRepository(
         /** Maps an `entries` row back onto the form model. */
         fun fromRow(row: JSONObject): DiaryEntry = DiaryEntry(
             mood = row.optInt("mood", 0),
-            moodEmoji = row.optString("mood_emoji"),
+            moodEmoji = row.plainString("mood_emoji"),
             sleepQuality = row.optInt("sleep_quality", 0),
             stress = row.optInt("stress", 0),
             activities = row.optJSONArray("activities").stringList(),
             habits = row.optJSONObject("habits").booleanMap(),
             gratitude = row.optJSONArray("gratitude").slotList(DiaryEntry.GRATITUDE_SLOTS),
-            note = row.optString("note"),
-            photoPath = row.optString("photo_path").takeIf { it.isNotBlank() },
+            note = row.plainString("note"),
+            photoPath = row.plainString("photo_path").takeIf { it.isNotBlank() },
             scaleValues = row.optJSONObject("scale_values").intMap(),
             weather = row.optJSONArray("weather").stringList(),
             phoneScreenTime = row.optInt("phone_screen_time", -1).takeIf { it >= 0 },
             phoneUnlocks = row.optInt("phone_unlocks", -1).takeIf { it >= 0 },
             phoneTopApps = row.optJSONArray("phone_top_apps").topApps(),
-            aiReflection = row.optString("ai_reflection").takeIf { it.isNotBlank() },
+            aiReflection = row.plainString("ai_reflection").takeIf { it.isNotBlank() },
         )
     }
 }

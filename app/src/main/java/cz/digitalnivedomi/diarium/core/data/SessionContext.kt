@@ -20,9 +20,9 @@ class SessionContext(private val sessionStore: SessionStore? = null) {
         } catch (_: Exception) {
             return null
         }
-        val id = json.optJSONObject("user")?.optString("id").orEmpty()
+        val id = json.optJSONObject("user")?.plainString("id").orEmpty()
         if (id.isNotBlank()) return id
-        return jwtSub(json.optString("access_token"))
+        return jwtSub(json.plainString("access_token"))
     }
 
     /**
@@ -41,7 +41,7 @@ class SessionContext(private val sessionStore: SessionStore? = null) {
         }
         return json.optJSONObject("user")
             ?.optJSONObject("user_metadata")
-            ?.optString("full_name")
+            ?.plainString("full_name")
             ?.takeIf { it.isNotBlank() }
     }
 
@@ -55,7 +55,7 @@ class SessionContext(private val sessionStore: SessionStore? = null) {
                 else -> segment
             }
             JSONObject(String(Base64.getUrlDecoder().decode(padded), Charsets.UTF_8))
-                .optString("sub")
+                .plainString("sub")
                 .takeIf { it.isNotBlank() }
         } catch (_: Exception) {
             null

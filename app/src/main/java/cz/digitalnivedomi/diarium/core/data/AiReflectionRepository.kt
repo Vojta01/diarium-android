@@ -128,7 +128,7 @@ class AiReflectionRepository(
          */
         fun parseReflection(response: HttpResponse): Result<String> {
             if (response.isSuccessful) {
-                val reflection = response.asJsonObject()?.optString("reflection")?.trim().orEmpty()
+                val reflection = response.asJsonObject()?.plainString("reflection")?.trim().orEmpty()
                 return if (reflection.isEmpty()) {
                     Result.failure(IllegalStateException(MESSAGE_EMPTY))
                 } else {
@@ -148,7 +148,7 @@ class AiReflectionRepository(
         /** Our endpoint answers `{ "error": "..." }`; `message` is accepted too. */
         private fun serverMessage(response: HttpResponse): String? =
             response.asJsonObject()
-                ?.let { it.optString("error").ifBlank { it.optString("message") } }
+                ?.let { it.plainString("error").ifBlank { it.plainString("message") } }
                 ?.takeIf { it.isNotBlank() }
     }
 }

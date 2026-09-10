@@ -158,7 +158,7 @@ data class HttpResponse(val code: Int, val body: String) {
 
     /** Supabase error text (`{"message": "..."}`), for logs and 401 handling. */
     val errorMessage: String?
-        get() = if (isSuccessful) null else asJsonObject()?.optString("message")?.takeIf { it.isNotBlank() }
+        get() = if (isSuccessful) null else asJsonObject()?.plainString("message")?.takeIf { it.isNotBlank() }
 }
 
 /** OkHttp-backed transport (the only Android/network-coupled part of the client). */

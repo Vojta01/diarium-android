@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -415,31 +416,44 @@ private fun WeekCard(data: DashboardData) {
         ) {
             data.week.forEach { day ->
                 val isToday = day.date == data.today
+                val mood = moodColor(day.mood)
+                // Both branches must be a Brush: there is no `background(Color)`
+                // overload in play here, so the quiet day is a solid-colour brush.
+                val fill: Brush = if (day.hasEntry) {
+                    // A soft glow: the mood colour fades down the disc instead of
+                    // filling it fully saturated.
+                    Brush.verticalGradient(
+                        listOf(mood.copy(alpha = 0.30f), mood.copy(alpha = 0.10f)),
+                    )
+                } else {
+                    SolidColor(Color.White.copy(alpha = 0.04f))
+                }
                 Column(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(30.dp)
+                            .size(34.dp)
                             .clip(CircleShape)
-                            .background(
-                                if (day.hasEntry) {
-                                    moodColor(day.mood).copy(alpha = 0.9f)
-                                } else {
-                                    Color.White.copy(alpha = 0.06f)
-                                },
-                            )
+                            .background(fill)
                             .border(
-                                width = if (isToday) 2.dp else 1.dp,
-                                color = if (isToday) Indigo else Outline,
+                                width = if (isToday) 2.dp else 1.2.dp,
+                                color = when {
+                                    isToday -> Indigo
+                                    day.hasEntry -> mood.copy(alpha = 0.55f)
+                                    else -> Outline.copy(alpha = 0.5f)
+                                },
                                 shape = CircleShape,
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
+                            // The emoji carries the mood colour in its own glyphs; the
+                            // disc stays translucent so the two do not fight.
                             text = if (day.hasEntry) moodEmojiOf(day.mood) else "·",
-                            fontSize = 15.sp,
+                            fontSize = 17.sp,
+                            color = if (day.hasEntry) Color.Unspecified else TextTertiary,
                         )
                     }
                     VSpace(4)
