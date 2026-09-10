@@ -86,6 +86,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- Check-in photo capture: cacheDir/checkin_photos handed to the camera app -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Re-arm screen-time sync + backfill after reboot / app update -->
         <receiver
             android:name=".sync.SyncBootReceiver"

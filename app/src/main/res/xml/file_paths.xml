@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paths shared through the FileProvider for check-in photos.
+
+  Only the check-in camera output lives here: the app writes a temp JPEG into
+  cacheDir/checkin_photos and hands its content:// URI to the camera app, which
+  is the only grant (write) that URI ever gets.
+-->
+<paths>
+    <cache-path name="checkin_photos" path="checkin_photos/" />
+</paths>
