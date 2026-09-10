@@ -66,11 +66,25 @@ import kotlinx.coroutines.withContext
  * test; [CheckInDeps] carries the repositories so the screen renders offline.
  */
 @Composable
-fun CheckInScreen(deps: CheckInDeps = remember { CheckInDeps.offline() }) {
+fun CheckInScreen(
+    deps: CheckInDeps = remember { CheckInDeps.offline() },
+    requestedDate: String? = null,
+    onRequestedDateConsumed: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val holder = remember { CheckInStateHolder() }
     val state = holder.state
+
+    // A day picked elsewhere (the calendar tab, the dashboard's "Dnes" card): land the
+    // form on it. The host is told the request was used so it can clear it — a later
+    // plain visit to "Dnes" has to start on today again.
+    LaunchedEffect(requestedDate) {
+        if (requestedDate != null) {
+            holder.setDate(requestedDate)
+            onRequestedDateConsumed()
+        }
+    }
 
     val entriesRepo = deps.entries
     val reflectionRepo = deps.reflection

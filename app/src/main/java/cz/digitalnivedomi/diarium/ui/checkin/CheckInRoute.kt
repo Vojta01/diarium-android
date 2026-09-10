@@ -12,8 +12,15 @@ import androidx.compose.ui.platform.LocalContext
  * and previews can pass [CheckInDeps.offline]) while the route owns the wiring.
  */
 @Composable
-fun CheckInRoute() {
+fun CheckInRoute(
+    requestedDate: String? = null,
+    onRequestedDateConsumed: () -> Unit = {},
+) {
     val context = LocalContext.current
     val deps = remember(context) { CheckInDeps.forContext(context) }
-    CheckInScreen(deps)
+    CheckInScreen(
+        deps = deps,
+        requestedDate = requestedDate,
+        onRequestedDateConsumed = onRequestedDateConsumed,
+    )
 }
