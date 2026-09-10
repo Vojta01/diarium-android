@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.checkin
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DraftStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GoalsStore
@@ -23,6 +24,12 @@ class CheckInDeps(
     val pickers: PickersRepository? = null,
     val drafts: DraftStore? = null,
     val goals: GoalsStore? = null,
+    /**
+     * AI reflection for the signed-in user. Null while signed out: the section
+     * then reports the connection failure instead of hiding, so the form looks
+     * the same online and offline.
+     */
+    val reflection: AiReflectionRepository? = null,
 ) {
     val online: Boolean get() = entries != null
 
@@ -38,6 +45,7 @@ class CheckInDeps(
                 pickers = PickersRepository(client, session),
                 drafts = DraftStore.from(context),
                 goals = GoalsStore.from(context),
+                reflection = AiReflectionRepository(sessionStore),
             )
         }
     }

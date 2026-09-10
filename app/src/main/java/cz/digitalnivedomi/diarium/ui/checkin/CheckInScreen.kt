@@ -1,8 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.checkin
 
 import android.net.Uri
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -10,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -22,11 +19,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
+import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DailyGoal
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.HabitDef
@@ -35,6 +31,7 @@ import cz.digitalnivedomi.diarium.core.data.PickerDefaults
 import cz.digitalnivedomi.diarium.core.data.Scale
 import cz.digitalnivedomi.diarium.ui.checkin.components.ActivitiesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.DateNav
+import cz.digitalnivedomi.diarium.ui.checkin.components.ErrorBanner
 import cz.digitalnivedomi.diarium.ui.checkin.components.GoalsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.GratitudeSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.HabitsSection
@@ -42,13 +39,13 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.MoodSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.NoteSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.PhotoSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.PrimaryButton
+import cz.digitalnivedomi.diarium.ui.checkin.components.ReflectionSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.ScalesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.ScreenTimeSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.SleepSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.StressSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.WeatherSection
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
-import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
@@ -60,9 +57,10 @@ import kotlinx.coroutines.withContext
  * One-page daily check-in — native port of the web's `OnePageCheckIn.tsx`.
  *
  * Sections, in the web's order: datum, nálada, spánek, stres, aktivity, návyky,
- * vděčnost, počasí, fotka, škály, poznámka, denní cíle and the read-only screen
- * time. Saving goes through `save_daily_entry(jsonb)`; the AI reflection is M3
- * and deliberately absent.
+ * vděčnost, počasí, fotka, škály, poznámka, denní cíle, the read-only screen time
+ * and the AI reflection. Saving goes through `save_daily_entry(jsonb)`; the
+ * reflection comes from our `/api/ai/reflect` endpoint, called with the signed-in
+ * user's JWT, and is stored on the entry by a second save.
  *
  * State lives in [CheckInStateHolder] so the whole form is drivable from a JVM
  * test; [CheckInDeps] carries the repositories so the screen renders offline.
@@ -75,6 +73,7 @@ fun CheckInScreen(deps: CheckInDeps = remember { CheckInDeps.offline() }) {
     val state = holder.state
 
     val entriesRepo = deps.entries
+    val reflectionRepo = deps.reflection
     val pickersRepo = deps.pickers
     val drafts = deps.drafts
     val goalsStore = deps.goals
@@ -117,6 +116,18 @@ fun CheckInScreen(deps: CheckInDeps = remember { CheckInDeps.offline() }) {
         drafts.save(state.date, state.entry)
     }
 
+    /**
+     * The RPC call itself, shared by [save] and [generateReflection]: the AI
+     * endpoint builds today's prompt from the stored row, so the reflection flow
+     * has to await the very write the save button performs.
+     */
+    suspend fun persistEntry(): Result<Unit> {
+        val repo = entriesRepo
+            ?: return Result.failure(IllegalStateException("Ukládání vyžaduje přihlášení."))
+        val date = holder.date
+        return repo.save(holder.entry, date).onSuccess { drafts?.clear(date) }
+    }
+
     fun save() {
         val repo = entriesRepo
         if (repo == null) {
@@ -125,13 +136,55 @@ fun CheckInScreen(deps: CheckInDeps = remember { CheckInDeps.offline() }) {
         }
         holder.markSaving()
         scope.launch {
-            val date = holder.date
-            repo.save(holder.entry, date)
-                .onSuccess {
-                    drafts?.clear(date)
-                    holder.markSaved()
-                }
+            persistEntry()
+                .onSuccess { holder.markSaved() }
                 .onFailure { holder.markError(it.message ?: "Uložení se nezdařilo.") }
+        }
+    }
+
+    /**
+     * "Napsat reflexi" — the web's AI block, native.
+     *
+     * Order matters: anything unsaved is pushed first, and a failed save aborts
+     * the request instead of letting the AI reflect on a day it cannot see. The
+     * generated text is then written by a second save — that pass is the only one
+     * whose payload carries `ai_reflection`.
+     */
+    fun generateReflection() {
+        val repo = reflectionRepo
+        if (repo == null) {
+            holder.markReflectionError(AiReflectionRepository.MESSAGE_CONNECT)
+            return
+        }
+        // A second tap while the pre-save or the request runs would duplicate the
+        // work; the endpoint caches, but the button must not look idle.
+        if (holder.state.reflectionLoading || holder.state.saving) return
+        scope.launch {
+            if (holder.state.hasContent && !holder.state.saved) {
+                holder.markSaving()
+                val stored = persistEntry()
+                if (stored.isFailure) {
+                    holder.markError(stored.exceptionOrNull()?.message ?: "Uložení se nezdařilo.")
+                    holder.markReflectionError("Nejdřív je potřeba uložit dnešní zápis.")
+                    return@launch
+                }
+                holder.markSaved()
+            }
+
+            holder.markReflectionLoading()
+            val date = holder.date
+            repo.generate(date, holder.entry, repo.userName())
+                .onSuccess { text ->
+                    holder.setReflection(text)
+                    persistEntry()
+                        .onSuccess { holder.markSaved() }
+                        .onFailure {
+                            holder.markReflectionError("Reflexi se nepodařilo uložit k zápisu.")
+                        }
+                }
+                .onFailure {
+                    holder.markReflectionError(it.message ?: "Reflexi se nepodařilo vygenerovat.")
+                }
         }
     }
 
@@ -302,6 +355,13 @@ fun CheckInScreen(deps: CheckInDeps = remember { CheckInDeps.offline() }) {
             topApps = state.entry.phoneTopApps.map { it.app to it.minutes },
         )
 
+        ReflectionSection(
+            reflection = state.reflection,
+            loading = state.reflectionLoading,
+            error = state.reflectionError,
+            onGenerate = { generateReflection() },
+        )
+
         PrimaryButton(
             text = if (state.saving) "⏳ Ukládám..." else "✓ Uložit do vaultu",
             enabled = !state.saving,
@@ -320,24 +380,6 @@ fun CheckInScreen(deps: CheckInDeps = remember { CheckInDeps.offline() }) {
 
         Spacer(Modifier.height(48.dp))
     }
-}
-
-/** Red-tinted glass banner for the last failed action. */
-@Composable
-private fun ErrorBanner(message: String) {
-    val danger = Color(0xFFEF4444)
-    val shape = RoundedCornerShape(14.dp)
-    Text(
-        text = message,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(danger.copy(alpha = 0.14f))
-            .border(1.dp, danger.copy(alpha = 0.5f), shape)
-            .padding(12.dp),
-        style = MaterialTheme.typography.bodySmall,
-        color = Color(0xFFFCA5A5),
-    )
 }
 
 /** Mirrors [cz.digitalnivedomi.diarium.core.data.GoalsStore.DEFAULT_GOALS]. */

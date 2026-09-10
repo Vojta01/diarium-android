@@ -39,6 +39,10 @@ android {
         // when those workers talk to Supabase directly.
         buildConfigField("String", "DIARIUM_URL", "\"https://diarium-two.vercel.app\"")
         buildConfigField("String", "SAVE_ENTRY_URL", "\"https://diarium-two.vercel.app/api/save-entry\"")
+        // AI reflection endpoint. The app posts today's data + the user's JWT and
+        // gets Czech prose back; the DeepSeek key stays on our server, so no AI
+        // credential is ever part of the APK.
+        buildConfigField("String", "AI_REFLECT_URL", "\"https://diarium-two.vercel.app/api/ai/reflect\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

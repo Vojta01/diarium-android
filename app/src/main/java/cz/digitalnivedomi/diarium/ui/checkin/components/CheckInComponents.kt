@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -279,3 +280,26 @@ fun GlassIconButton(
 /** Activity/habit label with its catalogue icon. */
 fun labelWithIcon(icon: String, label: String): String =
     if (icon.isBlank()) label else "$icon $label"
+
+/**
+ * Red-tinted glass banner for the last failed action.
+ *
+ * Lives here rather than in one screen because both the form and the AI
+ * reflection section report failures with it — same tone, same accent as every
+ * other "this is about X" surface (the theme's [ErrorRed]).
+ */
+@Composable
+fun ErrorBanner(message: String) {
+    val shape = RoundedCornerShape(14.dp)
+    Text(
+        text = message,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(ErrorRed.copy(alpha = 0.14f))
+            .border(1.dp, ErrorRed.copy(alpha = 0.5f), shape)
+            .padding(12.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = ErrorRed,
+    )
+}

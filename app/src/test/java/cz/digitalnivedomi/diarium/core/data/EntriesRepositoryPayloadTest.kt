@@ -1,7 +1,9 @@
 package cz.digitalnivedomi.diarium.core.data
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -79,6 +81,26 @@ class EntriesRepositoryPayloadTest {
     @Test
     fun `photo_path is omitted when the day has no photo`() {
         assertFalse(payload(DiaryEntry()).has("photo_path"))
+    }
+
+    @Test
+    fun `ai_reflection is carried only when the day already has one`() {
+        // The RPC assigns `excluded.ai_reflection` on conflict, so sending a null
+        // would erase the reflection the AI endpoint stored for this day.
+        assertFalse(payload(DiaryEntry()).has("ai_reflection"))
+        assertFalse(payload(DiaryEntry(aiReflection = "   ")).has("ai_reflection"))
+        assertEquals(
+            "Dnes sis to užil.",
+            payload(DiaryEntry(aiReflection = "Dnes sis to užil.")).getString("ai_reflection"),
+        )
+    }
+
+    @Test
+    fun `fromRow reads the stored reflection`() {
+        val row = JSONObject().put("mood", 4).put("ai_reflection", "Včera dobrý, dnes lepší.")
+
+        assertEquals("Včera dobrý, dnes lepší.", EntriesRepository.fromRow(row).aiReflection)
+        assertNull(EntriesRepository.fromRow(JSONObject().put("mood", 4)).aiReflection)
     }
 
     @Test

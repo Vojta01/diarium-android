@@ -79,9 +79,15 @@ class EntriesRepository(
          * Maps a [DiaryEntry] onto the exact `save_daily_entry(jsonb)` payload.
          *
          * Fields the form does not own (`phone_screen_time`, `phone_unlocks`,
-         * `phone_top_apps`, `ai_reflection`) are deliberately omitted: the RPC
-         * assigns `excluded.*` on conflict for any key present in the payload, so
-         * sending them as `null` would wipe the screen-time worker's data.
+         * `phone_top_apps`) are deliberately omitted: the RPC assigns `excluded.*`
+         * on conflict for any key present in the payload, so sending them as
+         * `null` would wipe the screen-time worker's data.
+         *
+         * `ai_reflection` is the same rule pointing the other way — it travels
+         * only when the day already has one, so an ordinary form save (which
+         * always starts from an entry loaded without a reflection, or from an
+         * empty one) can never blank out what the AI endpoint stored. That is the
+         * behaviour of `src/app/api/save-entry/route.ts` on the web side.
          */
         fun buildPayload(entry: DiaryEntry, userId: String, date: String): JSONObject =
             JSONObject().apply {
@@ -97,6 +103,7 @@ class EntriesRepository(
                 put("note", entry.note)
                 put("weather", JSONArray(entry.weather))
                 put("scale_values", JSONObject(entry.positiveScaleValues()))
+                entry.aiReflection?.takeIf { it.isNotBlank() }?.let { put("ai_reflection", it) }
                 entry.photoPath?.takeIf { it.isNotBlank() }?.let { put("photo_path", it) }
             }
 
@@ -124,6 +131,7 @@ class EntriesRepository(
             phoneScreenTime = row.optInt("phone_screen_time", -1).takeIf { it >= 0 },
             phoneUnlocks = row.optInt("phone_unlocks", -1).takeIf { it >= 0 },
             phoneTopApps = row.optJSONArray("phone_top_apps").topApps(),
+            aiReflection = row.optString("ai_reflection").takeIf { it.isNotBlank() },
         )
     }
 }
