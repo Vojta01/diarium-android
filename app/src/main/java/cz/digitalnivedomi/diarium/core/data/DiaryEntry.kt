@@ -15,9 +15,10 @@ data class PhoneTopApp(val app: String, val minutes: Int)
  * ([EntriesRepository.buildPayload]) — so the whole UI works with one model and
  * the wire format lives in exactly one place.
  *
- * The last four fields are filled by the screen-time sync worker, never by the
- * form. They are read back for the read-only "Screen time" row and are
- * deliberately not part of the save payload.
+ * [aiReflection] is written by the AI endpoint and the `phone*` fields by the
+ * screen-time sync worker — never by the form. They are read back for the
+ * reflection card and the read-only "Screen time" row, and [toJson] keeps them
+ * out of the draft: a draft only ever holds what the user typed.
  */
 data class DiaryEntry(
     val mood: Int = 0,
@@ -34,6 +35,12 @@ data class DiaryEntry(
     val phoneScreenTime: Int? = null,
     val phoneUnlocks: Int? = null,
     val phoneTopApps: List<PhoneTopApp> = emptyList(),
+    /**
+     * Today's AI reflection, straight from `entries.ai_reflection`. Null until a
+     * reflection was generated; never authored, edited or cleared by the form —
+     * a save only carries it back to the database unchanged.
+     */
+    val aiReflection: String? = null,
 ) {
 
     /** Blank gratitude slots are dropped before sending, exactly like the web. */
@@ -67,6 +74,8 @@ data class DiaryEntry(
         if (!photoPath.isNullOrBlank()) put("photoPath", photoPath)
         put("scaleValues", JSONObject(scaleValues))
         put("weather", JSONArray(weather))
+        // No aiReflection: the draft mirrors the form's inputs only, so restoring
+        // a draft can never resurrect or lose a server-generated reflection.
     }
 
     companion object {

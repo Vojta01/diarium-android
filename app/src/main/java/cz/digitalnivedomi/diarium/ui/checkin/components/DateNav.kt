@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -108,13 +109,19 @@ fun DateNav(
     }
 }
 
-/** Full-width primary action (save) in the brand indigo. */
+/**
+ * Full-width primary action (save) in the brand indigo.
+ *
+ * [leading] exists for the one action that has to show it is running — the AI
+ * reflection button. It is drawn before the label, coloured by the caller.
+ */
 @Composable
 fun PrimaryButton(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     testTag: String? = null,
+    leading: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(16.dp)
@@ -130,11 +137,17 @@ fun PrimaryButton(
             .padding(vertical = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.titleMedium,
-            color = if (enabled) Color.White else TextTertiary,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (leading != null) {
+                leading()
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                text = text,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (enabled) Color.White else TextTertiary,
+            )
+        }
     }
 }
 

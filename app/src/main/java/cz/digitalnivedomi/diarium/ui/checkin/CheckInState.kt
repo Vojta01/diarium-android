@@ -11,6 +11,11 @@ import java.time.LocalDate
  *
  * `saved` flips true after a successful RPC and is what the draft autosave keys
  * off (no draft is written for an already-saved day).
+ *
+ * The `reflection*` trio belongs to the AI section at the bottom of the form:
+ * `reflection` is the server's Czech text (seeded from the stored row, never
+ * edited here), `reflectionLoading` drives the spinner and `reflectionError`
+ * carries the sentence for the last failed generation.
  */
 data class CheckInUiState(
     val date: String,
@@ -19,6 +24,9 @@ data class CheckInUiState(
     val saving: Boolean = false,
     val saved: Boolean = false,
     val errorMessage: String? = null,
+    val reflection: String? = null,
+    val reflectionLoading: Boolean = false,
+    val reflectionError: String? = null,
 ) {
     val hasContent: Boolean get() = entry.hasContent()
 }
@@ -41,11 +49,28 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
 
     /** Switching day clears the form; the screen reloads entry/draft for it. */
     fun setDate(date: String) {
-        state = state.copy(date = date, entry = DiaryEntry.EMPTY, saved = false, errorMessage = null)
+        state = state.copy(
+            date = date,
+            entry = DiaryEntry.EMPTY,
+            saved = false,
+            errorMessage = null,
+            reflection = null,
+            reflectionLoading = false,
+            reflectionError = null,
+        )
     }
 
     fun load(entry: DiaryEntry) {
-        state = state.copy(entry = entry, loading = false, saved = false)
+        state = state.copy(
+            entry = entry,
+            loading = false,
+            saved = false,
+            // The day already has a reflection when the row carried one — showing
+            // it straight away is what the web does on load.
+            reflection = entry.aiReflection,
+            reflectionLoading = false,
+            reflectionError = null,
+        )
     }
 
     fun setLoading(loading: Boolean) {
@@ -117,6 +142,33 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
 
     fun markError(message: String?) {
         state = state.copy(saving = false, errorMessage = message)
+    }
+
+    /** The AI request is in flight; a previous failure is dropped (one state at a time). */
+    fun markReflectionLoading() {
+        state = state.copy(reflectionLoading = true, reflectionError = null)
+    }
+
+    /**
+     * The AI text arrived. `saved` is cleared on purpose: the reflection is not in
+     * the database yet, the screen saves the entry again right after this call,
+     * and until that second save lands the day is genuinely not fully stored.
+     */
+    fun setReflection(text: String) {
+        state = state.copy(
+            reflection = text,
+            reflectionLoading = false,
+            reflectionError = null,
+            saved = false,
+        )
+    }
+
+    /**
+     * Generation or storage failed. Text already on screen survives — it stays
+     * readable, the message only explains why it may not have been stored.
+     */
+    fun markReflectionError(message: String?) {
+        state = state.copy(reflectionLoading = false, reflectionError = message)
     }
 
     private fun update(entry: DiaryEntry) {

@@ -25,6 +25,26 @@ class SessionContext(private val sessionStore: SessionStore? = null) {
         return jwtSub(json.optString("access_token"))
     }
 
+    /**
+     * The signed-in user's display name as Supabase reports it
+     * (`user_metadata.full_name`), or null when the stored session does not carry
+     * it. Nothing is guessed from the email: this feeds the AI prompt, and
+     * greeting someone by the local part of their address is worse than not
+     * greeting them at all.
+     */
+    fun userName(): String? {
+        val raw = sessionStore?.sessionJson() ?: return null
+        val json = try {
+            JSONObject(raw)
+        } catch (_: Exception) {
+            return null
+        }
+        return json.optJSONObject("user")
+            ?.optJSONObject("user_metadata")
+            ?.optString("full_name")
+            ?.takeIf { it.isNotBlank() }
+    }
+
     companion object {
         /** Decodes the (unverified) `sub` claim — the user id, for RLS-scoped rows. */
         fun jwtSub(token: String): String? = try {
