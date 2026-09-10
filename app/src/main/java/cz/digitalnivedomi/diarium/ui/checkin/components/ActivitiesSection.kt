@@ -29,7 +29,10 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
  * activities and hide/restore (the web's "⚙️ Spravovat" mode).
  *
  * The selected values stored in `entries.activities` are the LABELS, not the
- * catalogue keys, because that is what the web app writes.
+ * catalogue keys, because that is what the web app writes. Categories are
+ * canonicalised (see [PickerDefaults.canonicalCategory]) so data aliases such as
+ * `záliby` merge into `volný čas`, and the `počasí` slice is left to
+ * [WeatherSection].
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -104,9 +107,9 @@ fun ActivitiesSection(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     defs.forEach { def ->
-                        val label = labelWithIcon(def.icon, def.label)
                         SelectableChip(
-                            text = label,
+                            text = def.label,
+                            icon = def.icon,
                             selected = def.label in selected,
                             testTag = "activity_${def.key}",
                         ) { onToggle(def.label) }
@@ -136,9 +139,15 @@ fun ActivitiesSection(
     }
 }
 
-/** Groups defs by category in `CATEGORY_ORDER`, unknown categories last. */
+/** Groups defs by canonical category in `CATEGORY_ORDER`, unknown categories last. */
 internal fun groupedByCategory(defs: List<ActivityDef>): List<Pair<String, List<ActivityDef>>> {
-    val byCategory = defs.groupBy { it.category.ifBlank { "obecné" } }
+    val byCategory = defs
+        // Weather has its own [WeatherSection] lower/higher on the screen, so
+        // rendering the catalogue's `počasí` items here produced a second
+        // "Počasí" block. The web app has no separate weather section and lists
+        // them as activities; this divergence is deliberate.
+        .filter { PickerDefaults.canonicalCategory(it.category) != PickerDefaults.WEATHER_CATEGORY }
+        .groupBy { PickerDefaults.canonicalCategory(it.category).ifBlank { "obecné" } }
     val ordered = PickerDefaults.CATEGORY_ORDER.filter { byCategory.containsKey(it) } +
         byCategory.keys.filterNot { it in PickerDefaults.CATEGORY_ORDER }.sorted()
     return ordered.map { it to byCategory.getValue(it) }
@@ -161,7 +170,8 @@ fun WeatherSection(
         ) {
             options.forEach { option ->
                 SelectableChip(
-                    text = labelWithIcon(option.icon, option.label),
+                    text = option.label,
+                    icon = option.icon,
                     selected = option.key in selected || option.label in selected,
                     testTag = "weather_${option.key}",
                     accent = Indigo,

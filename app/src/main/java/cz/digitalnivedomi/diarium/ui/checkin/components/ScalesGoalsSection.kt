@@ -32,6 +32,10 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
  * Škály — the user's custom scales from the `scales` table, one numeric row
  * each. Value 0 means "not filled", which the repository skips both in the RPC
  * payload and in the mirrored `scale_entries` rows.
+ *
+ * A tap on the already-selected value clears that scale (there is no separate
+ * "Vymazat" button). The header states which end is best when every scale
+ * shares one range; otherwise each row carries its own hint.
  */
 @Composable
 fun ScalesSection(
@@ -49,6 +53,14 @@ fun ScalesSection(
             )
             return@CheckInSection
         }
+        val shared = sharedScaleRange(scales)
+        if (shared != null) {
+            SectionHint(scaleRangeHint(shared.first, shared.second))
+            Spacer(Modifier.height(4.dp))
+        }
+        SectionHint("Klepnutím na zvolenou hodnotu ji vymažeš.")
+        Spacer(Modifier.height(10.dp))
+
         scales.forEach { scale ->
             val current = values[scale.id]
             Column(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
@@ -70,17 +82,31 @@ fun ScalesSection(
                     values = scale.minValue..scale.maxValue,
                     selected = current,
                     tagPrefix = "scale_${scale.id}",
-                    onSelect = { onChange(scale.id, it) },
+                    // Re-tapping the chosen value clears the scale (0 = not
+                    // filled, the empty state the API expects).
+                    onSelect = { value -> onChange(scale.id, if (value == current) 0 else value) },
                 )
-                if (current != null) {
+                if (shared == null) {
                     Spacer(Modifier.height(6.dp))
-                    SecondaryButton(text = "Vymazat", testTag = "scale_clear_${scale.id}") {
-                        onChange(scale.id, 0)
-                    }
+                    SectionHint(scaleRangeHint(scale.minValue, scale.maxValue))
                 }
             }
         }
     }
+}
+
+/** "1 = nejhorší · 5 = nejlepší" — states which end of a scale is the good one. */
+internal fun scaleRangeHint(min: Int, max: Int): String =
+    "$min = nejhorší · $max = nejlepší"
+
+/**
+ * The range every scale shares, or null when they differ (each row then shows
+ * its own hint). The user's scales normally all run 1..5.
+ */
+internal fun sharedScaleRange(scales: List<Scale>): Pair<Int, Int>? {
+    val first = scales.firstOrNull() ?: return null
+    val sameRange = scales.all { it.minValue == first.minValue && it.maxValue == first.maxValue }
+    return if (sameRange) first.minValue to first.maxValue else null
 }
 
 /**

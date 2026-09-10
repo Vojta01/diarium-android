@@ -80,6 +80,9 @@ import java.time.LocalDate
  *
  * The month is refreshed when the tab is shown again (not on every recomposition),
  * so a check-in saved on the "Dnes" tab is in the grid when the user comes back.
+ *
+ * One extra read feeds the day detail: the user's scales, so a row keyed by scale
+ * uuid can be titled with the scale's name (see [HistoryDeps.pickers]).
  */
 @Composable
 fun HistoryScreen(
@@ -89,6 +92,7 @@ fun HistoryScreen(
     val holder = remember { HistoryStateHolder() }
     val state = holder.state
     val repository = deps.history
+    val pickers = deps.pickers
     // "Today" is fixed for the whole screen: it decides which days are future days,
     // so it must not drift mid-session between the grid and the detail.
     val today = remember { HistoryCalendar.today() }
@@ -97,11 +101,25 @@ fun HistoryScreen(
     var month by remember { mutableStateOf(today.monthValue) }
     var selected by remember { mutableStateOf<String?>(null) }
     var reloadTrigger by remember { mutableStateOf(0) }
+    // Scale id -> label / max, so the day detail names a scale instead of showing
+    // the uuid an entry's `scale_values` is keyed by.
+    var scaleNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var scaleMax by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
 
     var firstResume by remember { mutableStateOf(true) }
     LifecycleResumeEffect(Unit) {
         if (firstResume) firstResume = false else reloadTrigger++
         onPauseOrDispose { }
+    }
+
+    // The scales are independent of the selected month, so they are read once per
+    // set of deps rather than on every day/month change.
+    LaunchedEffect(pickers) {
+        if (pickers != null) {
+            val scales = pickers.scales()
+            scaleNames = scaleNameMap(scales)
+            scaleMax = scaleMaxMap(scales)
+        }
     }
 
     LaunchedEffect(repository, year, month, reloadTrigger) {
@@ -175,6 +193,8 @@ fun HistoryScreen(
                 monthData != null && day != null -> DayDetail(
                     date = day,
                     entry = monthData.entryOn(day),
+                    scaleNames = scaleNames,
+                    scaleMax = scaleMax,
                     onOpenCheckIn = onOpenCheckIn,
                 )
                 monthData != null -> HintCard(monthData)

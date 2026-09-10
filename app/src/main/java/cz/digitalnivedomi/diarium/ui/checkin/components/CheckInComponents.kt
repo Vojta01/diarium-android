@@ -228,6 +228,7 @@ fun SelectableChip(
     selected: Boolean,
     modifier: Modifier = Modifier,
     accent: Color = Indigo,
+    icon: String? = null,
     testTag: String? = null,
     onClick: () -> Unit,
 ) {
@@ -245,13 +246,31 @@ fun SelectableChip(
             .clickable { onClick() }
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (selected) TextPrimary else TextPrimary.copy(alpha = 0.8f),
-            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-        )
+        if (icon == null || icon.isBlank()) {
+            // Callers whose emoji is already part of `text` (hide/restore,
+            // screen-time ranges, stats) keep the single-string rendering.
+            ChipLabel(text = text, selected = selected)
+        } else {
+            // Activities and weather own their emoji separately so it can be
+            // drawn larger than the label instead of at text size.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = icon, fontSize = 17.sp)
+                Spacer(Modifier.width(6.dp))
+                ChipLabel(text = text, selected = selected)
+            }
+        }
     }
+}
+
+/** Chip label styling shared by the plain and icon-prefixed variants. */
+@Composable
+private fun ChipLabel(text: String, selected: Boolean) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (selected) TextPrimary else TextPrimary.copy(alpha = 0.8f),
+        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+    )
 }
 
 /** Small circular action button (◀ ▶ ⚙️ etc.) that keeps the glass look. */

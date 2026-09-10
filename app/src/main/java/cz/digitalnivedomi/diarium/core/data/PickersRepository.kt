@@ -54,23 +54,47 @@ class PickersRepository(
         else hidden.sortedWith(activityOrder)
     }
 
-    /** Habits the user can toggle; `habit_catalog` merged with the `habits` table. */
+    /**
+     * Habits the user can toggle: the `habit_catalog` defaults plus the user's own
+     * active `user_habits` rows, in that order — the same shape the web's
+     * `getHabits()` (in `src/lib/supabase/db.ts`) builds.
+     *
+     * The defaults are the catalogue rows flagged `is_default`, ordered by
+     * `sort_order`; the user's rows are read without an `is_active` filter (the web
+     * reads them all too) and only the active *customs* — keys that are not
+     * catalogue defaults — are appended. A user row whose key collides with a
+     * default is therefore ignored rather than allowed to shadow it; the web also
+     * deletes those rows server-side, but a picker read here never writes to the
+     * database, so it just leaves them out of the visible list.
+     *
+     * The app is the owner's personal build with a single user, so — unlike the
+     * multi-tenant web — it always behaves as personal mode and never filters the
+     * sensitive habits (`porno`, `masturbace`) out of the list.
+     *
+     * There is no hide/restore UI for habits in the check-in (only activities have
+     * one), so the web's separate hidden-habit read (`user_habits` where
+     * `is_active=false`) has no consumer here and is intentionally not made.
+     */
     suspend fun habits(): List<HabitDef> = withContext(Dispatchers.IO) {
-        val catalog = read("habit_catalog", emptyMap()).map { row ->
-            HabitDef(
-                key = row.plainString("key"),
-                label = row.plainString("label"),
-                icon = row.plainString("icon"),
-                category = row.plainString("category").ifBlank { "obecné" },
-                color = row.plainString("color").ifBlank { DEFAULT_COLOR },
-                isNegative = row.optBoolean("is_negative", false),
-                source = "catalog",
-            )
-        }.filter { it.key.isNotBlank() && it.label.isNotBlank() }
+        val defaults = read("habit_catalog", mapOf("is_default" to "eq.true"))
+            .filter { it.optBoolean("is_default", false) }
+            .sortedBy { it.optInt("sort_order", 0) }
+            .map { row ->
+                HabitDef(
+                    key = row.plainString("key"),
+                    label = row.plainString("label"),
+                    icon = row.plainString("icon"),
+                    category = row.plainString("category").ifBlank { "obecné" },
+                    color = row.plainString("color").ifBlank { DEFAULT_COLOR },
+                    isNegative = row.optBoolean("is_negative", false),
+                    source = "default",
+                )
+            }
+            .filter { it.key.isNotBlank() && it.label.isNotBlank() }
 
         val userId = session.userId()
         val userHabits = if (userId == null) emptyList() else read(
-            "habits",
+            "user_habits",
             mapOf("user_id" to "eq.$userId"),
         ).mapNotNull { row ->
             val key = row.plainString("key").ifBlank { row.plainString("label") }
@@ -87,11 +111,13 @@ class PickersRepository(
             )
         }
 
-        val byKey = LinkedHashMap<String, HabitDef>()
-        catalog.forEach { byKey[it.key] = it }
-        userHabits.forEach { row -> byKey[row.key] = row }
+        // Web parity: defaults always show; a user row only shows when it is active
+        // and is not one of the defaults, so a stale/duplicate row can never
+        // replace a catalogue default.
+        val defaultKeys = defaults.map { it.key }.toSet()
+        val customs = userHabits.filter { it.isActive && it.key !in defaultKeys }
 
-        val visible = byKey.values.filter { it.isActive }
+        val visible = defaults + customs
         if (visible.isEmpty()) PickerDefaults.HABIT_FALLBACK else visible
     }
 

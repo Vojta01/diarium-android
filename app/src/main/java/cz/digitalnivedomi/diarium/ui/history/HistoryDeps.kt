@@ -4,6 +4,7 @@ import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.HistoryRepository
+import cz.digitalnivedomi.diarium.core.data.PickersRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 
@@ -16,11 +17,19 @@ import cz.digitalnivedomi.diarium.core.data.SupabaseClient
  * calendar it cannot verify — the same "no silent empty screen" rule the dashboard
  * follows.
  *
+ * [pickers] is only needed to name the scales in the day detail: `scale_values` is
+ * keyed by scale uuid, so the screen reads the user's `scales` rows once to map an
+ * id back to "⚡ Energie". Null (offline / no session) leaves that map empty and the
+ * detail falls back to the id and `/ 5`, exactly as it did before.
+ *
  * The client carries only the anon key from [SupabaseClient]'s BuildConfig plus the
  * signed-in user's own JWT; the history reads the user's rows under that JWT and
  * never needs (or receives) a server-side key.
  */
-class HistoryDeps(val history: HistoryRepository? = null) {
+class HistoryDeps(
+    val history: HistoryRepository? = null,
+    val pickers: PickersRepository? = null,
+) {
 
     val online: Boolean get() = history != null
 
@@ -33,10 +42,10 @@ class HistoryDeps(val history: HistoryRepository? = null) {
         fun forContext(context: Context): HistoryDeps {
             val sessionStore = SessionStore(context)
             val client = SupabaseClient(sessionStore)
+            val session = SessionContext(sessionStore)
             return HistoryDeps(
-                history = HistoryRepository(
-                    EntriesRepository(client, SessionContext(sessionStore)),
-                ),
+                history = HistoryRepository(EntriesRepository(client, session)),
+                pickers = PickersRepository(client, session),
             )
         }
     }

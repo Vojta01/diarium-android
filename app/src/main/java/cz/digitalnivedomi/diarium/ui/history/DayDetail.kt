@@ -54,6 +54,12 @@ import java.util.Locale
  * loaded, so opening a day costs no request. The AI reflection is simply part of
  * that row, so it appears when it exists and is absent otherwise.
  *
+ * The scales section is the one piece that needs a second source: an entry's
+ * `scale_values` is keyed by scale uuid, so [scaleNames]/[scaleMax] carry the
+ * user's scales (read once by the history screen) to render "⚡ Energie — 3 / 5"
+ * instead of a raw uuid. When they are absent the key and a `/ 5` fallback are
+ * shown, so the section never disappears.
+ *
  * The edit action is an up-callback ([onOpenCheckIn], given the ISO date) so this
  * has no idea what navigation is — the same contract the dashboard uses.
  */
@@ -63,6 +69,11 @@ fun DayDetail(
     entry: DiaryEntry?,
     modifier: Modifier = Modifier,
     scaleNames: Map<String, String> = emptyMap(),
+    /**
+     * Scale id -> the scale's maximum, so a row reads "3 / 5" from the real scale
+     * instead of a hardcoded 5. Empty falls back to `/ 5`.
+     */
+    scaleMax: Map<String, Int> = emptyMap(),
     onOpenCheckIn: (String) -> Unit,
 ) {
     val accent = if (entry != null) moodColor(entry.mood) else Indigo
@@ -158,7 +169,10 @@ fun DayDetail(
             SectionHeader("📊 Škály")
             VSpace(6)
             scales.forEach { (key, value) ->
-                ReadOnlyRow(label = scaleNames[key] ?: key, value = "$value / 5")
+                ReadOnlyRow(
+                    label = scaleNames[key] ?: key,
+                    value = scaleValueText(value, key, scaleMax),
+                )
                 VSpace(4)
             }
         }
