@@ -7,8 +7,8 @@ import cz.digitalnivedomi.diarium.MainActivity
 
 /**
  * Receives the OAuth deep link `diarium://auth-callback#...` and hands the
- * fragment to the main activity so the session gets saved and mirrored into
- * the WebView.
+ * fragment to the main activity so the session gets saved and the app leaves
+ * the login screen.
  */
 class AuthCallbackActivity : AppCompatActivity() {
 

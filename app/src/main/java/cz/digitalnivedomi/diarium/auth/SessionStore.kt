@@ -11,9 +11,8 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Stores the Supabase session locally (SharedPreferences) so the native side
- * can (1) inject it into the WebView's localStorage and (2) authenticate
- * /api/save-entry pushes from background WorkManager sync jobs that have no
- * WebView access.
+ * can (1) authenticate REST calls through [validAccessToken] and (2) authenticate
+ * the /api/save-entry pushes from background WorkManager sync jobs.
  */
 class SessionStore(context: Context) {
 
