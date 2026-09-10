@@ -11,13 +11,28 @@ import org.json.JSONObject
  * the same thing instead of throwing.
  */
 
-/** String array → non-blank strings, skipping null/empty slots. */
+/**
+ * JSON null arrives from `optString` as the literal string "null" (the Android
+ * `org.json` behaviour), so a SQL NULL column — which PostgREST returns as JSON
+ * null — would otherwise reach the UI and render as the word "null". This maps
+ * that case — and a missing key, and a genuinely blank value — back to absent.
+ */
+internal fun JSONObject?.stringOrNull(key: String): String? {
+    if (this == null || isNull(key)) return null
+    return optString(key).takeIf { it.isNotBlank() && it != "null" }
+}
+
+/** [stringOrNull], but "absent" is the empty string — drop-in for `optString`. */
+internal fun JSONObject?.plainString(key: String): String = stringOrNull(key).orEmpty()
+
+/** String array → non-blank strings, skipping JSON-null/empty/"null" slots. */
 internal fun JSONArray?.stringList(): List<String> {
     if (this == null) return emptyList()
     val out = ArrayList<String>(length())
     for (i in 0 until length()) {
+        if (isNull(i)) continue
         val value = optString(i)
-        if (value.isNotBlank()) out.add(value)
+        if (value.isNotBlank() && value != "null") out.add(value)
     }
     return out
 }
@@ -33,7 +48,9 @@ internal fun JSONArray?.stringList(): List<String> {
  */
 internal fun JSONArray?.slotList(slots: Int): List<String> {
     if (this == null) return List(slots) { "" }
-    return (0 until slots).map { i -> optString(i, "").takeIf { it.isNotBlank() } ?: "" }
+    return (0 until slots).map { i ->
+        if (isNull(i)) "" else optString(i, "").takeIf { it.isNotBlank() && it != "null" } ?: ""
+    }
 }
 
 /** JSON object of booleans (the `habits` map). */
@@ -58,7 +75,7 @@ internal fun JSONArray?.topApps(): List<PhoneTopApp> {
     val out = ArrayList<PhoneTopApp>(length())
     for (i in 0 until length()) {
         val row = optJSONObject(i) ?: continue
-        val app = row.optString("app").takeIf { it.isNotBlank() } ?: continue
+        val app = row.plainString("app").takeIf { it.isNotBlank() } ?: continue
         out.add(PhoneTopApp(app, row.optInt("minutes", 0)))
     }
     return out

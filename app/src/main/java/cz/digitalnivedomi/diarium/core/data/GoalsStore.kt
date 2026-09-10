@@ -59,10 +59,10 @@ class GoalsStore(private val dataStore: DataStore<Preferences>) {
             val array = JSONArray(raw)
             (0 until array.length()).mapNotNull { i ->
                 val row = array.optJSONObject(i) ?: return@mapNotNull null
-                val name = row.optString("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val name = row.plainString("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 DailyGoal(
-                    id = row.optString("id").ifBlank { name },
-                    emoji = row.optString("emoji"),
+                    id = row.plainString("id").ifBlank { name },
+                    emoji = row.plainString("emoji"),
                     name = name,
                     completedDates = row.optJSONArray("completedDates").stringList(),
                 )

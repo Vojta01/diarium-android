@@ -26,11 +26,11 @@ class PickersRepository(
     suspend fun activities(): List<ActivityDef> = withContext(Dispatchers.IO) {
         val catalog = read("activity_catalog", emptyMap()).map { row ->
             ActivityDef(
-                key = row.optString("key"),
-                label = row.optString("label"),
-                icon = row.optString("icon"),
-                category = row.optString("category").ifBlank { "obecné" },
-                color = row.optString("color").ifBlank { DEFAULT_COLOR },
+                key = row.plainString("key"),
+                label = row.plainString("label"),
+                icon = row.plainString("icon"),
+                category = row.plainString("category").ifBlank { "obecné" },
+                color = row.plainString("color").ifBlank { DEFAULT_COLOR },
                 source = "catalog",
             )
         }.filter { it.key.isNotBlank() && it.label.isNotBlank() }
@@ -58,11 +58,11 @@ class PickersRepository(
     suspend fun habits(): List<HabitDef> = withContext(Dispatchers.IO) {
         val catalog = read("habit_catalog", emptyMap()).map { row ->
             HabitDef(
-                key = row.optString("key"),
-                label = row.optString("label"),
-                icon = row.optString("icon"),
-                category = row.optString("category").ifBlank { "obecné" },
-                color = row.optString("color").ifBlank { DEFAULT_COLOR },
+                key = row.plainString("key"),
+                label = row.plainString("label"),
+                icon = row.plainString("icon"),
+                category = row.plainString("category").ifBlank { "obecné" },
+                color = row.plainString("color").ifBlank { DEFAULT_COLOR },
                 isNegative = row.optBoolean("is_negative", false),
                 source = "catalog",
             )
@@ -73,14 +73,14 @@ class PickersRepository(
             "habits",
             mapOf("user_id" to "eq.$userId"),
         ).mapNotNull { row ->
-            val key = row.optString("key").ifBlank { row.optString("label") }
+            val key = row.plainString("key").ifBlank { row.plainString("label") }
             if (key.isBlank()) return@mapNotNull null
             HabitDef(
                 key = key,
-                label = row.optString("label").ifBlank { key },
-                icon = row.optString("icon"),
-                category = row.optString("category").ifBlank { "obecné" },
-                color = row.optString("color").ifBlank { DEFAULT_COLOR },
+                label = row.plainString("label").ifBlank { key },
+                icon = row.plainString("icon"),
+                category = row.plainString("category").ifBlank { "obecné" },
+                color = row.plainString("color").ifBlank { DEFAULT_COLOR },
                 isNegative = row.optBoolean("is_negative", false),
                 source = if (row.optBoolean("is_default", false)) "default" else "user",
                 isActive = row.optBoolean("is_active", true),
@@ -100,14 +100,14 @@ class PickersRepository(
         val userId = session.userId() ?: return@withContext emptyList()
         read("scales", mapOf("user_id" to "eq.$userId"))
             .mapNotNull { row ->
-                val id = row.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val id = row.plainString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 Scale(
                     id = id,
-                    name = row.optString("name").ifBlank { "Škála" },
-                    emoji = row.optString("emoji").ifBlank { "📊" },
+                    name = row.plainString("name").ifBlank { "Škála" },
+                    emoji = row.plainString("emoji").ifBlank { "📊" },
                     minValue = row.optInt("min_value", 1),
                     maxValue = row.optInt("max_value", 5).coerceAtLeast(row.optInt("min_value", 1) + 1),
-                    color = row.optString("color").ifBlank { DEFAULT_COLOR },
+                    color = row.plainString("color").ifBlank { DEFAULT_COLOR },
                     sortOrder = row.optInt("sort_order", 0),
                 )
             }
@@ -120,10 +120,10 @@ class PickersRepository(
         val userId = session.userId() ?: return@withContext PickerDefaults.DEFAULT_TEMPLATES
         val rows = read("templates", mapOf("user_id" to "eq.$userId"))
             .mapNotNull { row ->
-                val content = row.optString("content").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val content = row.plainString("content").takeIf { it.isNotBlank() } ?: return@mapNotNull null
                 NoteTemplate(
-                    id = row.optString("id").ifBlank { content },
-                    name = row.optString("name").ifBlank { "Šablona" },
+                    id = row.plainString("id").ifBlank { content },
+                    name = row.plainString("name").ifBlank { "Šablona" },
                     content = content,
                     sortOrder = row.optInt("sort_order", 0),
                 )
@@ -189,14 +189,14 @@ class PickersRepository(
     private fun readUserActivities(): List<ActivityDef> {
         val userId = session.userId() ?: return emptyList()
         return read("user_activities", mapOf("user_id" to "eq.$userId")).mapNotNull { row ->
-            val key = row.optString("key").ifBlank { row.optString("label") }
+            val key = row.plainString("key").ifBlank { row.plainString("label") }
             if (key.isBlank()) return@mapNotNull null
             ActivityDef(
                 key = key,
-                label = row.optString("label").ifBlank { key },
-                icon = row.optString("icon"),
-                category = row.optString("category").ifBlank { "vlastní" },
-                color = row.optString("color").ifBlank { DEFAULT_COLOR },
+                label = row.plainString("label").ifBlank { key },
+                icon = row.plainString("icon"),
+                category = row.plainString("category").ifBlank { "vlastní" },
+                color = row.plainString("color").ifBlank { DEFAULT_COLOR },
                 source = if (row.optBoolean("is_default", false)) "default" else "user",
                 isActive = row.optBoolean("is_active", true),
             )

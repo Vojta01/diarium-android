@@ -145,7 +145,14 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(bottom = padding.calculateBottomPadding()),
+                // Both insets are applied here so every tab starts below the status
+                // bar (the Dashboard title used to collide with it) while the bottom
+                // bar keeps its reserved space. Side insets are left untouched and no
+                // screen adds its own top padding, so this is a single correct inset.
+                .padding(
+                    top = padding.calculateTopPadding(),
+                    bottom = padding.calculateBottomPadding(),
+                ),
         ) {
             NavHost(
                 navController = navController,
