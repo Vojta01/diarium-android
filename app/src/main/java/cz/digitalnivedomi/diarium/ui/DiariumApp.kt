@@ -1,11 +1,15 @@
 package cz.digitalnivedomi.diarium.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -27,7 +31,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -43,6 +51,7 @@ import cz.digitalnivedomi.diarium.ui.checkin.CheckInRoute
 import cz.digitalnivedomi.diarium.ui.components.DiariumBackground
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
+import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.history.HistoryRoute
 import cz.digitalnivedomi.diarium.ui.home.DashboardRoute
@@ -50,8 +59,11 @@ import cz.digitalnivedomi.diarium.ui.nav.Routes
 import cz.digitalnivedomi.diarium.ui.nav.TopLevelDestination
 import cz.digitalnivedomi.diarium.ui.stats.StatsRoute
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
+import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
+import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.Surface1
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
+import cz.digitalnivedomi.diarium.ui.theme.Violet
 
 /**
  * App shell and session gate.
@@ -201,13 +213,13 @@ private fun SettingsScreen(onSignOut: () -> Unit) {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(horizontal = Spacing.gutter)
+            .padding(top = Spacing.screenTop, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
-        Text(
-            text = "Nastavení",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
+        ScreenHeader(
+            title = "Nastavení",
+            subtitle = "Účet, cíle a připomínky na jednom místě.",
         )
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             GlassChip(text = "Připravujeme")
@@ -237,36 +249,91 @@ private fun SettingsScreen(onSignOut: () -> Unit) {
     }
 }
 
+/**
+ * Bottom navigation.
+ *
+ * A Material 3 [NavigationBar] with the selection animated by hand: one float per
+ * tab drives the icon pop and the indigo indicator pill, labels stay visible in
+ * both states (dimmed regular → indigo semibold), and a fading indigo hairline
+ * separates the bar from the content instead of a hard grey rule.
+ *
+ * Insets stay on the bar itself — [NavigationBar] pads its own row for the
+ * gesture/navigation area, and the colour is painted by the column behind it, so
+ * the strip is filled edge to edge without the content ever sliding under it.
+ */
 @Composable
 private fun BottomBar(
     currentRoute: String?,
     onSelect: (TopLevelDestination) -> Unit,
 ) {
-    NavigationBar(
-        containerColor = Surface1.copy(alpha = 0.92f),
-        tonalElevation = 0.dp,
-        modifier = Modifier.background(Surface1.copy(alpha = 0.92f)),
+    val haptics = LocalHapticFeedback.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Surface1.copy(alpha = 0.94f)),
     ) {
-        TopLevelDestination.entries.forEach { destination ->
-            val selected = currentRoute == destination.route
-            NavigationBarItem(
-                selected = selected,
-                onClick = { onSelect(destination) },
-                icon = {
-                    Icon(
-                        imageVector = if (selected) destination.selectedIcon else destination.unselectedIcon,
-                        contentDescription = destination.label,
-                    )
-                },
-                label = { Text(destination.label) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = Color.White,
-                    selectedTextColor = Indigo,
-                    indicatorColor = Indigo.copy(alpha = 0.22f),
-                    unselectedIconColor = TextSecondary,
-                    unselectedTextColor = TextSecondary,
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(
+                            Color.Transparent,
+                            Indigo.copy(alpha = 0.45f),
+                            Violet.copy(alpha = 0.35f),
+                            Color.Transparent,
+                        ),
+                    ),
                 ),
-            )
+        )
+        NavigationBar(
+            containerColor = Color.Transparent,
+            tonalElevation = 0.dp,
+        ) {
+            TopLevelDestination.entries.forEach { destination ->
+                val selected = currentRoute == destination.route
+                val selection by animateFloatAsState(
+                    targetValue = if (selected) 1f else 0f,
+                    animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+                    label = "bottomBarSelection",
+                )
+                NavigationBarItem(
+                    selected = selected,
+                    onClick = {
+                        // Light tick on tab change; the platform tick needs no
+                        // VIBRATE permission.
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onSelect(destination)
+                    },
+                    icon = {
+                        Icon(
+                            imageVector = if (selected) destination.selectedIcon else destination.unselectedIcon,
+                            contentDescription = destination.label,
+                            modifier = Modifier.graphicsLayer {
+                                val scale = 1f + 0.1f * selection
+                                scaleX = scale
+                                scaleY = scale
+                            },
+                        )
+                    },
+                    label = {
+                        Text(
+                            text = destination.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                        )
+                    },
+                    alwaysShowLabel = true,
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color.White,
+                        selectedTextColor = IndigoLight,
+                        indicatorColor = Indigo.copy(alpha = 0.26f),
+                        unselectedIconColor = TextSecondary,
+                        unselectedTextColor = TextSecondary,
+                    ),
+                )
+            }
         }
     }
 }

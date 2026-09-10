@@ -20,6 +20,20 @@ val DiariumShapes = Shapes(
 
 private val Default = FontFamily.Default
 
+/**
+ * The text scale the screens share. One style per role, so a screen title is
+ * always the same title:
+ *
+ * - screen title    → `headlineMedium` (used by `ScreenHeader`)
+ * - card title      → `titleLarge` / `titleMedium`
+ * - section header  → `labelSmall` uppercase (used by `SectionHeader`)
+ * - body            → `bodyLarge` / `bodyMedium`
+ * - caption         → `bodySmall` / `labelSmall`
+ *
+ * The complete ladder is written out (including `titleSmall`, `bodySmall` and
+ * `labelMedium`) instead of falling back to the Material defaults, so the rhythm
+ * cannot drift.
+ */
 val DiariumTypography = Typography(
     displaySmall = TextStyle(
         fontFamily = Default,
@@ -53,6 +67,12 @@ val DiariumTypography = Typography(
         fontSize = 15.sp,
         lineHeight = 21.sp,
     ),
+    titleSmall = TextStyle(
+        fontFamily = Default,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+    ),
     bodyLarge = TextStyle(
         fontFamily = Default,
         fontWeight = FontWeight.Normal,
@@ -65,12 +85,26 @@ val DiariumTypography = Typography(
         fontSize = 13.5.sp,
         lineHeight = 20.sp,
     ),
+    bodySmall = TextStyle(
+        fontFamily = Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.5.sp,
+        lineHeight = 17.sp,
+        letterSpacing = 0.1.sp,
+    ),
     labelLarge = TextStyle(
         fontFamily = Default,
         fontWeight = FontWeight.Medium,
         fontSize = 13.sp,
         lineHeight = 18.sp,
         letterSpacing = 0.2.sp,
+    ),
+    labelMedium = TextStyle(
+        fontFamily = Default,
+        fontWeight = FontWeight.Medium,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.3.sp,
     ),
     labelSmall = TextStyle(
         fontFamily = Default,

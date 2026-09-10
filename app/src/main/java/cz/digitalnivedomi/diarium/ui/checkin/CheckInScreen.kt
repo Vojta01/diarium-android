@@ -39,6 +39,7 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.MoodSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.NoteSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.PhotoSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.PrimaryButton
+import cz.digitalnivedomi.diarium.ui.checkin.components.ReflectionDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.ReflectionSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.ScalesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.ScreenTimeSection
@@ -182,7 +183,9 @@ fun CheckInScreen(
                     holder.markReflectionError("Nejdřív je potřeba uložit dnešní zápis.")
                     return@launch
                 }
-                holder.markSaved()
+                // Not markSaved(): the manual flow must not pop the window open by
+                // itself, only the save button does.
+                holder.markReflectionStored()
             }
 
             holder.markReflectionLoading()
@@ -191,7 +194,7 @@ fun CheckInScreen(
                 .onSuccess { text ->
                     holder.setReflection(text)
                     persistEntry()
-                        .onSuccess { holder.markSaved() }
+                        .onSuccess { holder.markReflectionStored() }
                         .onFailure {
                             holder.markReflectionError("Reflexi se nepodařilo uložit k zápisu.")
                         }
@@ -243,6 +246,17 @@ fun CheckInScreen(
             )
         }
         persistGoals()
+    }
+
+    // The save just flipped the day into its read-only state, so its reflection
+    // window opens itself. Keyed on the state flag (never on a plain recomposition)
+    // so a rotation or a later return to the tab cannot bring it back. A day whose
+    // row already carried an `aiReflection` is shown from state with no request; a
+    // blank one is fetched while the dialog shows its spinner.
+    LaunchedEffect(state.showReflectionDialog) {
+        if (holder.state.showReflectionDialog && holder.state.reflectionNeedsRequest) {
+            generateReflection()
+        }
     }
 
     Column(
@@ -393,6 +407,21 @@ fun CheckInScreen(
         }
 
         Spacer(Modifier.height(48.dp))
+    }
+
+    if (state.showReflectionDialog) {
+        ReflectionDialog(
+            entry = state.entry,
+            activities = activities,
+            habits = habits,
+            scales = scales,
+            reflection = state.reflection,
+            loading = state.reflectionLoading,
+            error = state.reflectionError,
+            canRegenerate = state.saved && !state.reflectionLoading,
+            onRetry = { generateReflection() },
+            onDismiss = { holder.dismissReflectionDialog() },
+        )
     }
 }
 

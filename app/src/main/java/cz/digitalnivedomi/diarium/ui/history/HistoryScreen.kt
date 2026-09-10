@@ -14,12 +14,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,13 +42,18 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.ErrorBanner
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassIconButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.PrimaryButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
+import cz.digitalnivedomi.diarium.ui.components.BrandSpinner
+import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
+import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
+import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
-import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Outline
+import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
@@ -142,67 +145,63 @@ fun HistoryScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = Spacing.gutter),
     ) {
-        VSpace(12)
-        Text(
-            text = "Historie",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary,
+        VSpace(Spacing.screenTop)
+        ScreenHeader(
+            title = "Historie",
+            subtitle = "Kalendář a zápisy po dnech",
         )
-        VSpace(2)
-        Text(
-            text = "Kalendář a zápisy po dnech",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary,
-        )
-        VSpace(16)
+        VSpace(Spacing.section)
 
-        CalendarCard(
-            year = year,
-            month = month,
-            today = today,
-            data = monthData,
-            loading = state.loading,
-            selected = selected,
-            onPrevious = {
-                val (previousYear, previousMonth) = HistoryCalendar.previousMonth(year, month)
-                year = previousYear
-                month = previousMonth
-                selected = null
-            },
-            onNext = {
-                val (nextYear, nextMonth) = HistoryCalendar.nextMonth(year, month)
-                year = nextYear
-                month = nextMonth
-                selected = null
-            },
-            onSelect = { iso -> selected = iso },
-        )
+        StaggeredItem(0) {
+            CalendarCard(
+                year = year,
+                month = month,
+                today = today,
+                data = monthData,
+                loading = state.loading,
+                selected = selected,
+                onPrevious = {
+                    val (previousYear, previousMonth) = HistoryCalendar.previousMonth(year, month)
+                    year = previousYear
+                    month = previousMonth
+                    selected = null
+                },
+                onNext = {
+                    val (nextYear, nextMonth) = HistoryCalendar.nextMonth(year, month)
+                    year = nextYear
+                    month = nextMonth
+                    selected = null
+                },
+                onSelect = { iso -> selected = iso },
+            )
+        }
 
-        VSpace(14)
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            val error = state.errorMessage
-            val day = selected
-            when {
-                error != null -> ErrorCard(error) { reloadTrigger++ }
-                monthData != null && day != null -> DayDetail(
-                    date = day,
-                    entry = monthData.entryOn(day),
-                    scaleNames = scaleNames,
-                    scaleMax = scaleMax,
-                    onOpenCheckIn = onOpenCheckIn,
-                )
-                monthData != null -> HintCard(monthData)
-                else -> LoadingCard(year = year, month = month)
+        VSpace(Spacing.section)
+        StaggeredItem(1) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(Spacing.section),
+            ) {
+                val error = state.errorMessage
+                val day = selected
+                when {
+                    error != null -> ErrorCard(error) { reloadTrigger++ }
+                    monthData != null && day != null -> DayDetail(
+                        date = day,
+                        entry = monthData.entryOn(day),
+                        scaleNames = scaleNames,
+                        scaleMax = scaleMax,
+                        onOpenCheckIn = onOpenCheckIn,
+                    )
+                    monthData != null -> HintCard(monthData)
+                    else -> LoadingCard(year = year, month = month)
+                }
             }
         }
 
-        VSpace(36)
+        VSpace(Spacing.screenBottom)
     }
 }
 
@@ -265,11 +264,7 @@ private fun CalendarCard(
                 modifier = Modifier.fillMaxWidth().height(184.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    strokeWidth = 2.dp,
-                    color = IndigoLight,
-                )
+                BrandSpinner(size = 22)
             }
         } else {
             grid.chunked(HistoryCalendar.DAYS_PER_WEEK).forEach { week ->
@@ -320,6 +315,7 @@ private fun RowScope.DayCell(
 ) {
     val shape = RoundedCornerShape(10.dp)
     val accent = if (entry != null) moodColor(entry.mood) else Indigo
+    val haptics = rememberLightHaptics()
     val borderColor = when {
         isSelected -> accent
         isToday -> Indigo
@@ -340,7 +336,16 @@ private fun RowScope.DayCell(
                 color = borderColor,
                 shape = shape,
             )
-            .then(if (selectable) Modifier.clickable { onClick() } else Modifier),
+            .then(
+                if (selectable) {
+                    Modifier.clickable {
+                        haptics()
+                        onClick()
+                    }
+                } else {
+                    Modifier
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -371,11 +376,7 @@ private fun RowScope.DayCell(
 private fun LoadingCard(year: Int, month: Int) {
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
-                strokeWidth = 2.dp,
-                color = IndigoLight,
-            )
+            BrandSpinner()
             Spacer(Modifier.width(12.dp))
             Column {
                 Text(
@@ -416,16 +417,21 @@ private fun HintCard(data: HistoryData) {
             style = MaterialTheme.typography.titleMedium,
             color = TextPrimary,
         )
-        VSpace(4)
+        VSpace(Spacing.block)
         if (data.entries.isEmpty()) {
-            SectionHint("V tomto měsíci zatím nemáš žádné zápisy.")
+            EmptyState(
+                emoji = "📝",
+                title = "Zatím žádné zápisy",
+                message = "V měsíci ${HistoryCalendar.title(data.year, data.month)} " +
+                    "nemáš žádný záznam. Klikni na den v kalendáři a zapiš, jaký byl.",
+            )
         } else {
             SectionHint(
                 if (data.entries.size == 1) "V tomto měsíci máš 1 zápis."
                 else "V tomto měsíci máš ${data.entries.size} zápisů.",
             )
+            VSpace(4)
+            SectionHint("Klikni na den v kalendáři a uvidíš, co jsi ten den zapsal.")
         }
-        VSpace(4)
-        SectionHint("Klikni na den v kalendáři a uvidíš, co jsi ten den zapsal.")
     }
 }
