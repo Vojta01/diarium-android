@@ -34,6 +34,29 @@ object PickerDefaults {
     fun categoryLabel(category: String): String =
         CATEGORY_LABELS[category] ?: category
 
+    /**
+     * The `počasí` slice of the catalogue is rendered by the check-in's own
+     * weather section, not as an activity group.
+     */
+    const val WEATHER_CATEGORY = "počasí"
+
+    /**
+     * Aliases the stored data drifts into: `user_activities` writes `záliby`
+     * while the catalogue writes `volný čas`, and accents/case vary, so the same
+     * group would otherwise surface twice under two headers.
+     */
+    private val CATEGORY_ALIASES = mapOf(
+        "záliby" to "volný čas",
+        "zaliby" to "volný čas",
+        "volny cas" to "volný čas",
+    )
+
+    /** Trims + lowercases a raw category and folds known aliases onto one key. */
+    fun canonicalCategory(category: String): String {
+        val normalized = category.trim().lowercase()
+        return CATEGORY_ALIASES[normalized] ?: normalized
+    }
+
     /** The eight weather options (the `počasí` slice of the web's catalog). */
     val WEATHER_OPTIONS = listOf(
         ActivityDef(key = "slunecno", label = "Slunečno", icon = "☀️", category = "počasí"),
