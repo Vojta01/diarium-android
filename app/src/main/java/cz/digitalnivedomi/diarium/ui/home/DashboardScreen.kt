@@ -17,7 +17,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,16 +49,22 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.ReadOnlyRow
 import cz.digitalnivedomi.diarium.ui.checkin.components.SecondaryButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.checkin.components.formatMinutes
+import cz.digitalnivedomi.diarium.ui.components.BrandSpinner
+import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.IconBadge
+import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
+import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Outline
+import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
@@ -120,22 +125,14 @@ fun DashboardScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = Spacing.gutter),
     ) {
-        VSpace(12)
-        Text(
-            text = "Přehled",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary,
+        VSpace(Spacing.screenTop)
+        ScreenHeader(
+            title = "Přehled",
+            subtitle = "Tvůj denní deník",
         )
-        VSpace(2)
-        Text(
-            text = "Tvůj denní deník",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary,
-        )
-        VSpace(16)
+        VSpace(Spacing.section)
 
         when {
             state.loading -> LoadingCard()
@@ -143,7 +140,7 @@ fun DashboardScreen(
             data != null -> DashboardContent(data = data, onOpenCheckIn = onOpenCheckIn)
         }
 
-        VSpace(36)
+        VSpace(Spacing.screenBottom)
     }
 }
 
@@ -216,18 +213,20 @@ private fun formatAverageMood(value: Double): String = String.format(Locale.US, 
 private fun DashboardContent(data: DashboardData, onOpenCheckIn: (String) -> Unit) {
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
-        TodayCard(data = data, onOpenCheckIn = onOpenCheckIn)
-        StreakCard(data = data)
-        WeekCard(data = data)
-        ScreenTimeCard(data = data)
+        // Cards fade in one after another as the data lands — the stagger is
+        // capped by Entrance, so even a full dashboard settles in ~300ms.
+        StaggeredItem(0) { TodayCard(data = data, onOpenCheckIn = onOpenCheckIn) }
+        StaggeredItem(1) { StreakCard(data = data) }
+        StaggeredItem(2) { WeekCard(data = data) }
+        StaggeredItem(3) { ScreenTimeCard(data = data) }
         // The "Dnes" card already carries today's reflection, so the dedicated card
         // appears only when the newest reflection is from an earlier day — the same
         // text never shows twice.
         val reflection = data.reflection
         if (reflection != null && reflection.date != data.today) {
-            ReflectionCard(reflection = reflection)
+            StaggeredItem(4) { ReflectionCard(reflection = reflection) }
         }
     }
 }
@@ -237,11 +236,7 @@ private fun DashboardContent(data: DashboardData, onOpenCheckIn: (String) -> Uni
 private fun LoadingCard() {
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
-                strokeWidth = 2.dp,
-                color = IndigoLight,
-            )
+            BrandSpinner()
             Spacer(Modifier.width(12.dp))
             Column {
                 Text(
@@ -275,6 +270,7 @@ private fun ErrorCard(message: String, onRetry: () -> Unit) {
 @Composable
 private fun TodayCard(data: DashboardData, onOpenCheckIn: (String) -> Unit) {
     val entry = data.todayEntry
+    val haptics = rememberLightHaptics()
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
         accent = moodColor(entry?.mood),
@@ -298,17 +294,17 @@ private fun TodayCard(data: DashboardData, onOpenCheckIn: (String) -> Unit) {
         VSpace(12)
 
         if (entry == null) {
-            Text(
-                text = "Dnes ještě nemáš check-in.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = TextPrimary,
+            EmptyState(
+                emoji = "✍️",
+                title = "Dnes ještě nemáš check-in",
+                message = "Zapiš, jaký byl den — čísla se pak objeví i tady.",
+                action = {
+                    PrimaryButton(text = "✏️ Check-in", testTag = "dashboard_open_checkin") {
+                        haptics()
+                        onOpenCheckIn(data.today)
+                    }
+                },
             )
-            VSpace(4)
-            SectionHint("Zapiš, jaký byl den — čísla se pak objeví i tady.")
-            VSpace(14)
-            PrimaryButton(text = "✏️ Check-in", testTag = "dashboard_open_checkin") {
-                onOpenCheckIn(data.today)
-            }
             return@GlassCard
         }
 
@@ -351,7 +347,10 @@ private fun TodayCard(data: DashboardData, onOpenCheckIn: (String) -> Unit) {
         }
 
         VSpace(14)
-        SecondaryButton(text = "✏️ Upravit dnešní check-in") { onOpenCheckIn(data.today) }
+        SecondaryButton(text = "✏️ Upravit dnešní check-in") {
+            haptics()
+            onOpenCheckIn(data.today)
+        }
     }
 }
 

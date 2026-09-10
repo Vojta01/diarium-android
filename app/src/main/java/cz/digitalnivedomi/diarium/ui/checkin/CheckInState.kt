@@ -27,8 +27,23 @@ data class CheckInUiState(
     val reflection: String? = null,
     val reflectionLoading: Boolean = false,
     val reflectionError: String? = null,
+    /**
+     * The day's reflection window. [CheckInStateHolder.markSaved] opens it exactly
+     * once per successful save; only the user's "Zavřít" (or a day switch) closes
+     * it. Nothing in the render path touches it, so recomposition, rotation or
+     * coming back to the tab can never re-open it on its own.
+     */
+    val showReflectionDialog: Boolean = false,
 ) {
     val hasContent: Boolean get() = entry.hasContent()
+
+    /**
+     * True when the open window still has to ask the server: no text seeded from
+     * the row and no request already in flight. A day that already carries an
+     * `aiReflection` (seeded by [CheckInStateHolder.load]) reports false, so
+     * opening its window costs no network call.
+     */
+    val reflectionNeedsRequest: Boolean get() = reflection.isNullOrBlank() && !reflectionLoading
 }
 
 /**
@@ -57,6 +72,7 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
             reflection = null,
             reflectionLoading = false,
             reflectionError = null,
+            showReflectionDialog = false,
         )
     }
 
@@ -70,6 +86,9 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
             reflection = entry.aiReflection,
             reflectionLoading = false,
             reflectionError = null,
+            // A freshly loaded (or restored) row is not a save, so it must not
+            // pop the reflection window back up.
+            showReflectionDialog = false,
         )
     }
 
@@ -136,7 +155,34 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         state = state.copy(saving = true, errorMessage = null)
     }
 
+    /**
+     * The save landed: the day flips to its read-only state and the reflection
+     * window opens itself. This is deliberately the *only* transition that turns
+     * [CheckInUiState.showReflectionDialog] on, which is what makes it exactly
+     * once per save — and why a recomposition, a rotation or a later return to
+     * the tab (a fresh holder) cannot bring it back.
+     */
     fun markSaved() {
+        state = state.copy(
+            saving = false,
+            saved = true,
+            errorMessage = null,
+            showReflectionDialog = true,
+        )
+    }
+
+    /** The user closed the reflection window; another save is what brings it back. */
+    fun dismissReflectionDialog() {
+        state = state.copy(showReflectionDialog = false)
+    }
+
+    /**
+     * The AI flow's own second save (writing the generated text back to the day).
+     * It marks the day stored like [markSaved] but never opens the window: a
+     * regenerate from inside the dialog must not resurrect a window the user
+     * already dismissed, and a manual "Napsat reflexi" should not pop it open.
+     */
+    fun markReflectionStored() {
         state = state.copy(saving = false, saved = true, errorMessage = null)
     }
 

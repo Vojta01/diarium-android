@@ -19,7 +19,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,13 +58,19 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.ReadOnlyRow
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.checkin.components.SelectableChip
 import cz.digitalnivedomi.diarium.ui.checkin.components.testTagOrEmpty
+import cz.digitalnivedomi.diarium.ui.components.BrandSpinner
+import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
+import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
+import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
+import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.SuccessGreen
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
@@ -125,22 +130,14 @@ fun StatsScreen(deps: StatsDeps = remember { StatsDeps.offline() }) {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = Spacing.gutter),
     ) {
-        VSpace(12)
-        Text(
-            text = "Statistiky",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            color = TextPrimary,
+        VSpace(Spacing.screenTop)
+        ScreenHeader(
+            title = "Statistiky",
+            subtitle = "Jak se ti daří v číslech",
         )
-        VSpace(2)
-        Text(
-            text = "Jak se ti daří v číslech",
-            style = MaterialTheme.typography.bodyMedium,
-            color = TextSecondary,
-        )
-        VSpace(16)
+        VSpace(Spacing.section)
 
         when {
             state.loading -> LoadingCard()
@@ -152,7 +149,7 @@ fun StatsScreen(deps: StatsDeps = remember { StatsDeps.offline() }) {
             )
         }
 
-        VSpace(36)
+        VSpace(Spacing.screenBottom)
     }
 }
 
@@ -202,11 +199,7 @@ private fun formatAverageMood(value: Double): String = String.format(Locale.US, 
 private fun LoadingCard() {
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
-                strokeWidth = 2.dp,
-                color = IndigoLight,
-            )
+            BrandSpinner()
             Spacer(Modifier.width(12.dp))
             Column {
                 Text(
@@ -238,6 +231,7 @@ private fun ErrorCard(message: String, onRetry: () -> Unit) {
 /** 7 dní / 30 dní / Tento rok — the web's three controls. */
 @Composable
 private fun RangeSelector(range: StatsRange, onSelect: (StatsRange) -> Unit) {
+    val haptics = rememberLightHaptics()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -247,7 +241,10 @@ private fun RangeSelector(range: StatsRange, onSelect: (StatsRange) -> Unit) {
                 text = option.label,
                 selected = option == range,
                 testTag = option.testTag,
-            ) { onSelect(option) }
+            ) {
+                haptics()
+                onSelect(option)
+            }
         }
     }
 }
@@ -261,28 +258,32 @@ private fun StatsContent(
     val days = data.forRange(range)
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
-        RangeSelector(range = range, onSelect = onSelectRange)
+        StaggeredItem(0) { RangeSelector(range = range, onSelect = onSelectRange) }
 
+        // Cards land one after another as the window changes, the same ladder the
+        // dashboard and history use.
         if (days.isEmpty()) {
-            EmptyWindowCard(range.label)
+            StaggeredItem(1) { EmptyWindowCard(range.label) }
         } else {
-            MoodDistributionCard(days = days, rangeLabel = range.label)
-            MoodTrendCard(days = days)
-            WeekdayCard(days = days)
-            ActivityCard(days = days)
-            BestWorstCard(days = days)
+            StaggeredItem(1) { MoodDistributionCard(days = days, rangeLabel = range.label) }
+            StaggeredItem(2) { MoodTrendCard(days = days) }
+            StaggeredItem(3) { WeekdayCard(days = days) }
+            StaggeredItem(4) { ActivityCard(days = days) }
+            StaggeredItem(5) { BestWorstCard(days = days) }
         }
 
         // The screen-time chart keeps its own 7/30-day switch (the web's chart is
         // always 7 days), so it is fed the whole read rather than the mood window.
-        ScreenTimeChart(entries = data.days, today = data.today)
+        StaggeredItem(6) { ScreenTimeChart(entries = data.days, today = data.today) }
 
         // The year grid is the "Tento rok" tab's second half, exactly like the web
         // shows `YearInPixels` next to the year's mood numbers.
         if (range.year) {
-            YearInPixels(days = data.yearDays(), year = data.year, today = data.today)
+            StaggeredItem(7) {
+                YearInPixels(days = data.yearDays(), year = data.year, today = data.today)
+            }
         }
     }
 }
@@ -291,14 +292,12 @@ private fun StatsContent(
 private fun EmptyWindowCard(rangeLabel: String) {
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader("📊 Nálada")
-        VSpace(6)
-        Text(
-            text = "Za posledních $rangeLabel nemáš žádný zápis.",
-            style = MaterialTheme.typography.titleMedium,
-            color = TextPrimary,
+        VSpace(Spacing.block)
+        EmptyState(
+            emoji = "📊",
+            title = "Za posledních $rangeLabel žádný zápis",
+            message = "Zapiš dnešní den na kartě „Dnes“ a čísla se objeví tady.",
         )
-        VSpace(4)
-        SectionHint("Zapiš dnešní den na kartě „Dnes“ a čísla se objeví tady.")
     }
 }
 
@@ -314,6 +313,7 @@ private fun MoodDistributionCard(days: List<StatsDay>, rangeLabel: String) {
     val counts = StatsMath.moodDistribution(days)
     val answered = StatsMath.answeredDays(days)
     var selected by remember(days.size) { mutableStateOf<Int?>(null) }
+    val haptics = rememberLightHaptics()
 
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         SectionHeader("📊 Rozložení nálad", trailing = { Text("· $rangeLabel", style = MaterialTheme.typography.labelSmall, color = TextTertiary) })
@@ -335,7 +335,10 @@ private fun MoodDistributionCard(days: List<StatsDay>, rangeLabel: String) {
                         .weight(1f)
                         .fillMaxHeight()
                         .testTagOrEmpty("stats_mood_bar_$mood")
-                        .clickable { selected = if (selected == mood) null else mood },
+                        .clickable {
+                            haptics()
+                            selected = if (selected == mood) null else mood
+                        },
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
@@ -397,6 +400,7 @@ private fun MoodTrendCard(days: List<StatsDay>) {
     val points = StatsMath.moodTrend(days)
     val average = StatsMath.movingAverage(days)
     var selected by remember(points.size) { mutableStateOf<Int?>(null) }
+    val haptics = rememberLightHaptics()
 
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader(
@@ -481,7 +485,10 @@ private fun MoodTrendCard(days: List<StatsDay>) {
                             .weight(1f)
                             .fillMaxHeight()
                             .testTagOrEmpty("stats_trend_bar")
-                            .clickable { selected = if (selected == index) null else index },
+                            .clickable {
+                                haptics()
+                                selected = if (selected == index) null else index
+                            },
                     )
                 }
             }

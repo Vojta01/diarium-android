@@ -28,11 +28,13 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.ReadOnlyRow
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.checkin.components.formatMinutes
 import cz.digitalnivedomi.diarium.ui.checkin.components.labelWithIcon
+import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.IconBadge
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
@@ -77,6 +79,7 @@ fun DayDetail(
     onOpenCheckIn: (String) -> Unit,
 ) {
     val accent = if (entry != null) moodColor(entry.mood) else Indigo
+    val haptics = rememberLightHaptics()
 
     GlassCard(modifier = modifier.fillMaxWidth(), accent = accent) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -228,25 +231,31 @@ fun DayDetail(
         PrimaryButton(
             text = "✏️ Upravit tento záznam",
             testTag = "history_open_checkin",
-        ) { onOpenCheckIn(date) }
+        ) {
+            haptics()
+            onOpenCheckIn(date)
+        }
     }
 }
 
 /** A day with nothing saved yet — the way in, not a dead end. */
 @Composable
 private fun EmptyDay(date: String, onOpenCheckIn: (String) -> Unit) {
-    Text(
-        text = "Pro tento den nemáš zapsaný check-in.",
-        style = MaterialTheme.typography.titleMedium,
-        color = TextPrimary,
+    val haptics = rememberLightHaptics()
+    EmptyState(
+        emoji = "🗓️",
+        title = "Pro tento den nemáš check-in",
+        message = "Zapiš, jaký ten den byl — objeví se pak i v kalendáři.",
+        action = {
+            PrimaryButton(
+                text = "✏️ Vyplnit check-in",
+                testTag = "history_open_checkin",
+            ) {
+                haptics()
+                onOpenCheckIn(date)
+            }
+        },
     )
-    VSpace(4)
-    SectionHint("Zapiš, jaký ten den byl — objeví se pak i v kalendáři.")
-    VSpace(14)
-    PrimaryButton(
-        text = "✏️ Vyplnit check-in",
-        testTag = "history_open_checkin",
-    ) { onOpenCheckIn(date) }
 }
 
 /** Simple bulleted lines (activities, gratitude) — the web's `list-disc` rows. */
