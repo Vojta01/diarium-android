@@ -1,9 +1,11 @@
 package cz.digitalnivedomi.diarium.core.data
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 
 /**
  * Reads and writes the `entries` table through the server-side RPCs — the same
@@ -22,9 +24,26 @@ class EntriesRepository(
 
     suspend fun currentUserId(): String? = session.userId()
 
-    /** Loads the stored entry for [date], or null when that day has none yet. */
+    /**
+     * Loads the stored entry for [date], or null when that day has none yet.
+     *
+     * A read that fails (offline phone, HTTP error, a body the client cannot parse)
+     * also yields null, because the check-in screen answers null by falling back to
+     * the draft and an empty form. Throwing here would crash that screen instead.
+     */
     suspend fun loadEntry(date: String): DiaryEntry? = withContext(Dispatchers.IO) {
-        val userId = session.userId() ?: return@withContext null
+        try {
+            readEntry(date)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** The real read for [loadEntry]; throws on any transport, HTTP or parse failure. */
+    private suspend fun readEntry(date: String): DiaryEntry? {
+        val userId = session.userId() ?: return null
         val resp = client.get(
             "entries",
             mapOf(
@@ -34,10 +53,75 @@ class EntriesRepository(
                 "limit" to "1",
             ),
         )
-        if (!resp.isSuccessful) return@withContext null
-        val rows = resp.asJsonArray() ?: return@withContext null
-        if (rows.length() == 0) return@withContext null
-        fromRow(rows.getJSONObject(0))
+        if (!resp.isSuccessful) return null
+        val rows = resp.asJsonArray() ?: return null
+        if (rows.length() == 0) return null
+        return fromRow(rows.getJSONObject(0))
+    }
+
+    /**
+     * Loads every stored entry in `[from, to]` (inclusive ISO dates) in a single
+     * round-trip — the dashboard derives all of its numbers from this one call.
+     *
+     * The date bound is expressed with PostgREST's `and=(...)` operator because a
+     * Kotlin `Map` cannot carry two values for the same `date` column, and both
+     * bounds matter: the lower one is the dashboard's window, the upper one keeps
+     * anything future-dated out. [limit] is only a safety cap — a 30-day window is
+     * far below it — and the order matches the web's `fetchDailyEntries()`.
+     *
+     * Unlike [loadEntry] this reports failures instead of returning an empty
+     * result: the dashboard must be able to tell "nothing saved yet" from "the
+     * read failed", otherwise a dead request renders as a screen full of zeroes.
+     */
+    suspend fun loadRange(
+        from: String,
+        to: String,
+        limit: Int = RANGE_LIMIT,
+    ): Result<List<DatedEntry>> = withContext(Dispatchers.IO) {
+        try {
+            Result.success(readRange(from, to, limit))
+        } catch (e: CancellationException) {
+            // Cancellation is the caller walking away, not a failure to report.
+            throw e
+        } catch (e: IllegalStateException) {
+            // Already a sentence written for the screen (signed out, HTTP error, bad body).
+            Result.failure(e)
+        } catch (_: IOException) {
+            // A phone that lost signal is a normal state: it has to reach the screen as
+            // a retryable failure in Czech, never as an exception that kills the coroutine.
+            Result.failure(IllegalStateException(CONNECT_FAILED))
+        } catch (e: Exception) {
+            Result.failure(
+                IllegalStateException("Načtení přehledu se nezdařilo (${e.javaClass.simpleName})."),
+            )
+        }
+    }
+
+    /**
+     * The real read behind [loadRange]: throws on a transport failure, an HTTP error
+     * or a body the client cannot parse, so [loadRange] has a single place that turns
+     * each of them into the [Result] the dashboard renders.
+     */
+    private suspend fun readRange(from: String, to: String, limit: Int): List<DatedEntry> {
+        val userId = session.userId() ?: throw IllegalStateException(SIGNED_OUT)
+        val resp = client.get(
+            "entries",
+            mapOf(
+                "user_id" to "eq.$userId",
+                "and" to "(date.gte.$from,date.lte.$to)",
+                "select" to "*",
+                "order" to "date.desc",
+                "limit" to limit.toString(),
+            ),
+        )
+        if (!resp.isSuccessful) {
+            throw IllegalStateException(resp.errorMessage ?: "Načtení přehledu se nezdařilo (${resp.code})")
+        }
+        val rows = resp.asJsonArray() ?: throw IllegalStateException("Server vrátil neplatnou odpověď.")
+        return (0 until rows.length()).map { index ->
+            val row = rows.getJSONObject(index)
+            DatedEntry(row.optString("date"), fromRow(row))
+        }
     }
 
     /**
@@ -74,6 +158,22 @@ class EntriesRepository(
     }
 
     companion object {
+
+        /**
+         * Safety cap for [loadRange]. The dashboard's 30-day window is far below
+         * it, so the cap only guards against a malformed range, never truncates a
+         * real read.
+         */
+        const val RANGE_LIMIT = 100
+
+        /** Same wording `save` uses, so a signed-out read reads like a session problem. */
+        private const val SIGNED_OUT = "Přihlášení vypršelo, přihlas se znovu."
+
+        /**
+         * Copy for a read that never reached the server — the same sentence the AI
+         * section shows, so an offline phone reads the same everywhere in the app.
+         */
+        private const val CONNECT_FAILED = "Nepodařilo se připojit k serveru."
 
         /**
          * Maps a [DiaryEntry] onto the exact `save_daily_entry(jsonb)` payload.
@@ -135,3 +235,12 @@ class EntriesRepository(
         )
     }
 }
+
+/**
+ * One `entries` row together with its `date`.
+ *
+ * [DiaryEntry] has no date on purpose — the check-in form is always scoped to the
+ * day it is editing — but the dashboard works across days, so the range read
+ * carries the row's date alongside the model instead of widening the form's shape.
+ */
+data class DatedEntry(val date: String, val entry: DiaryEntry)

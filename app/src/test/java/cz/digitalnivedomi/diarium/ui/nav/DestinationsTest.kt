@@ -16,11 +16,22 @@ import org.robolectric.annotation.Config
 class DestinationsTest {
 
     @Test
-    fun `bottom bar shows the four top-level destinations in order`() {
+    fun `bottom bar shows the five top-level destinations in order`() {
         assertEquals(
-            listOf(Routes.CHECK_IN, Routes.HISTORY, Routes.STATS, Routes.SETTINGS),
+            listOf(
+                Routes.HOME,
+                Routes.CHECK_IN,
+                Routes.HISTORY,
+                Routes.STATS,
+                Routes.SETTINGS,
+            ),
             TopLevelDestination.entries.map { it.route },
         )
+    }
+
+    @Test
+    fun `the app opens on the overview, not on the form`() {
+        assertEquals(Routes.HOME, TopLevelDestination.entries.first().route)
     }
 
     @Test

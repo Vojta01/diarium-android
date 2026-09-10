@@ -43,6 +43,7 @@ import cz.digitalnivedomi.diarium.ui.components.DiariumBackground
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.home.DashboardRoute
 import cz.digitalnivedomi.diarium.ui.nav.Routes
 import cz.digitalnivedomi.diarium.ui.nav.TopLevelDestination
 import cz.digitalnivedomi.diarium.ui.placeholder.ComingSoonScreen
@@ -140,9 +141,28 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
         ) {
             NavHost(
                 navController = navController,
-                startDestination = Routes.CHECK_IN,
+                // The overview is the app's front door: the numbers first, the form
+                // one tap away — the same order the web app uses.
+                startDestination = Routes.HOME,
                 modifier = Modifier.fillMaxSize(),
             ) {
+                composable(Routes.HOME) {
+                    DashboardRoute(
+                        // Switching tabs (not pushing a second tab) so the bottom bar
+                        // stays in the state it would be in had check-in been tapped.
+                        // A pushed screen keeps its own back-stack entry for the same destination,
+                        // which is why the popUpTo/extras mirror BottomBar's onSelect.
+                        onOpenCheckIn = { _ ->
+                            navController.navigate(Routes.CHECK_IN) {
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                    )
+                }
                 composable(Routes.CHECK_IN) { CheckInRoute() }
                 composable(Routes.HISTORY) {
                     ComingSoonScreen(
