@@ -44,7 +44,12 @@ data class ActivityStat(
     val count: Int,
     /** Earliest answered day with the highest mood among [count] (web's `best`). */
     val bestDay: MoodPoint?,
-    /** Latest answered day with the lowest mood among [count] (web's `worst`). */
+    /**
+     * Earliest answered day with the lowest mood among [count]. The web's
+     * `activityCorrelations` walks the days oldest-first with a strict `<`, so a tie
+     * goes to the first day that reached the low — unlike the top-level [worstDay],
+     * which reads the last element of a stable sort.
+     */
     val worstDay: MoodPoint?,
     /**
      * Point-biserial correlation between "the activity happened" (1/0) and the day's
