@@ -24,6 +24,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -43,10 +44,11 @@ import cz.digitalnivedomi.diarium.ui.components.DiariumBackground
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.history.HistoryRoute
 import cz.digitalnivedomi.diarium.ui.home.DashboardRoute
 import cz.digitalnivedomi.diarium.ui.nav.Routes
 import cz.digitalnivedomi.diarium.ui.nav.TopLevelDestination
-import cz.digitalnivedomi.diarium.ui.placeholder.ComingSoonScreen
+import cz.digitalnivedomi.diarium.ui.stats.StatsRoute
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Surface1
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
@@ -117,20 +119,26 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
+    // The day the calendar (or the dashboard's "Dnes" card) asked the check-in to open.
+    // The check-in screen consumes it, so a later plain tap on "Dnes" starts on today
+    // again instead of jumping back to a day picked in the calendar.
+    var requestedDate by rememberSaveable { mutableStateOf<String?>(null) }
+
+    /** Switches tabs without stacking a second copy of the destination. */
+    fun switchTab(route: String) {
+        navController.navigate(route) {
+            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
     Scaffold(
         containerColor = Color.Transparent,
         bottomBar = {
             BottomBar(
                 currentRoute = currentRoute,
-                onSelect = { destination ->
-                    navController.navigate(destination.route) {
-                        popUpTo(navController.graph.findStartDestination().id) {
-                            saveState = true
-                        }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
-                },
+                onSelect = { destination -> switchTab(destination.route) },
             )
         },
     ) { padding ->
@@ -152,30 +160,27 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                         // stays in the state it would be in had check-in been tapped.
                         // A pushed screen keeps its own back-stack entry for the same destination,
                         // which is why the popUpTo/extras mirror BottomBar's onSelect.
-                        onOpenCheckIn = { _ ->
-                            navController.navigate(Routes.CHECK_IN) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
-                                }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
+                        onOpenCheckIn = { date ->
+                            requestedDate = date
+                            switchTab(Routes.CHECK_IN)
                         },
                     )
                 }
-                composable(Routes.CHECK_IN) { CheckInRoute() }
+                composable(Routes.CHECK_IN) {
+                    CheckInRoute(
+                        requestedDate = requestedDate,
+                        onRequestedDateConsumed = { requestedDate = null },
+                    )
+                }
                 composable(Routes.HISTORY) {
-                    ComingSoonScreen(
-                        title = "Historie",
-                        message = "Kalendář a seznam zápisů dorazí v dalším kroku.",
+                    HistoryRoute(
+                        onOpenCheckIn = { date ->
+                            requestedDate = date
+                            switchTab(Routes.CHECK_IN)
+                        },
                     )
                 }
-                composable(Routes.STATS) {
-                    ComingSoonScreen(
-                        title = "Přehledy",
-                        message = "Grafy nálady, spánku a screen time dorazí v dalším kroku.",
-                    )
-                }
+                composable(Routes.STATS) { StatsRoute() }
                 composable(Routes.SETTINGS) { SettingsScreen(onSignOut = onSignOut) }
             }
         }
