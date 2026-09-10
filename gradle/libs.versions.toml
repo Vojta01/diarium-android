@@ -22,6 +22,7 @@ robolectric = "4.13"
 androidxTestCore = "1.6.1"
 androidxTestJunit = "1.2.1"
 espresso = "3.6.1"
+orgJson = "20240303"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -61,6 +62,11 @@ robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "
 androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestJunit" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }
+
+# JVM unit tests get the real org.json implementation: the android.jar stub returns
+# default values (testOptions.isReturnDefaultValues), so plain JUnit tests of the
+# JSON-building code (auth callback parsing, REST client) would see nulls otherwise.
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

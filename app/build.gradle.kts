@@ -119,6 +119,7 @@ dependencies {
 
     // Local unit tests (JVM). Robolectric lets us render Compose off-device.
     testImplementation(libs.junit)
+    testImplementation(libs.org.json)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
