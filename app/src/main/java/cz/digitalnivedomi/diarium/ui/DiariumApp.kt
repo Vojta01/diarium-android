@@ -38,7 +38,7 @@ import androidx.navigation.compose.rememberNavController
 import cz.digitalnivedomi.diarium.auth.AuthStateHolder
 import cz.digitalnivedomi.diarium.auth.AuthStatus
 import cz.digitalnivedomi.diarium.ui.auth.LoginScreen
-import cz.digitalnivedomi.diarium.ui.checkin.CheckInScreen
+import cz.digitalnivedomi.diarium.ui.checkin.CheckInRoute
 import cz.digitalnivedomi.diarium.ui.components.DiariumBackground
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
@@ -143,7 +143,7 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                 startDestination = Routes.CHECK_IN,
                 modifier = Modifier.fillMaxSize(),
             ) {
-                composable(Routes.CHECK_IN) { CheckInScreen() }
+                composable(Routes.CHECK_IN) { CheckInRoute() }
                 composable(Routes.HISTORY) {
                     ComingSoonScreen(
                         title = "Historie",

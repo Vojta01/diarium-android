@@ -77,6 +77,36 @@ class SupabaseClient(
         return transport.execute(HttpRequest(method, buildUrl(baseUrl, path, query), headers, body))
     }
 
+    /**
+     * Uploads bytes to Supabase Storage. Storage lives at `/storage/v1`, not
+     * `/rest/v1`, so this bypasses [buildUrl] and talks to the project root.
+     * `x-upsert: true` makes a re-save of the same date overwrite the previous
+     * photo instead of failing on conflict.
+     */
+    fun uploadObject(
+        path: String,
+        bytes: ByteArray,
+        contentType: String = "image/jpeg",
+        upsert: Boolean = true,
+    ): HttpResponse {
+        val token = sessionStore?.validAccessToken()
+        val headers = LinkedHashMap<String, String>()
+        headers["apikey"] = anonKey
+        headers["Accept"] = "application/json"
+        headers["Content-Type"] = contentType
+        if (token != null) headers["Authorization"] = "Bearer $token"
+        if (upsert) headers["x-upsert"] = "true"
+        val url = "${projectUrl()}/storage/v1/object/${path.trimStart('/')}"
+        return transport.execute(HttpRequest("POST", url, headers, body = null, binaryBody = bytes))
+    }
+
+    /** Public URL for an object in the public `diary-photos` bucket. */
+    fun publicStorageUrl(path: String): String =
+        "${projectUrl()}/storage/v1/object/public/${path.trimStart('/')}"
+
+    /** Project root (`https://<ref>.supabase.co`), derived from the REST base URL. */
+    fun projectUrl(): String = baseUrl.removeSuffix("/rest/v1")
+
     companion object {
         /** Joins the REST base URL with a table path and an encoded query string. */
         fun buildUrl(baseUrl: String, path: String, query: Map<String, String> = emptyMap()): String {
@@ -104,6 +134,8 @@ data class HttpRequest(
     val url: String,
     val headers: Map<String, String>,
     val body: String? = null,
+    /** Raw body for binary uploads (Storage); takes precedence over [body]. */
+    val binaryBody: ByteArray? = null,
 )
 
 data class HttpResponse(val code: Int, val body: String) {
@@ -140,7 +172,9 @@ class OkHttpTransport(
     override fun execute(request: HttpRequest): HttpResponse {
         val builder = Request.Builder().url(request.url)
         request.headers.forEach { (name, value) -> builder.header(name, value) }
-        val body = request.body?.toRequestBody(JSON)
+        val contentType = request.headers["Content-Type"]?.toMediaType() ?: JSON
+        val body = request.binaryBody?.toRequestBody(contentType)
+            ?: request.body?.toRequestBody(JSON)
         when (request.method.uppercase()) {
             "GET" -> builder.get()
             "POST" -> builder.post(body ?: EMPTY.toRequestBody(JSON))
