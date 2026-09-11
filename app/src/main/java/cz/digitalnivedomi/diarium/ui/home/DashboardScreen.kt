@@ -69,6 +69,8 @@ import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.IconBadge
 import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
+import cz.digitalnivedomi.diarium.ui.components.SubScreenEntry
+import cz.digitalnivedomi.diarium.ui.nav.Routes
 import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
@@ -109,6 +111,7 @@ import kotlinx.coroutines.launch
 fun DashboardScreen(
     deps: DashboardDeps = remember { DashboardDeps.offline() },
     onOpenCheckIn: (String) -> Unit = {},
+    onOpen: (String) -> Unit = {},
 ) {
     val holder = remember { DashboardStateHolder() }
     val state = holder.state
@@ -153,6 +156,7 @@ fun DashboardScreen(
             data != null -> DashboardContent(
                 data = data,
                 onOpenCheckIn = onOpenCheckIn,
+                onOpen = onOpen,
                 reflectionRepository = deps.reflection,
             )
         }
@@ -230,6 +234,7 @@ private fun formatAverageMood(value: Double): String = String.format(Locale.US, 
 private fun DashboardContent(
     data: DashboardData,
     onOpenCheckIn: (String) -> Unit,
+    onOpen: (String) -> Unit,
     reflectionRepository: AiReflectionRepository?,
 ) {
     Column(
@@ -252,6 +257,53 @@ private fun DashboardContent(
                 ReflectionCard(newest = newest, repository = reflectionRepository)
             }
         }
+        // The M5 screens have no tab of their own (the bar already carries five),
+        // so the overview carries their entrances. Pure navigation, no read.
+        StaggeredItem(5) { EntriesCard(onOpen = onOpen) }
+    }
+}
+
+/**
+ * Entrances to the M5 screens: cíle, škály, šablony poznámek and odznaky.
+ *
+ * Kept on the overview as well as in Nastavení on purpose — Vojta's rule is that a
+ * feature has to be visible without hunting for it, and the dashboard is where the
+ * day starts. The card reads nothing, so it cannot fail or go empty.
+ */
+@Composable
+private fun EntriesCard(onOpen: (String) -> Unit) {
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        SectionHeader("🎯 Cíle a další")
+        VSpace(4)
+        SectionHint("Cíle se streakem, vlastní škály, šablony poznámek a odznaky.")
+        VSpace(6)
+        SubScreenEntry(
+            emoji = "🎯",
+            title = "Cíle",
+            hint = "Streak a plnění za den, týden a měsíc",
+            onClick = { onOpen(Routes.GOALS) },
+        )
+        GlassDivider()
+        SubScreenEntry(
+            emoji = "🎚️",
+            title = "Škály",
+            hint = "Vlastní škály a jejich rozložení za 30 dní",
+            onClick = { onOpen(Routes.SCALES) },
+        )
+        GlassDivider()
+        SubScreenEntry(
+            emoji = "📄",
+            title = "Šablony poznámek",
+            hint = "Rychlé vložení do poznámky v check-inu",
+            onClick = { onOpen(Routes.TEMPLATES) },
+        )
+        GlassDivider()
+        SubScreenEntry(
+            emoji = "🏆",
+            title = "Odznaky",
+            hint = "Co už je odemčené a co ještě ne",
+            onClick = { onOpen(Routes.ACHIEVEMENTS) },
+        )
     }
 }
 

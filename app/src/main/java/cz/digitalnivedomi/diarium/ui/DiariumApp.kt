@@ -5,6 +5,26 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.sp
+import androidx.activity.compose.BackHandler
+import cz.digitalnivedomi.diarium.ui.achievements.AchievementsDeps
+import cz.digitalnivedomi.diarium.ui.achievements.AchievementsScreen
+import cz.digitalnivedomi.diarium.ui.components.GlassDivider
+import cz.digitalnivedomi.diarium.ui.components.SubScreenEntry
+import cz.digitalnivedomi.diarium.ui.goals.GoalsDeps
+import cz.digitalnivedomi.diarium.ui.goals.GoalsScreen
+import cz.digitalnivedomi.diarium.ui.scales.ScalesDeps
+import cz.digitalnivedomi.diarium.ui.scales.ScalesScreen
+import cz.digitalnivedomi.diarium.ui.templates.TemplatesDeps
+import cz.digitalnivedomi.diarium.ui.templates.TemplatesScreen
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -183,6 +203,12 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                             requestedDate = date
                             switchTab(Routes.CHECK_IN)
                         },
+                        // The M5 screens (cíle, škály, šablony, odznaky) have no tab of
+                        // their own, so the dashboard's entry card pushes them here and
+                        // the back arrow in SubScreenChrome pops them again.
+                        onOpen = { route ->
+                            navController.navigate(route) { launchSingleTop = true }
+                        },
                     )
                 }
                 composable(Routes.CHECK_IN) {
@@ -200,15 +226,56 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                     )
                 }
                 composable(Routes.STATS) { StatsRoute() }
-                composable(Routes.SETTINGS) { SettingsScreen(onSignOut = onSignOut) }
+                composable(Routes.SETTINGS) {
+                    SettingsScreen(
+                        onSignOut = onSignOut,
+                        onOpen = { route ->
+                            navController.navigate(route) { launchSingleTop = true }
+                        },
+                    )
+                }
+                composable(Routes.GOALS) {
+                    val context = LocalContext.current
+                    val deps = remember(context) { GoalsDeps.forContext(context) }
+                    SubScreenChrome(title = "Cíle", onBack = { navController.popBackStack() }) {
+                        GoalsScreen(deps = deps)
+                    }
+                }
+                composable(Routes.SCALES) {
+                    val context = LocalContext.current
+                    val deps = remember(context) { ScalesDeps.forContext(context) }
+                    SubScreenChrome(title = "Škály", onBack = { navController.popBackStack() }) {
+                        ScalesScreen(deps = deps)
+                    }
+                }
+                composable(Routes.TEMPLATES) {
+                    val context = LocalContext.current
+                    val deps = remember(context) { TemplatesDeps.forContext(context) }
+                    SubScreenChrome(title = "Šablony poznámek", onBack = { navController.popBackStack() }) {
+                        TemplatesScreen(deps = deps)
+                    }
+                }
+                composable(Routes.ACHIEVEMENTS) {
+                    val context = LocalContext.current
+                    val deps = remember(context) { AchievementsDeps.forContext(context) }
+                    SubScreenChrome(title = "Odznaky", onBack = { navController.popBackStack() }) {
+                        AchievementsScreen(deps = deps)
+                    }
+                }
             }
         }
     }
 }
 
-/** Settings placeholder plus the only account action that exists so far: logout. */
+/**
+ * Settings: the account action, plus the way into the M5 sub-screens.
+ *
+ * These four used to be unreachable ("Cíle, připomínky a export dorazí v dalším
+ * kroku"). The bottom bar has no room for four more tabs, so they are opened
+ * from here and from the dashboard, each with its own back arrow.
+ */
 @Composable
-private fun SettingsScreen(onSignOut: () -> Unit) {
+private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -222,12 +289,43 @@ private fun SettingsScreen(onSignOut: () -> Unit) {
             subtitle = "Účet, cíle a připomínky na jednom místě.",
         )
         GlassCard(modifier = Modifier.fillMaxWidth()) {
-            GlassChip(text = "Připravujeme")
-            VSpace(12)
             Text(
-                text = "Cíle, připomínky a export dorazí v dalším kroku.",
-                style = MaterialTheme.typography.bodyLarge,
+                text = "Deník",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            VSpace(4)
+            Text(
+                text = "Cíle se streakem, vlastní škály, šablony poznámek a odznaky.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
+            )
+            VSpace(6)
+            SubScreenEntry(
+                emoji = "🎯",
+                title = "Cíle",
+                hint = "Streak a plnění za období",
+                onClick = { onOpen(Routes.GOALS) },
+            )
+            GlassDivider()
+            SubScreenEntry(
+                emoji = "📏",
+                title = "Škály",
+                hint = "Přidat, upravit, rozložení za 30 dní",
+                onClick = { onOpen(Routes.SCALES) },
+            )
+            GlassDivider()
+            SubScreenEntry(
+                emoji = "📝",
+                title = "Šablony poznámek",
+                hint = "Text, který vložíš do poznámky",
+                onClick = { onOpen(Routes.TEMPLATES) },
+            )
+            GlassDivider()
+            SubScreenEntry(
+                emoji = "🏆",
+                title = "Odznaky",
+                hint = "Co se už odemklo",
+                onClick = { onOpen(Routes.ACHIEVEMENTS) },
             )
         }
         GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
@@ -246,6 +344,40 @@ private fun SettingsScreen(onSignOut: () -> Unit) {
                 Text("Odhlásit se")
             }
         }
+    }
+}
+
+/**
+ * Chrome for the M5 sub-screens: a back arrow, the title, then the screen.
+ *
+ * The screens themselves are handed in already built, so they stay unaware of
+ * navigation and can be previewed on their own.
+ */
+@Composable
+private fun SubScreenChrome(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
+    BackHandler(onBack = onBack)
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.gutter)
+                .padding(top = Spacing.screenTop, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Zpět",
+                    tint = TextSecondary,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+            )
+        }
+        content()
     }
 }
 

@@ -26,6 +26,16 @@ object Routes {
     const val HISTORY = "history"
     const val STATS = "stats"
     const val SETTINGS = "settings"
+
+    /**
+     * M5 sub-screens. They are not tabs: the bottom bar already carries five
+     * destinations, and goals, scales, templates and achievements are things you
+     * open from the dashboard or from settings, read, and leave again.
+     */
+    const val GOALS = "goals"
+    const val SCALES = "scales"
+    const val TEMPLATES = "templates"
+    const val ACHIEVEMENTS = "achievements"
 }
 
 /** Routes that get a tab in the bottom bar, in display order. */

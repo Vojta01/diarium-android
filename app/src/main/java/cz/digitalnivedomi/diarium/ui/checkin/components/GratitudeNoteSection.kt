@@ -15,13 +15,17 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import cz.digitalnivedomi.diarium.core.data.NoteTemplate
+import cz.digitalnivedomi.diarium.core.data.applyTemplate
+import cz.digitalnivedomi.diarium.core.data.needsConfirm
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 
@@ -49,10 +53,13 @@ fun GratitudeSection(
 }
 
 /**
- * Poznámka + templates.
+ * Poznámka + šablony.
  *
- * Picking a template REPLACES the note text — the web's TemplatePicker does the
- * same, and appending would silently concatenate two different days' thoughts.
+ * The "Vložit šablonu" action opens a picker of templates. Picking one REPLACES
+ * the note text — the web's TemplatePicker does the same, and appending would
+ * silently concatenate two different days' thoughts. When the note already
+ * holds non-whitespace text, the user is asked first; an empty (or
+ * whitespace-only) note is filled straight away.
  */
 @Composable
 fun NoteSection(
@@ -62,11 +69,18 @@ fun NoteSection(
     modifier: Modifier = Modifier,
 ) {
     var pickerOpen by rememberSaveable { mutableStateOf(false) }
+    // The picked template, held only while the user decides whether an existing
+    // note may be overwritten. Not saveable: an in-flight confirmation is
+    // allowed to disappear across a rotation rather than act on stale text.
+    var pendingTemplate by remember { mutableStateOf<NoteTemplate?>(null) }
+
     CheckInSection(
         title = "Rychlá poznámka",
         modifier = modifier,
         trailing = {
-            SecondaryButton(text = "📄 Šablony", testTag = "note_templates") { pickerOpen = true }
+            SecondaryButton(text = "📄 Vložit šablonu", testTag = "note_insert_template") {
+                pickerOpen = true
+            }
         },
     ) {
         GlassTextField(
@@ -84,7 +98,7 @@ fun NoteSection(
             confirmButton = {
                 TextButton(onClick = { pickerOpen = false }) { Text("Zavřít") }
             },
-            title = { Text("Šablony") },
+            title = { Text("Vložit šablonu") },
             text = {
                 Column(Modifier.fillMaxWidth()) {
                     if (templates.isEmpty()) {
@@ -97,9 +111,14 @@ fun NoteSection(
                                 .padding(vertical = 6.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(Color.White.copy(alpha = 0.05f))
+                                .testTag("note_template_${template.id}")
                                 .clickable {
-                                    onChange(template.content)
                                     pickerOpen = false
+                                    if (needsConfirm(note)) {
+                                        pendingTemplate = template
+                                    } else {
+                                        onChange(applyTemplate(note, template.content))
+                                    }
                                 }
                                 .padding(10.dp),
                         ) {
@@ -114,6 +133,25 @@ fun NoteSection(
                     }
                 }
             },
+        )
+    }
+
+    // Confirmation before an existing note is thrown away. The note value is
+    // read at confirm time, matching the text the user is looking at.
+    pendingTemplate?.let { template ->
+        AlertDialog(
+            onDismissRequest = { pendingTemplate = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    onChange(applyTemplate(note, template.content))
+                    pendingTemplate = null
+                }) { Text("Nahradit") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingTemplate = null }) { Text("Zrušit") }
+            },
+            title = { Text("Nahradit poznámku?") },
+            text = { Text("Poznámka není prázdná — nahradit ji šablonou?") },
         )
     }
 }
