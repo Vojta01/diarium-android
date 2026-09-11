@@ -4,22 +4,14 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import cz.digitalnivedomi.diarium.BuildConfig
-import cz.digitalnivedomi.diarium.auth.SessionStore
-import cz.digitalnivedomi.diarium.stats.UsageStatsProvider
+import cz.digitalnivedomi.diarium.core.data.UsagePushOutcome
+import cz.digitalnivedomi.diarium.core.data.UsageSyncRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
-import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
-import java.util.concurrent.TimeUnit
 
 /**
  * Background sync worker:
@@ -27,46 +19,54 @@ import java.util.concurrent.TimeUnit
  *  - mode "yesterday" : full previous day (used by the 07:00 backfill + on-open check)
  *  - mode "backfill"  : last 7 days (used after install)
  *
- * Authenticates with the user's own JWT stored in [SessionStore] — no server
- * secrets live in a public APK.
+ * Since M6 the push itself lives in [UsageSyncRepository]: this class only decides
+ * *which* days to send and how WorkManager should treat the result. The repository
+ * talks to Supabase's `save_daily_entry` RPC with the user's own JWT from
+ * [cz.digitalnivedomi.diarium.auth.SessionStore] (via `SupabaseClient`), so there is
+ * no longer a `BuildConfig.SAVE_ENTRY_URL` hop through Vercel and no server secret
+ * in a public APK.
  */
 class UsageSyncWorker(
     appContext: Context,
     params: WorkerParameters
 ) : CoroutineWorker(appContext, params) {
 
-    private val sessionStore = SessionStore(appContext)
-    private val usageStats = UsageStatsProvider(appContext)
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
+    private val repository = UsageSyncRepository(appContext)
 
     override suspend fun doWork(): Result {
-        // Not logged in yet (or session expired beyond refresh) — retry later
-        // so the daily backfill still happens once the user signs in.
-        // validAccessToken() transparently refreshes an expired access token
-        // via Supabase before any push is attempted.
-        val token = sessionStore.validAccessToken() ?: return Result.retry()
-        if (!usageStats.hasUsageAccess()) return Result.retry() // permission not granted yet
-
         val mode = inputData.getString("mode") ?: "today"
         return withContext(Dispatchers.IO) {
             try {
-                when (mode) {
-                    "today" -> pushDay(canonicalToday(), token)
-                    "yesterday" -> pushDay(canonicalYesterday(), token)
-                    "backfill" -> {
-                        // i=0 is TODAY — the chart must show the current day
-                        // even before the 21:00 job fires. (Previously this
-                        // loop started at 1, so today was never pushed and the
-                        // current day stayed empty until the evening job.)
-                        for (i in 0..7) pushDay(canonicalPastDay(i), token)
+                val dates = when (mode) {
+                    "today" -> listOf(canonicalToday())
+                    "yesterday" -> listOf(canonicalYesterday())
+                    // i=0 is TODAY — the chart must show the current day even before
+                    // the 21:00 job fires. (Previously this loop started at 1, so
+                    // today was never pushed and the current day stayed empty until
+                    // the evening job.)
+                    "backfill" -> (0..7).map { canonicalPastDay(it) }
+                    else -> listOf(canonicalToday())
+                }
+
+                for (date in dates) {
+                    when (repository.pushDay(date)) {
+                        // Not logged in yet, or usage access not granted — retry
+                        // later so the daily backfill still happens once the user
+                        // signs in / flips the permission. validAccessToken()
+                        // transparently refreshes an expired access token before
+                        // any push is attempted.
+                        UsagePushOutcome.NO_SESSION,
+                        UsagePushOutcome.NO_USAGE_ACCESS -> return@withContext Result.retry()
+
+                        // SENT, or nothing captured that day.
+                        UsagePushOutcome.SENT,
+                        UsagePushOutcome.EMPTY_DAY -> Unit
                     }
-                    else -> pushDay(canonicalToday(), token)
                 }
                 Result.success()
             } catch (e: Exception) {
+                // A failed HTTP push throws out of the repository on purpose — the
+                // next run retries and refreshes the token via validAccessToken().
                 Log.e("DiariumSync", "sync failed: ${e.message}")
                 Result.retry()
             }
@@ -79,10 +79,7 @@ class UsageSyncWorker(
     }
 
     private fun canonicalYesterday(): String {
-        val cal = Calendar.getInstance().apply { timeZone = TimeZone.getDefault() }
-        cal.add(Calendar.DAY_OF_YEAR, -1)
-        return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getDefault() }
-            .format(cal.time)
+        return canonicalPastDay(1)
     }
 
     private fun canonicalPastDay(daysAgo: Int): String {
@@ -90,66 +87,5 @@ class UsageSyncWorker(
         cal.add(Calendar.DAY_OF_YEAR, -daysAgo)
         return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getDefault() }
             .format(cal.time)
-    }
-
-    private fun pushDay(date: String, token: String) {
-        val stats = usageStats.dayStats(date)
-        if (stats.optInt("totalSec", 0) <= 0 && stats.optInt("unlocks", 0) <= 0) return
-
-        // save-entry requires user_id, which must match the JWT's `sub` claim.
-        val jwtSub = try {
-            val payloadB64 = token.split(".").getOrNull(1) ?: return
-            val decoded = String(
-                android.util.Base64.decode(payloadB64, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP)
-            )
-            JSONObject(decoded).optString("sub")
-        } catch (_: Exception) {
-            return
-        }
-        if (jwtSub.isBlank()) return
-
-        val appsArr = stats.optJSONArray("apps") ?: org.json.JSONArray()
-        val topApps = org.json.JSONArray()
-        // Send the top 15 apps (>=30 s each) so the chart's "remaining time"
-        // slice stays small. Top-5 left ~95% of the day labeled "other".
-        var sent = 0
-        for (i in 0 until appsArr.length()) {
-            val a = appsArr.getJSONObject(i)
-            if (a.optLong("timeSec") < 30) continue
-            val o = JSONObject().apply {
-                put("app", a.getString("app"))
-                put("minutes", a.getLong("timeSec") / 60.0)
-            }
-            topApps.put(o)
-            sent++
-            if (sent >= 15) break
-        }
-
-        val payload = JSONObject().apply {
-            put("user_id", jwtSub)
-            put("date", date)
-            put("phone_screen_time", stats.optLong("totalSec"))
-            put("phone_unlocks", stats.optLong("unlocks"))
-            put("phone_top_apps", topApps)
-        }
-
-        val body = payload.toString().toRequestBody("application/json".toMediaType())
-        val request = Request.Builder()
-            .url(BuildConfig.SAVE_ENTRY_URL)
-            .header("Authorization", "Bearer $token")
-            .post(body)
-            .build()
-
-        client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                // Fail LOUDLY: a 401 means the token is invalid (or session
-                // revoked) and the job must be retried — the next run will
-                // refresh the token via SessionStore.validAccessToken().
-                // Previously this only logged the code and returned success,
-                // so WorkManager believed the push worked and NEVER retried.
-                Log.w("DiariumSync", "push $date → HTTP ${resp.code}, retrying")
-                throw IOException("push failed for $date: HTTP ${resp.code}")
-            }
-        }
     }
 }
