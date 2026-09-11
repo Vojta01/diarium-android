@@ -1,6 +1,7 @@
 package cz.digitalnivedomi.diarium.core.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -10,16 +11,17 @@ import org.junit.Test
  * The "Přehled" screen's pure derivations — the rules a defect report was filed
  * about, tested directly instead of through the screen.
  *
- * Three of them matter enough to pin here:
+ * These matter enough to pin here:
  *
  * - **top apps** were rendered in raw database order, so the real leaders never
  *   appeared;
  * - **the reflection card** keyed off the newest day that *has* a reflection, so it
  *   could sit on an older day while a newer entry went unreflected;
- * - **the mood row** collapsed "logged without a mood" into the same empty mark as
- *   "no entry", which read as a broken grey circle.
+ * - **the mood row** now follows the owner's rule: a day is a record only when the
+ *   mood is filled, so a synced row without a mood reads as missing instead of as a
+ *   logged day (the old neutral "–" disc is gone).
  *
- * [rankTopApps], [formatTopAppDuration], [moodDiscState] and
+ * [rankTopApps], [formatTopAppDuration], [moodDiscState], [isRecordedDay] and
  * [DashboardRepository.newestEntry] are plain functions, so no transport, session
  * or clock is involved.
  */
@@ -132,40 +134,78 @@ class DashboardInsightsTest {
         assertEquals("1 h 15 min", formatTopAppDuration(75))
     }
 
+    // ── A day is a record only when the mood is filled ──────────────────────────
+
+    /**
+     * The real case behind the rule: 2026-09-07 carries 5 h 58 min of screen time
+     * (21480 s) and 196 unlocks but no mood, sleep, stress or note. The phone sync
+     * wrote the row; the owner never journaled.
+     */
+    private fun syncedMoodlessMonday(): DashboardData = DashboardRepository.derive(
+        today = "2026-09-07",
+        rows = listOf(
+            DatedEntry(
+                date = "2026-09-07",
+                entry = DiaryEntry(mood = 0, phoneScreenTime = 21480, phoneUnlocks = 196),
+            ),
+        ),
+    )
+
+    @Test
+    fun `a day with a mood is a record`() {
+        assertTrue(isRecordedDay(1))
+        assertTrue(isRecordedDay(4))
+        assertTrue(isRecordedDay(5))
+    }
+
+    @Test
+    fun `a day without a mood is not a record`() {
+        assertFalse(isRecordedDay(null))
+        assertFalse(isRecordedDay(0))
+    }
+
+    @Test
+    fun `a synced row with screen time but no mood is not a record`() {
+        val day = syncedMoodlessMonday().week.last()
+
+        assertEquals("2026-09-07", day.date)
+        assertTrue(day.hasEntry) // the sync wrote a row …
+        assertEquals(21480, day.screenTimeSeconds)
+        assertEquals(196, day.unlocks)
+        assertFalse(isRecordedDay(day.mood)) // … but the day is not a record
+    }
+
     // ── Mood disc ──────────────────────────────────────────────────────────────
 
     @Test
     fun `a day with a mood shows the mood mark`() {
-        assertEquals(MoodDiscState.Mood, moodDiscState(hasEntry = true, mood = 4))
-        assertEquals(MoodDiscState.Mood, moodDiscState(hasEntry = true, mood = 1))
-        assertEquals(MoodDiscState.Mood, moodDiscState(hasEntry = true, mood = 5))
+        assertEquals(MoodDiscState.Mood, moodDiscState(4))
+        assertEquals(MoodDiscState.Mood, moodDiscState(1))
+        assertEquals(MoodDiscState.Mood, moodDiscState(5))
     }
 
     @Test
-    fun `a logged day without a mood shows the neutral mark`() {
-        // Monday 2026-09-07: an entry exists, the mood question was never answered.
-        // This is the disc that used to look like a broken, empty grey circle.
-        assertEquals(MoodDiscState.LoggedWithoutMood, moodDiscState(hasEntry = true, mood = 0))
+    fun `a mood-less day shows the missing mark, row or no row`() {
+        // A day with a row the owner never filled in (0 = not answered) and a day
+        // with no value at all both read as missing.
+        assertEquals(MoodDiscState.Missing, moodDiscState(0))
+        assertEquals(MoodDiscState.Missing, moodDiscState(null))
     }
 
     @Test
-    fun `a day with no entry stays quiet`() {
-        assertEquals(MoodDiscState.NoEntry, moodDiscState(hasEntry = false, mood = 0))
+    fun `the week-row state for a synced mood-less day is missing`() {
+        val day = syncedMoodlessMonday().week.last()
+
+        assertTrue(day.hasEntry)
+        assertEquals(MoodDiscState.Missing, moodDiscState(day.mood))
     }
 
     @Test
-    fun `a day with no entry is never a mood mark`() {
-        // A mood without an entry is not data the screen can trust; the absence of
-        // the entry wins.
-        assertEquals(MoodDiscState.NoEntry, moodDiscState(hasEntry = false, mood = 5))
-    }
-
-    @Test
-    fun `the three disc marks are all distinct`() {
+    fun `the two disc marks are all distinct`() {
         val states = MoodDiscState.values().toList()
 
-        assertEquals(3, states.size)
-        assertEquals(3, states.toSet().size)
+        assertEquals(2, states.size)
+        assertEquals(2, states.toSet().size)
     }
 
     // ── Newest entry (the reflection card's key) ───────────────────────────────

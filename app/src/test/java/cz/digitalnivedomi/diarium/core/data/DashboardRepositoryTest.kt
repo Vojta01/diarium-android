@@ -92,6 +92,46 @@ class DashboardRepositoryTest {
         assertEquals(3, data.longestStreak)
     }
 
+    @Test
+    fun `a synced day without a mood breaks the streak like a missing day`() {
+        // 2026-09-08 has an entries row from the phone sync (5 h 58 min screen time,
+        // 196 unlocks) but no mood. Under the owner's rule that is not a record, so
+        // the run of records stops there: the mood-less day neither bridges 09-09
+        // and 09-07 nor counts itself.
+        val data = derive(
+            "2026-09-10" to DiaryEntry(mood = 4),
+            "2026-09-09" to DiaryEntry(mood = 3),
+            "2026-09-08" to DiaryEntry(phoneScreenTime = 21480, phoneUnlocks = 196),
+            "2026-09-07" to DiaryEntry(mood = 2),
+        )
+
+        assertEquals(2, data.streak)
+        assertEquals(2, data.longestStreak)
+
+        // The row is still there for the screen-time card — it just is not a record.
+        val syncedDay = data.week.first { it.date == "2026-09-08" }
+        assertTrue(syncedDay.hasEntry)
+        assertEquals(0, syncedDay.mood)
+        assertEquals(21480, syncedDay.screenTimeSeconds)
+    }
+
+    @Test
+    fun `a synced mood-less today does not extend the streak`() {
+        // Back in the morning the phone already synced today but the owner has not
+        // written anything: like an unfinished today, this must leave the run from
+        // yesterday intact and must not add a day.
+        val data = derive(
+            "2026-09-10" to DiaryEntry(phoneScreenTime = 21480, phoneUnlocks = 196),
+            "2026-09-09" to DiaryEntry(mood = 3),
+            "2026-09-08" to DiaryEntry(mood = 2),
+        )
+
+        assertEquals(2, data.streak)
+        assertEquals(2, data.longestStreak)
+        // The synced numbers still reach the screen-time card.
+        assertEquals(358, data.screenTimeMinutes) // 21480 s ≈ 358 min
+    }
+
     // ── Week window ────────────────────────────────────────────────────────────
 
     @Test

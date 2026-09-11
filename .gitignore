@@ -7,6 +7,11 @@ app/build/
 # Local machine configuration (SDK paths, secrets) — never commit
 local.properties
 
+# Release signing key material — never commit
+keystore.properties
+*.jks
+*.keystore
+
 # Firebase credentials — user-provided, never commit
 google-services.json
 *.json.serviceaccount

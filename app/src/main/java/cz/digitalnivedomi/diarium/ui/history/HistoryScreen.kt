@@ -277,9 +277,17 @@ private fun CalendarCard(
                             Spacer(Modifier.weight(1f))
                         } else {
                             val iso = HistoryCalendar.iso(date)
+                            // A cell is only painted as a journaled day when the mood is
+                            // filled (see HistoryCalendar.isLogged). A row the phone
+                            // synced without a mood is handed in as null, so it gets the
+                            // same neutral cell as a day with no row at all — listed,
+                            // but not reading as a day the owner wrote. The row is still
+                            // reachable by tapping the day, which shows the synced data.
+                            val logged = data?.entryOn(iso)
+                                ?.takeIf { HistoryCalendar.isLogged(it.mood) }
                             DayCell(
                                 dayOfMonth = date.dayOfMonth,
-                                entry = data?.entryOn(iso),
+                                entry = logged,
                                 isToday = iso == todayIso,
                                 isSelected = iso == selected,
                                 selectable = HistoryCalendar.isSelectable(date, today),
@@ -298,10 +306,12 @@ private fun CalendarCard(
 /**
  * One day of the grid.
  *
- * A day with an entry takes the mood's own colour as its marker (emerald, amber,
- * red…), a day without stays a faint cell — the grid is readable as a mood chart at
- * a glance. Future days are muted AND unclickable: no ripple, no callback, nothing
- * to open.
+ * [entry] is only ever the day's entry **when its mood is filled** — the caller
+ * filters with [HistoryCalendar.isLogged] first — so a day that merely has synced
+ * phone data arrives as null here and paints the neutral cell. A journaled day takes
+ * the mood's own colour as its marker (emerald, amber, red…), everything else stays a
+ * faint cell — the grid is readable as a mood chart at a glance. Future days are
+ * muted AND unclickable: no ripple, no callback, nothing to open.
  */
 @Composable
 private fun RowScope.DayCell(
@@ -406,7 +416,14 @@ private fun ErrorCard(message: String, onRetry: () -> Unit) {
     }
 }
 
-/** Nothing picked yet — say so, and say what an empty month means. */
+/**
+ * Nothing picked yet — say so, and say what an empty month means.
+ *
+ * The count is the number of **records** (days the mood was filled in), not the number
+ * of rows: the month read returns a row for every day the phone synced, so counting
+ * rows would report journaled days the owner never wrote (2026-09-07 and friends). A
+ * month that is *all* synced rows gets its own copy instead of a misleading "0 zápisů".
+ */
 @Composable
 private fun HintCard(data: HistoryData) {
     GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -418,20 +435,51 @@ private fun HintCard(data: HistoryData) {
             color = TextPrimary,
         )
         VSpace(Spacing.block)
-        if (data.entries.isEmpty()) {
-            EmptyState(
+        val recorded = data.recordedCount
+        val syncedOnly = data.syncedOnlyCount
+        when {
+            data.entries.isEmpty() -> EmptyState(
                 emoji = "📝",
                 title = "Zatím žádné zápisy",
                 message = "V měsíci ${HistoryCalendar.title(data.year, data.month)} " +
                     "nemáš žádný záznam. Klikni na den v kalendáři a zapiš, jaký byl.",
             )
-        } else {
-            SectionHint(
-                if (data.entries.size == 1) "V tomto měsíci máš 1 zápis."
-                else "V tomto měsíci máš ${data.entries.size} zápisů.",
+            // Rows exist, but every one is phone-sync data without a mood. Say it
+            // plainly rather than printing a count of zero records.
+            recorded == 0 -> EmptyState(
+                emoji = "📱",
+                title = "Jen automatická data, žádný zápis",
+                message = "V měsíci ${HistoryCalendar.title(data.year, data.month)} " +
+                    "máš jen data stažená z telefonu (screen time, odemknutí). " +
+                    "Bez vyplněné nálady se den jako zápis nepočítá — klikni na den " +
+                    "a doplň check-in.",
             )
-            VSpace(4)
-            SectionHint("Klikni na den v kalendáři a uvidíš, co jsi ten den zapsal.")
+            else -> {
+                SectionHint(monthCountText(recorded))
+                if (syncedOnly > 0) {
+                    VSpace(4)
+                    SectionHint(syncedOnlyText(syncedOnly))
+                }
+                VSpace(4)
+                SectionHint("Klikni na den v kalendáři a uvidíš, co jsi ten den zapsal.")
+            }
         }
     }
+}
+
+/** "V tomto měsíci máš 3 zápisy." — only ever called with at least one record. */
+internal fun monthCountText(recorded: Int): String =
+    "V tomto měsíci máš $recorded ${entryNoun(recorded)}."
+
+/** "U 2 dnů máš jen automatická data bez nálady — jako zápisy se nepočítají." */
+internal fun syncedOnlyText(syncedOnly: Int): String {
+    val days = if (syncedOnly == 1) "1 dne" else "$syncedOnly dnů"
+    return "U $days máš jen automatická data bez nálady — jako zápisy se nepočítají."
+}
+
+/** Czech plural: 1 zápis, 2–4 zápisy, 5+ zápisů. */
+private fun entryNoun(count: Int): String = when {
+    count == 1 -> "zápis"
+    count in 2..4 -> "zápisy"
+    else -> "zápisů"
 }

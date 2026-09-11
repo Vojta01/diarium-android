@@ -65,11 +65,14 @@ fun ActivitiesSection(
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 activities.forEach { def ->
                     SelectableChip(
-                        text = "✕ ${labelWithIcon(def.icon, def.label)}",
+                        // The catalogue icon is the visual anchor (22sp); the ✕
+                        // action glyph rides along in the label instead.
+                        text = "✕ ${def.label}",
+                        icon = def.icon,
                         selected = false,
                         testTag = "activity_hide_${def.key}",
                     ) { onHide(def) }
@@ -82,11 +85,12 @@ fun ActivitiesSection(
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     hiddenActivities.forEach { def ->
                         SelectableChip(
-                            text = "＋ ${labelWithIcon(def.icon, def.label)}",
+                            text = "＋ ${def.label}",
+                            icon = def.icon,
                             selected = false,
                             testTag = "activity_restore_${def.key}",
                         ) { onRestore(def.key) }
@@ -97,14 +101,14 @@ fun ActivitiesSection(
             groupedByCategory(activities).forEach { (category, defs) ->
                 Text(
                     text = PickerDefaults.categoryLabel(category),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelMedium,
                     color = TextSecondary,
-                    modifier = Modifier.padding(top = 6.dp, bottom = 6.dp),
+                    modifier = Modifier.padding(top = 10.dp, bottom = 6.dp),
                 )
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     defs.forEach { def ->
                         SelectableChip(
@@ -166,7 +170,7 @@ fun WeatherSection(
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             options.forEach { option ->
                 SelectableChip(

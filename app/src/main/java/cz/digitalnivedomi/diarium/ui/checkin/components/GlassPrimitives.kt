@@ -18,6 +18,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -27,6 +28,44 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
  * Last few shared bits: hex colour parsing (catalogue rows store `#RRGGBB`),
  * the numeric scale row and the read-only label/value row.
  */
+
+/**
+ * One place for every emoji / touch size the check-in form draws with.
+ *
+ * The owner's complaint was "the icons are too small and not clear at all", so
+ * the sizes live here instead of being re-typed per call site: an activity icon
+ * inside a chip, a scale emoji and the mood emoji can only grow together, and
+ * an item's icon can never drift below [chip] (22sp) — it is the visual anchor
+ * of everything it labels.
+ */
+object CheckInIconSize {
+    /** Icon of a chip (activities, weather) in its resting state. */
+    val chip = 22.sp
+
+    /** Icon of a selected chip — one step up so the anchor grows on tap. */
+    val chipSelected = 24.sp
+
+    /** The largest element in the form: the mood / sleep / stress emoji. */
+    val scale = 28.sp
+
+    /** The selected scale emoji — a subtle size pop, no animation. */
+    val scaleSelected = 34.sp
+
+    /** Emoji that leads a labelled row (a custom scale, a goal) — same floor. */
+    val rowIcon = 22.sp
+
+    /** The icon-only ✕ that clears a scale (has its own 44dp touch target). */
+    val clearGlyph = 14.sp
+
+    /** Glyph of a [GlassIconButton] (◀ ▶ …). */
+    val actionGlyph = 16.sp
+
+    /** Minimum touch height of a [SelectableChip]. */
+    val chipMinHeight = 46.dp
+
+    /** Comfortable touch target for an icon-only affordance. */
+    val touchTarget = 44.dp
+}
 
 /** `#6366F1` (or `#FF6366F1`) -> [Color]; falls back to [fallback] when junk. */
 fun parseHex(hex: String, fallback: Color = Indigo): Color {

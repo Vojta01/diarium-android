@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.history
 
+import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import java.time.DayOfWeek
 import java.time.LocalDate
 
@@ -106,6 +107,18 @@ object HistoryCalendar {
 
     /** A day the user cannot open yet. */
     fun isFuture(date: LocalDate, today: LocalDate): Boolean = date.isAfter(today)
+
+    /**
+     * Whether the calendar marks a day as **logged** — the mood-filled rule, shared
+     * with the rest of the app (see [isRecordedDay]).
+     *
+     * [mood] is nullable on purpose: a row the phone synced without a mood (screen
+     * time, unlocks, top apps) must get the same neutral cell as a day with no row at
+     * all, and only a filled mood may paint the mood colour and emoji. The history
+     * screen asks this once per cell rather than testing `entry != null`, so the
+     * marking rule has exactly one definition.
+     */
+    fun isLogged(mood: Int?): Boolean = isRecordedDay(mood)
 
     /**
      * Whether a cell reacts to a tap: every day up to and including [today]. Future

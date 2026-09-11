@@ -113,6 +113,44 @@ class HistoryRepositoryTest {
         assertNull(data.moodOn("2026-09-07"))
     }
 
+    /**
+     * The owner's rule (2026-09-11) on the real 2026-09-07: the sync worker wrote a row
+     * with 5 h 58 min of screen time and 196 unlocks and no mood, so the day's record is
+     * missing. The row stays in the month (the detail card shows the synced data) but it
+     * is not counted as a record and carries no calendar marker.
+     */
+    @Test
+    fun `a synced-only row is kept but never counted as a record`() = runTest {
+        response = HttpResponse(
+            200,
+            JSONArray()
+                .put(JSONObject().put("date", "2026-09-10").put("mood", 5))
+                .put(
+                    JSONObject()
+                        .put("date", "2026-09-07")
+                        .put("phone_screen_time", 5 * 3600 + 58 * 60)
+                        .put("phone_unlocks", 196),
+                )
+                .toString(),
+        )
+
+        val data = repository().load(2026, 9, TODAY).getOrThrow()
+
+        // Both rows survive the read — the synced day is listed, not dropped.
+        assertEquals(setOf("2026-09-10", "2026-09-07"), data.entries.keys)
+        // Only the mood-filled day counts as a record.
+        assertEquals(1, data.recordedCount)
+        assertEquals(1, data.syncedOnlyCount)
+        assertTrue(data.isRecorded("2026-09-10"))
+        assertFalse(data.isRecorded("2026-09-07"))
+        assertTrue(data.isSyncedOnly("2026-09-07"))
+        // The synced data itself is still readable for the detail card…
+        assertEquals(5 * 3600 + 58 * 60, data.entryOn("2026-09-07")?.phoneScreenTime)
+        assertEquals(196, data.entryOn("2026-09-07")?.phoneUnlocks)
+        // …but the calendar draws no marker for it, exactly as if the row were absent.
+        assertNull(data.moodOn("2026-09-07"))
+    }
+
     @Test
     fun `a row without a date is dropped instead of landing under an empty key`() {
         val data = HistoryRepository.derive(

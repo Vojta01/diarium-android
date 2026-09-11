@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -46,8 +47,10 @@ import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.MoodDiscState
 import cz.digitalnivedomi.diarium.core.data.formatTopAppDuration
+import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.moodDiscState
 import cz.digitalnivedomi.diarium.core.data.rankTopApps
+import cz.digitalnivedomi.diarium.core.stats.ScreenTimeSeries
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
 import cz.digitalnivedomi.diarium.ui.checkin.MOOD_CHOICES
 import cz.digitalnivedomi.diarium.ui.checkin.SLEEP_CHOICES
@@ -405,7 +408,10 @@ private fun StreakCard(data: DashboardData) {
         VSpace(6)
         when {
             data.streak == 0 -> SectionHint("Zatím žádná série — začni dnešním zápisem.")
-            data.todayEntry == null -> SectionHint("Dnešní zápis ještě chybí, série ale pokračuje.")
+            // A synced row with no mood is not a record, so the streak does not
+            // count today and this reads exactly like an unwritten today.
+            !isRecordedDay(data.todayEntry?.mood) ->
+                SectionHint("Dnešní zápis ještě chybí, série ale pokračuje.")
             else -> SectionHint("Série pokračuje dnešním zápisem.")
         }
         VSpace(12)
@@ -436,13 +442,15 @@ private fun WeekCard(data: DashboardData) {
         ) {
             data.week.forEach { day ->
                 val isToday = day.date == data.today
-                val state = moodDiscState(day.hasEntry, day.mood)
+                // Only the mood decides the mark: a synced row with no mood is
+                // missing, exactly like a day with no row (the owner's rule).
+                val state = moodDiscState(day.mood)
                 val mood = moodColor(day.mood)
-                // Three deliberate marks, not two: a logged day without a mood is
-                // its own state, so it can never render as an empty grey hole the
-                // user reads as broken (the Monday disc that prompted this fix).
-                // Every branch must be a Brush: there is no `background(Color)`
-                // overload here, so an even fill is a solid-colour brush.
+                // Two marks, not three: a day without a mood is missing whether
+                // or not the phone synced a row for it, so it can never render as
+                // a logged day. Every branch must be a Brush: there is no
+                // `background(Color)` overload here, so an even fill is a
+                // solid-colour brush.
                 val fill: Brush = when (state) {
                     MoodDiscState.Mood ->
                         // A soft glow: the mood colour fades down the disc instead
@@ -450,17 +458,13 @@ private fun WeekCard(data: DashboardData) {
                         Brush.verticalGradient(
                             listOf(mood.copy(alpha = 0.30f), mood.copy(alpha = 0.10f)),
                         )
-                    // A tidy neutral indigo disc — clearly deliberate, clearly not
-                    // a mood value.
-                    MoodDiscState.LoggedWithoutMood -> SolidColor(Indigo.copy(alpha = 0.08f))
-                    MoodDiscState.NoEntry -> SolidColor(Color.White.copy(alpha = 0.04f))
+                    // The quiet empty disc: a day that reads as "still missing".
+                    MoodDiscState.Missing -> SolidColor(Color.White.copy(alpha = 0.04f))
                 }
-                val borderWidth =
-                    if (isToday && state != MoodDiscState.LoggedWithoutMood) 2.dp else 1.2.dp
+                val borderWidth = if (isToday) 2.dp else 1.2.dp
                 val borderColor = when (state) {
                     MoodDiscState.Mood -> if (isToday) Indigo else mood.copy(alpha = 0.55f)
-                    MoodDiscState.LoggedWithoutMood -> Indigo.copy(alpha = 0.35f)
-                    MoodDiscState.NoEntry -> if (isToday) Indigo else Outline.copy(alpha = 0.5f)
+                    MoodDiscState.Missing -> if (isToday) Indigo else Outline.copy(alpha = 0.5f)
                 }
                 Column(
                     modifier = Modifier.weight(1f),
@@ -482,14 +486,9 @@ private fun WeekCard(data: DashboardData) {
                                 fontSize = 17.sp,
                                 color = Color.Unspecified,
                             )
-                            // An en-dash: a day that was filled in, just without a
-                            // mood. Never the empty/grey treatment.
-                            MoodDiscState.LoggedWithoutMood -> Text(
-                                text = "–",
-                                fontSize = 15.sp,
-                                color = TextTertiary,
-                            )
-                            MoodDiscState.NoEntry -> Text(
+                            // A quiet dot: a day without a mood reads as missing,
+                            // exactly like a day the phone never synced.
+                            MoodDiscState.Missing -> Text(
                                 text = "·",
                                 fontSize = 17.sp,
                                 color = TextTertiary,
@@ -505,12 +504,8 @@ private fun WeekCard(data: DashboardData) {
                 }
             }
         }
-        // The legend appears only when a neutral disc is actually on screen, so the
-        // en-dash can never be read as a rendering bug.
-        if (data.week.any { moodDiscState(it.hasEntry, it.mood) == MoodDiscState.LoggedWithoutMood }) {
-            VSpace(8)
-            SectionHint("– = den bez vyplněné nálady")
-        }
+        // No legend: there is no neutral "–" disc any more. A day without a mood
+        // reads as missing, so nothing here needs explaining.
         VSpace(12)
         GlassDivider()
         VSpace(10)
@@ -604,7 +599,36 @@ private fun ScreenTimeCard(data: DashboardData) {
                             )
                         }
                     }
-                    VSpace(6)
+                    VSpace(4)
+                    // The day's own numbers, printed under its bar: the compact
+                    // screen time, then — only when the phone reported any — the
+                    // unlock count. A day that never synced reads "—" and stays
+                    // visibly empty instead of looking like a "0m" day.
+                    Text(
+                        text = ScreenTimeSeries.secondsLabel(seconds),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.wrapContentWidth(
+                            align = Alignment.CenterHorizontally,
+                            unbounded = true,
+                        ),
+                    )
+                    ScreenTimeSeries.unlockLabel(day.unlocks)?.let { unlock ->
+                        Text(
+                            text = unlock,
+                            fontSize = 9.sp,
+                            color = TextTertiary,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.wrapContentWidth(
+                                align = Alignment.CenterHorizontally,
+                                unbounded = true,
+                            ),
+                        )
+                    }
+                    VSpace(2)
                     Text(
                         text = dayLabel(day.date, data.today),
                         style = MaterialTheme.typography.labelSmall,
@@ -613,6 +637,9 @@ private fun ScreenTimeCard(data: DashboardData) {
                 }
             }
         }
+
+        VSpace(8)
+        SectionHint(ScreenTimeSeries.LEGEND)
 
         data.topApps?.let { topApps ->
             VSpace(14)

@@ -5,8 +5,12 @@ import java.time.LocalDate
 /**
  * One day of the dashboard's week window, as the UI draws it.
  *
- * [mood] is 0 for a day without an entry (the same "no value" the database stores),
+ * [mood] is 0 for a day without a mood (the same "no value" the database stores),
  * so the screen can colour the cell without asking whether an entry exists.
+ *
+ * [hasEntry] says only that a synced `entries` row exists for the day; it is
+ * **not** "the day was journaled". Under the owner's rule (see [isRecordedDay]) a
+ * record needs a mood, and the phone sync writes a row for every day regardless.
  */
 data class DashboardDay(
     val date: String,
@@ -79,11 +83,17 @@ data class DashboardData(
  * - **window** — [LOAD_DAYS] calendar days ending today, inclusive.
  * - **week overview / screen time** — the last [WEEK_DAYS] calendar days ending
  *   today, inclusive, oldest first; today is the last cell even when empty.
- * - **streak** — consecutive days that have an entry, counting back from today; a
- *   missing today does **not** break a run that ended yesterday, it only means the
- *   count starts there. The streak is therefore never zeroed by an unfinished day.
- * - **average mood** — over the week window, ignoring days with no entry and days
- *   whose mood is 0.
+ * - **streak** — consecutive *recorded* days (mood filled, see [isRecordedDay]),
+ *   counting back from today; a missing today does **not** break a run that ended
+ *   yesterday, it only means the count starts there. The streak is therefore never
+ *   zeroed by an unfinished day. A day the phone synced without a mood is treated
+ *   exactly like a missing day — it neither extends nor breaks the run.
+ * - **average mood** — over the week window, ignoring days with no mood and days
+ *   whose mood is 0 (the same "recorded" test).
+ *
+ * The web keys the streak off any row, so a day the phone synced but nobody
+ * journaled would extend the web's run. This app counts only mood days on purpose:
+ * see [isRecordedDay] for why a row alone is not a record.
  */
 class DashboardRepository(private val entries: EntriesRepository) {
 
@@ -121,6 +131,16 @@ class DashboardRepository(private val entries: EntriesRepository) {
                 .filter { it.date.isNotBlank() }
                 .associate { it.date to it.entry }
 
+            // The owner's rule: a day is a record only when the mood is filled.
+            // The phone sync writes an `entries` row for every day, so the streak
+            // and longest run must key off recorded days, not off row presence —
+            // a mood-less 2026-09-07 (5 h 58 min screen time, 196 unlocks) is
+            // treated exactly like a missing day.
+            val recordedDates: Set<String> = rows
+                .filter { it.date.isNotBlank() && isRecordedDay(it.entry.mood) }
+                .map { it.date }
+                .toSet()
+
             val week = weekWindow(today).map { date ->
                 val entry = byDate[date]
                 DashboardDay(
@@ -135,7 +155,7 @@ class DashboardRepository(private val entries: EntriesRepository) {
             // A mood of 0 means "not answered", not "the worst possible day": the
             // check-in stores 0 for an untouched picker, so averaging it in would
             // drag every week down for no reason.
-            val moods = week.mapNotNull { day -> day.mood.takeIf { it > 0 } }
+            val moods = week.mapNotNull { day -> day.mood.takeIf { isRecordedDay(it) } }
             // Null (never synced) is dropped; a synced 0 is kept, because "the phone
             // reported nothing" is data and must not read as "no sync yet".
             val seconds = week.mapNotNull { it.screenTimeSeconds }
@@ -144,8 +164,8 @@ class DashboardRepository(private val entries: EntriesRepository) {
             return DashboardData(
                 today = today,
                 todayEntry = byDate[today],
-                streak = currentStreak(today, byDate.keys),
-                longestStreak = longestStreak(byDate.keys),
+                streak = currentStreak(today, recordedDates),
+                longestStreak = longestStreak(recordedDates),
                 week = week,
                 averageMood = if (moods.isEmpty()) null else moods.sum().toDouble() / moods.size,
                 screenTimeMinutes = seconds
@@ -160,10 +180,13 @@ class DashboardRepository(private val entries: EntriesRepository) {
         }
 
         /**
-         * Consecutive days with an entry, counting back from [today].
+         * Consecutive *recorded* days (mood filled), counting back from [today].
          *
-         * When today has no entry the count starts at yesterday: a day that is not
-         * over yet cannot break a run. With no history at all the result is 0.
+         * [dates] must already be the recorded set — [derive] filters by
+         * [isRecordedDay] before calling, so a day the phone synced without a mood
+         * is not in it. When today is not recorded the count starts at yesterday:
+         * a day that is not over yet cannot break a run. With no history at all
+         * the result is 0.
          *
          * Exact up to [LOAD_DAYS] days and a lower bound beyond that, since only a
          * window is ever loaded.
@@ -179,7 +202,7 @@ class DashboardRepository(private val entries: EntriesRepository) {
             return count
         }
 
-        /** Longest run of consecutive days anywhere in the loaded window. */
+        /** Longest run of consecutive recorded days anywhere in the loaded window. */
         fun longestStreak(dates: Set<String>): Int {
             val days = dates.mapNotNull { parseDate(it) }.distinct().sorted()
             var best = 0

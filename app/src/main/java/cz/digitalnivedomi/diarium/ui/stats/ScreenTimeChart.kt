@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -35,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cz.digitalnivedomi.diarium.core.stats.ScreenTimeDay
+import cz.digitalnivedomi.diarium.core.stats.ScreenTimeSeries
 import cz.digitalnivedomi.diarium.core.stats.StatsDay
 import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.core.stats.TopAppsBreakdown
@@ -206,10 +208,23 @@ fun ScreenTimeChart(entries: List<StatsDay>, today: String, modifier: Modifier =
             }
 
             VSpace(6)
+            // The value (and the unlock count) sits under every labelled bar; the
+            // weekday row drops a name for exactly the bars that carry no label, so
+            // the two rows read as one column instead of drifting apart in the
+            // 30-day window.
+            val selectedIndex = window.indexOfFirst { it.date == selectedDate }.takeIf { it >= 0 }
+            val labelled = ScreenTimeSeries.labelIndices(
+                count = window.size,
+                windowDays = windowDays,
+                selectedIndex = selectedIndex,
+            )
+            BarValueRow(window = window, labelled = labelled, selectedDate = selectedDate)
+
+            VSpace(2)
             Row(modifier = Modifier.fillMaxWidth()) {
                 window.forEachIndexed { index, day ->
                     Text(
-                        text = if (windowDays <= SCREEN_TIME_WEEK || index % 5 == 0) weekdayLabel(day.date) else "",
+                        text = if (index in labelled) weekdayLabel(day.date) else "",
                         style = MaterialTheme.typography.labelSmall,
                         color = if (day.date == today) IndigoLight else TextTertiary,
                         textAlign = TextAlign.Center,
@@ -217,6 +232,9 @@ fun ScreenTimeChart(entries: List<StatsDay>, today: String, modifier: Modifier =
                     )
                 }
             }
+
+            VSpace(8)
+            SectionHint(ScreenTimeSeries.LEGEND)
 
             VSpace(12)
             GlassDivider()
@@ -259,6 +277,62 @@ fun ScreenTimeChart(entries: List<StatsDay>, today: String, modifier: Modifier =
         }
 
         TopAppsCard(breakdown = breakdown, windowDays = windowDays, totalSeconds = summary.totalSeconds)
+    }
+}
+
+/**
+ * The label under each bar: the day's compact screen time, and — only on days the
+ * phone reported unlocks for — the unlock count on a second line.
+ *
+ * A label is centred on its own slot and allowed to spill past it
+ * (`wrapContentWidth(unbounded = true)`): in the 30-day window a slot is ~11dp on a
+ * phone, far narrower than "5h58", so measuring the text against the slot would clip
+ * it to an ellipsis under every bar. Only labelled bars get text and labels are
+ * [ScreenTimeSeries.THIN_EVERY] slots apart there, so the spill always lands in an
+ * empty slot instead of on a neighbour's number.
+ */
+@Composable
+private fun BarValueRow(
+    window: List<ScreenTimeDay>,
+    labelled: Set<Int>,
+    selectedDate: String?,
+) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        window.forEachIndexed { index, day ->
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                if (index in labelled) {
+                    Column(
+                        modifier = Modifier.wrapContentWidth(
+                            align = Alignment.CenterHorizontally,
+                            unbounded = true,
+                        ),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            text = ScreenTimeSeries.secondsLabel(day.seconds),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (day.date == selectedDate) IndigoLight else TextSecondary,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                        ScreenTimeSeries.unlockLabel(day.unlocks)?.let { unlock ->
+                            // A hair smaller than the value so the two lines stay
+                            // distinguishable at phone width.
+                            Text(
+                                text = unlock,
+                                fontSize = 9.sp,
+                                color = TextTertiary,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

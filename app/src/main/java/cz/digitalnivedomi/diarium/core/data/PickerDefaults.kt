@@ -57,6 +57,36 @@ object PickerDefaults {
         return CATEGORY_ALIASES[normalized] ?: normalized
     }
 
+    /**
+     * Comparison key for a stored entry value or a picker item's label: trimmed
+     * and lower-cased. Entries were saved as label strings before the duplicate
+     * rows were cleaned up in the database, so a day stored as `hacking` must
+     * still select the surviving `Hacking` chip. This never rewrites the value
+     * stored in an entry — it is only used to compare.
+     *
+     * Pure, so it is covered directly by the JVM tests.
+     */
+    fun normalizeLabel(label: String): String = label.trim().lowercase()
+
+    /**
+     * True when two labels are the same ignoring surrounding space and letter
+     * case (e.g. `hacking` == `Hacking`). Symmetric, so either side may be the
+     * stored value or the picker item.
+     *
+     * Pure, so it is covered directly by the JVM tests.
+     */
+    fun labelsMatch(a: String, b: String): Boolean = normalizeLabel(a) == normalizeLabel(b)
+
+    /**
+     * True when [label] is already present in a [stored] list of labels,
+     * case-insensitively — the check a chip uses to render itself as selected,
+     * so the entry `["Rodina", "hacking"]` still ticks the `Hacking` chip.
+     *
+     * Pure, so it is covered directly by the JVM tests.
+     */
+    fun isStoredLabel(stored: Collection<String>, label: String): Boolean =
+        stored.any { labelsMatch(it, label) }
+
     /** The eight weather options (the `počasí` slice of the web's catalog). */
     val WEATHER_OPTIONS = listOf(
         ActivityDef(key = "slunecno", label = "Slunečno", icon = "☀️", category = "počasí"),
