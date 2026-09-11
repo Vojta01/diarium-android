@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import cz.digitalnivedomi.diarium.auth.AuthManager
 import cz.digitalnivedomi.diarium.auth.AuthStateHolder
@@ -36,8 +37,18 @@ class MainActivity : ComponentActivity() {
     /** `diarium://auth-callback#access_token=…` handed up to the auth layer. */
     private val authDeepLink = mutableStateOf<String?>(null)
 
+    /**
+     * Mirrors whether the user lets us post notifications. The M6 notifications
+     * screen reads the live system state itself; this keeps the answer to our own
+     * `POST_NOTIFICATIONS` request instead of dropping it, so the Activity knows
+     * whether the prompt was granted, denied, or never asked.
+     */
+    private val notificationPermissionGranted = mutableStateOf(false)
+
     private val notificationPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* reminder opt-in only */ }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            notificationPermissionGranted.value = granted
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,7 +63,14 @@ class MainActivity : ComponentActivity() {
         // --- Recycled background plumbing (unchanged behaviour) --------------
         SyncScheduler.ensureScheduled(this)
         NotificationScheduler.rescheduleAll(this)
-        FcmTokenRegistrar.register(this)
+        // The device token belongs to an account, so it is registered only once
+        // there is a session: on a fresh install this is skipped and AuthManager
+        // re-registers it right after the OAuth callback; on every later start the
+        // stored session is already there. (The old unconditional call fetched the
+        // token before login, posted it to nobody, and never retried.)
+        if (authState.isAuthenticated) FcmTokenRegistrar.register(this)
+        notificationPermissionGranted.value =
+            NotificationManagerCompat.from(this).areNotificationsEnabled()
         requestNotificationPermissionIfNeeded()
 
         authDeepLink.value = intent?.dataString

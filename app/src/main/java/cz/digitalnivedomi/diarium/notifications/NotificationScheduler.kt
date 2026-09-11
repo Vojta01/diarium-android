@@ -9,13 +9,15 @@ import android.os.Build
 import androidx.work.Data
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import java.util.Calendar
-import java.util.TimeZone
+import java.time.ZoneId
 
 /**
  * Schedules the three notification jobs with AlarmManager at the exact times
  * the user chose. Every fire re-arms the next occurrence (daily reminder,
  * weekly Sunday 20:00, monthly 1st). Rescheduled on boot and on prefs change.
+ *
+ * All wall-clock math lives in the pure [NotificationSchedulerLogic]; this object
+ * is only the Android/AlarmManager glue.
  */
 object NotificationScheduler {
 
@@ -29,6 +31,9 @@ object NotificationScheduler {
     private const val REQ_WEEKLY = 2002
     private const val REQ_MONTHLY = 2003
 
+    /** Inexact fallback window used when exact alarms are not permitted. */
+    private const val INEXACT_WINDOW_MS = 15 * 60 * 1000L
+
     fun rescheduleAll(context: Context) {
         val prefs = NotificationPrefsStore(context).load()
         if (prefs.reminderEnabled) scheduleReminder(context, prefs)
@@ -39,22 +44,55 @@ object NotificationScheduler {
         else cancel(context, REQ_MONTHLY)
     }
 
+    /**
+     * Call after the user saves settings: clears the "reminded today" marker so a
+     * newly chosen time can still fire today, then re-arms every enabled alarm.
+     */
+    fun onPrefsSaved(context: Context) {
+        NotificationPrefsStore(context).setLastReminderDate(null)
+        rescheduleAll(context)
+    }
+
+    /**
+     * Exact alarms need `SCHEDULE_EXACT_ALARM` on Android 12+. On older versions
+     * exact alarms are always allowed, so return true.
+     */
+    fun canScheduleExactAlarms(context: Context): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            am.canScheduleExactAlarms()
+        } else {
+            true
+        }
+
     private fun scheduleReminder(context: Context, prefs: NotificationPrefs) {
-        val next = nextDaily(prefs.reminderTimeMinutes)
-        val intent = alarmIntent(context, TYPE_REMINDER)
-        setExact(context, REQ_REMINDER, next, intent)
+        val next = NotificationSchedulerLogic.nextDailyMillis(
+            now = System.currentTimeMillis(),
+            timeMinutes = prefs.reminderTimeMinutes,
+            days = prefs.reminderDays,
+            zone = ZoneId.systemDefault(),
+        ) ?: return // no day selected → nothing to arm
+        setExact(context, REQ_REMINDER, next, alarmIntent(context, TYPE_REMINDER))
     }
 
     private fun scheduleWeekly(context: Context, prefs: NotificationPrefs) {
-        val next = nextWeekly(prefs.weeklyDay, prefs.weeklyTimeMinutes)
-        val intent = alarmIntent(context, TYPE_WEEKLY)
-        setExact(context, REQ_WEEKLY, next, intent)
+        val next = NotificationSchedulerLogic.nextWeeklyMillis(
+            now = System.currentTimeMillis(),
+            timeMinutes = prefs.weeklyTimeMinutes,
+            day = prefs.weeklyDay,
+            zone = ZoneId.systemDefault(),
+        )
+        setExact(context, REQ_WEEKLY, next, alarmIntent(context, TYPE_WEEKLY))
     }
 
     private fun scheduleMonthly(context: Context, prefs: NotificationPrefs) {
-        val next = nextMonthly(prefs.monthlyTimeMinutes)
-        val intent = alarmIntent(context, TYPE_MONTHLY)
-        setExact(context, REQ_MONTHLY, next, intent)
+        val next = NotificationSchedulerLogic.nextMonthlyMillis(
+            now = System.currentTimeMillis(),
+            timeMinutes = prefs.monthlyTimeMinutes,
+            dayOfMonth = 1,
+            zone = ZoneId.systemDefault(),
+        )
+        setExact(context, REQ_MONTHLY, next, alarmIntent(context, TYPE_MONTHLY))
     }
 
     private fun alarmIntent(context: Context, type: String): PendingIntent {
@@ -76,22 +114,17 @@ object NotificationScheduler {
 
     private fun setExact(context: Context, requestCode: Int, triggerAt: Long, pi: PendingIntent) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            AlarmManager.RTC_WAKEUP
-        } else {
-            AlarmManager.RTC_WAKEUP
-        }
-        // Exact alarms need SCHEDULE_EXACT_ALARM (Android 12+); if denied we fall
-        // back to a (≈15 min) window — still useful, never silent.
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                am.setExactAndAllowWhileIdle(type, triggerAt, pi)
-            } else {
-                am.setExactAndAllowWhileIdle(type, triggerAt, pi)
+        if (canScheduleExactAlarms(context)) {
+            try {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                return
+            } catch (_: SecurityException) {
+                // Permission revoked between the check and the call — degrade below.
             }
-        } catch (_: SecurityException) {
-            am.setWindow(type, triggerAt, 15 * 60 * 1000L, pi)
         }
+        // Graceful degradation: a (≈15 min) window alarm instead of a crash.
+        // The notification is delayed, never silently dropped.
+        am.setWindow(AlarmManager.RTC_WAKEUP, triggerAt, INEXACT_WINDOW_MS, pi)
     }
 
     private fun cancel(context: Context, requestCode: Int) {
@@ -102,53 +135,6 @@ object NotificationScheduler {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         am.cancel(pi)
-    }
-
-    /** Next daily occurrence at [minutes] (if today's time already passed → tomorrow). */
-    private fun nextDaily(minutes: Int): Long {
-        val now = Calendar.getInstance()
-        val cal = Calendar.getInstance().apply {
-            timeZone = TimeZone.getDefault()
-            set(Calendar.HOUR_OF_DAY, minutes / 60)
-            set(Calendar.MINUTE, minutes % 60)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-            if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
-        }
-        return cal.timeInMillis
-    }
-
-    /** Next occurrence on [dayOfWeek] (1=Po…7=Ne) at [minutes]. */
-    private fun nextWeekly(dayOfWeek: Int, minutes: Int): Long {
-        val now = Calendar.getInstance()
-        val cal = Calendar.getInstance().apply {
-            timeZone = TimeZone.getDefault()
-            set(Calendar.HOUR_OF_DAY, minutes / 60)
-            set(Calendar.MINUTE, minutes % 60)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-        }
-        // java.util.Calendar: SUNDAY=1 … SATURDAY=7; we store 1=Po..7=Ne → convert
-        val targetCal = if (dayOfWeek == 7) Calendar.SUNDAY else dayOfWeek + 1
-        while (cal.get(Calendar.DAY_OF_WEEK) != targetCal || !cal.after(now)) {
-            cal.add(Calendar.DAY_OF_YEAR, 1)
-        }
-        return cal.timeInMillis
-    }
-
-    /** Next 1st-of-month at [minutes]. */
-    private fun nextMonthly(minutes: Int): Long {
-        val now = Calendar.getInstance()
-        val cal = Calendar.getInstance().apply {
-            timeZone = TimeZone.getDefault()
-            set(Calendar.DAY_OF_MONTH, 1)
-            set(Calendar.HOUR_OF_DAY, minutes / 60)
-            set(Calendar.MINUTE, minutes % 60)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
-            if (!after(now)) add(Calendar.MONTH, 1)
-        }
-        return cal.timeInMillis
     }
 
     /** After a job fires we enqueue its worker and re-arm the next occurrence. */

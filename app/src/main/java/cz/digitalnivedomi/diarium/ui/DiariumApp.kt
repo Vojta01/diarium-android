@@ -77,6 +77,8 @@ import cz.digitalnivedomi.diarium.ui.history.HistoryRoute
 import cz.digitalnivedomi.diarium.ui.home.DashboardRoute
 import cz.digitalnivedomi.diarium.ui.nav.Routes
 import cz.digitalnivedomi.diarium.ui.nav.TopLevelDestination
+import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsDeps
+import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsScreen
 import cz.digitalnivedomi.diarium.ui.stats.StatsRoute
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
@@ -262,6 +264,23 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                         AchievementsScreen(deps = deps)
                     }
                 }
+                composable(Routes.NOTIFICATIONS) {
+                    val context = LocalContext.current
+                    // Permission state lives in the system, so it has to be read
+                    // again every time the screen resumes — the user taps a row,
+                    // grants it in Settings and comes back expecting to see it.
+                    var permissionTick by remember { mutableStateOf(0) }
+                    LifecycleResumeEffect(Unit) {
+                        permissionTick++
+                        onPauseOrDispose { }
+                    }
+                    val deps = remember(context, permissionTick) {
+                        NotificationsSettingsDeps.forContext(context)
+                    }
+                    SubScreenChrome(title = "Nastavení notifikací", onBack = { navController.popBackStack() }) {
+                        NotificationsSettingsScreen(deps = deps)
+                    }
+                }
             }
         }
     }
@@ -326,6 +345,25 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
                 title = "Odznaky",
                 hint = "Co se už odemklo",
                 onClick = { onOpen(Routes.ACHIEVEMENTS) },
+            )
+        }
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "Notifikace",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            VSpace(4)
+            Text(
+                text = "Připomenutí, reporty a sběr času na obrazovce.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+            VSpace(6)
+            SubScreenEntry(
+                emoji = "🔔",
+                title = "Notifikace",
+                hint = "Časy připomenutí, reporty a čas na obrazovce",
+                onClick = { onOpen(Routes.NOTIFICATIONS) },
             )
         }
         GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {

@@ -36,6 +36,13 @@ object Routes {
     const val SCALES = "scales"
     const val TEMPLATES = "templates"
     const val ACHIEVEMENTS = "achievements"
+
+    /**
+     * M6 sub-screen: reminder times, the weekly/monthly reports and the phone
+     * screen-time collection — the settings the app owns itself (the web keeps
+     * no schedule of its own for these).
+     */
+    const val NOTIFICATIONS = "notifications"
 }
 
 /** Routes that get a tab in the bottom bar, in display order. */

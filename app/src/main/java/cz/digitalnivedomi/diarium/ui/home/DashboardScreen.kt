@@ -304,6 +304,13 @@ private fun EntriesCard(onOpen: (String) -> Unit) {
             hint = "Co už je odemčené a co ještě ne",
             onClick = { onOpen(Routes.ACHIEVEMENTS) },
         )
+        GlassDivider()
+        SubScreenEntry(
+            emoji = "🔔",
+            title = "Notifikace",
+            hint = "Připomenutí, reporty a čas na obrazovce",
+            onClick = { onOpen(Routes.NOTIFICATIONS) },
+        )
     }
 }
 
