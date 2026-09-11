@@ -20,6 +20,20 @@ data class DashboardDay(
 /** The latest day that has an AI reflection, with the text to render. */
 data class DashboardReflection(val date: String, val text: String)
 
+/**
+ * The newest logged day and the reflection it carries, if any.
+ *
+ * The dashboard's reflection card keys off this — not off the newest day that
+ * *has* a reflection — so it can never sit on an older day (it showed "Ze dne
+ * 9. 9." while 10. 9. was on screen) while a newer entry goes unreflected.
+ * [reflection] is null exactly when that newest entry has none, blank counting
+ * as none.
+ */
+data class DashboardNewestEntry(val date: String, val entry: DiaryEntry) {
+    /** The newest entry's AI reflection, or null when it has none. */
+    val reflection: String? get() = entry.aiReflection?.takeIf { it.isNotBlank() }
+}
+
 /** The latest day that has gratitude lines, for the "last gratitude" block. */
 data class DashboardGratitude(val date: String, val lines: List<String>, val moodEmoji: String)
 
@@ -38,6 +52,8 @@ data class DashboardData(
     val unlocks: Int?,
     val topApps: DashboardTopApps?,
     val reflection: DashboardReflection?,
+    /** The newest logged day — what the reflection card keys off. */
+    val newestEntry: DashboardNewestEntry?,
     val lastGratitude: DashboardGratitude?,
 )
 
@@ -138,6 +154,7 @@ class DashboardRepository(private val entries: EntriesRepository) {
                 unlocks = unlockCounts.takeIf { it.isNotEmpty() }?.sum(),
                 topApps = latestTopApps(byDate),
                 reflection = latestReflection(byDate),
+                newestEntry = newestEntry(byDate),
                 lastGratitude = latestGratitude(byDate),
             )
         }
@@ -191,6 +208,15 @@ class DashboardRepository(private val entries: EntriesRepository) {
         fun latestReflection(byDate: Map<String, DiaryEntry>): DashboardReflection? =
             latestWith(byDate) { !it.aiReflection.isNullOrBlank() }
                 ?.let { (date, entry) -> DashboardReflection(date, entry.aiReflection.orEmpty()) }
+
+        /**
+         * The newest logged day, whatever it holds — the reflection card keys off
+         * this so a newer unreflected day is never hidden behind an older one.
+         */
+        fun newestEntry(byDate: Map<String, DiaryEntry>): DashboardNewestEntry? {
+            val date = byDate.keys.sortedDescending().firstOrNull() ?: return null
+            return DashboardNewestEntry(date, byDate.getValue(date))
+        }
 
         /** The newest day with gratitude lines (the web dashboard's "last gratitude"). */
         fun latestGratitude(byDate: Map<String, DiaryEntry>): DashboardGratitude? =

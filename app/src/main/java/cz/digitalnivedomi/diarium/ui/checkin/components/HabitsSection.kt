@@ -22,15 +22,35 @@ import androidx.compose.ui.unit.dp
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Outline
+import cz.digitalnivedomi.diarium.ui.theme.SuccessGreen
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 
 /**
+ * How one habit row should read.
+ *
+ * Ticking a *positive* habit is a win, so the row turns green (the theme's
+ * semantic success colour) with a `✓ Splněno` glyph — ticking must never be a
+ * colour-only signal. A *negative* habit (one the user is trying to avoid, e.g.
+ * Alkohol) is the opposite: ticking it means "I did the bad thing", so it keeps
+ * the long-standing red accent. Whatever the kind, an unticked habit is neutral.
+ */
+internal enum class HabitAccent { NEUTRAL, POSITIVE, NEGATIVE }
+
+/** The single decision a habit row's fill, border, accent and glyph hang off. */
+internal fun habitAccentState(isNegative: Boolean, checked: Boolean): HabitAccent = when {
+    !checked -> HabitAccent.NEUTRAL
+    isNegative -> HabitAccent.NEGATIVE
+    else -> HabitAccent.POSITIVE
+}
+
+/**
  * Návyky — the user's habits from the `habits` table as a 2-column toggle grid.
  *
  * `is_negative` habits are tinted red and get a hint: they are the ones the user
- * is trying to avoid, so a filled pill means "I did it", same as the web.
+ * is trying to avoid, so a filled pill means "I did it", same as the web. A
+ * ticked positive habit is a fulfilled one, so it gets the green treatment.
  */
 @Composable
 fun HabitsSection(
@@ -49,20 +69,40 @@ fun HabitsSection(
             )
             return@CheckInSection
         }
+        // Short, no clutter: says what a tick means before the grid.
+        SectionHint("Zaškrtnutím potvrdíš splnění.")
+        Spacer(Modifier.height(8.dp))
         habits.chunked(2).forEach { pair ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 pair.forEach { habit ->
-                    val accent = if (habit.isNegative) negativeColor else parseHex(habit.color, Indigo)
+                    val checked = values[habit.key] == true
+                    val state = habitAccentState(habit.isNegative, checked)
+                    val accent = when (state) {
+                        HabitAccent.POSITIVE -> SuccessGreen
+                        HabitAccent.NEGATIVE -> negativeColor
+                        // Neutral rows ignore the accent (the pill is off); the
+                        // habit's own colour is only a fallback for odd data.
+                        HabitAccent.NEUTRAL -> parseHex(habit.color, Indigo)
+                    }
+                    val fulfilled = state == HabitAccent.POSITIVE
                     val shape = RoundedCornerShape(14.dp)
                     Row(
                         modifier = Modifier
                             .weight(1f)
                             .clip(shape)
-                            .background(Color.White.copy(alpha = 0.05f))
-                            .border(1.dp, Outline.copy(alpha = 0.6f), shape)
+                            .background(
+                                if (fulfilled) SuccessGreen.copy(alpha = 0.16f)
+                                else Color.White.copy(alpha = 0.05f),
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (fulfilled) SuccessGreen.copy(alpha = 0.7f)
+                                else Outline.copy(alpha = 0.6f),
+                                shape = shape,
+                            )
                             .clickable { onToggle(habit.key) }
                             .padding(horizontal = 10.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -74,16 +114,25 @@ fun HabitsSection(
                                 color = TextPrimary,
                                 maxLines = 2,
                             )
-                            if (habit.isNegative) {
-                                Text(
+                            // A ticked positive habit says so in words as well as
+                            // colour; an `is_negative` habit keeps its
+                            // long-standing "nežádoucí" hint either way.
+                            when {
+                                state == HabitAccent.POSITIVE -> Text(
+                                    text = "✓ Splněno",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SuccessGreen,
+                                )
+                                habit.isNegative -> Text(
                                     text = "nežádoucí",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = TextTertiary,
                                 )
+                                else -> Unit
                             }
                         }
                         TogglePill(
-                            checked = values[habit.key] == true,
+                            checked = checked,
                             accent = accent,
                             testTag = "habit_${habit.key}",
                         ) { onToggle(habit.key) }
