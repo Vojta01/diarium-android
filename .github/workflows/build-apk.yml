@@ -12,6 +12,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Whether this run produced an APK signed with the stable release key. The
+    # release job publishes only then: a debug-signed release would not update an
+    # installed app in place, and would make Android call it untrusted again.
+    outputs:
+      stable_signing: ${{ steps.keystore.outputs.stable_signing }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,34 +43,70 @@ jobs:
             || { echo "::error::Decoded google-services.json is not valid JSON"; exit 1; }
           echo "google-services.json restored ($(wc -c < app/google-services.json) bytes)"
 
-      - name: Build debug APK
+      # The signing key must stay stable across builds: with a fresh key per run
+      # Android sees a brand-new app every time, refuses to update in place and
+      # calls the APK untrusted. Falls back to the debug key (with a warning)
+      # until the secret is configured.
+      - name: Restore release keystore from secret
+        id: keystore
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d ' \n' | base64 -d > "$RUNNER_TEMP/diarium-release.jks"
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/diarium-release.jks" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "Signing with the stable release key."
+            echo "stable_signing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 is not set — falling back to the debug keystore, which changes on every run (users must uninstall the previous version first)."
+            echo "stable_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build APK
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            # v1.2.3 → versionName 1.2.3, versionCode 10203
+            # v2.0.0-alpha11 → versionName 2.0.0-alpha11, versionCode 2000011
+            # The pre-release number is part of the code on purpose: every alpha
+            # must carry a higher versionCode than the one before it, otherwise a
+            # stable-signed APK is refused as "older version already installed".
             VER="${GITHUB_REF_NAME#v}"
             echo "Version from tag: ${VER}"
             MAJOR=$(echo "$VER" | cut -d. -f1)
             MINOR=$(echo "$VER" | cut -d. -f2)
-            PATCH=$(echo "$VER" | cut -d. -f3)
+            PATCH=$(echo "$VER" | cut -d. -f3 | sed 's/[^0-9].*//')
+            ALPHA=$(echo "$VER" | sed -n 's/.*-[a-zA-Z]*\([0-9][0-9]*\)$/\1/p')
+            MAJOR=${MAJOR:-0}; MINOR=${MINOR:-0}; PATCH=${PATCH:-0}; ALPHA=${ALPHA:-0}
             export APP_VERSION_NAME="${VER}"
-            export APP_VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+            export APP_VERSION_CODE=$((MAJOR * 1000000 + MINOR * 10000 + PATCH * 100 + ALPHA))
           else
             echo "Not a tag — using default version 1.0.0"
             export APP_VERSION_CODE=10000
           fi
           echo "Building with APP_VERSION_NAME=${APP_VERSION_NAME:-1.0.0} APP_VERSION_CODE=${APP_VERSION_CODE}"
-          ./gradlew assembleDebug
-          echo "APK size: $(du -h app/build/outputs/apk/debug/app-debug.apk | cut -f1) ($(wc -c < app/build/outputs/apk/debug/app-debug.apk) bytes)"
+          if [ -n "$ANDROID_KEYSTORE_FILE" ]; then
+            ./gradlew assembleRelease
+            APK=app/build/outputs/apk/release/app-release.apk
+          else
+            ./gradlew assembleDebug
+            APK=app/build/outputs/apk/debug/app-debug.apk
+          fi
+          mkdir -p app/build/outputs/dist
+          cp "$APK" app/build/outputs/dist/diarium.apk
+          echo "APK: $APK ($(du -h app/build/outputs/dist/diarium.apk | cut -f1), $(wc -c < app/build/outputs/dist/diarium.apk) bytes)"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: diarium-android-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/dist/diarium.apk
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Only a release signed with the stable key: a debug-signed one would not
+    # update an installed app in place and Android would call it untrusted.
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build.outputs.stable_signing == 'true'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -77,7 +118,7 @@ jobs:
       - name: Rename APK for release
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          mv apk/app-debug.apk "apk/diarium-${VER}.apk"
+          mv apk/diarium.apk "apk/diarium-${VER}.apk"
           echo "APK_FILE=diarium-${VER}.apk" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release

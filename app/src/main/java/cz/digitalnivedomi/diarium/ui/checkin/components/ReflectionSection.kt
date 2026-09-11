@@ -26,12 +26,16 @@ import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 /**
  * 🤖 AI reflexe — the day's generated reflection, the last section of the form.
  *
- * The text is the server's own Czech prose, so it is rendered verbatim. Four
- * states share this one section: nothing yet (an offer to write one), generating
- * (the action is disabled and shows a spinner, so the request cannot be fired
- * twice), done (the text, a reminder that it is stored with the day, and a way to
- * regenerate — the endpoint caches, so a second look is cheap) and failed (the
- * Czech sentence the repository returned).
+ * The text is the server's own Czech prose, so it is rendered verbatim.
+ *
+ * This section reports, it does not start anything: the owner asked (2026-09-11)
+ * for a form whose only action is "Uložit check-in", with the reflection written
+ * as part of that save (`CheckInScreen`opens the reflection window right after the
+ * write, and `AiReflectionRepository.generate` persists what it gets). So an
+ * unsaved day shows nothing but a sentence saying the reflection will arrive with
+ * the save, and generating/regenerating looks are offered only for a day that was
+ * already stored ([canGenerate] / [hasReflection]) — the endpoint caches, so a
+ * second look is cheap.
  */
 @Composable
 fun ReflectionSection(
@@ -39,6 +43,8 @@ fun ReflectionSection(
     loading: Boolean,
     error: String?,
     onGenerate: () -> Unit,
+    /** True once the day itself is stored, so a missing reflection can be filled in. */
+    canGenerate: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val hasReflection = !reflection.isNullOrBlank()
@@ -79,7 +85,7 @@ fun ReflectionSection(
             )
             Spacer(Modifier.height(10.dp))
         } else {
-            SectionHint("Nech AI, ať se podívá na tvůj den a napíše krátkou reflexi.")
+            SectionHint("Reflexi napíše AI sama, jakmile uložíš check-in.")
             Spacer(Modifier.height(10.dp))
         }
 
@@ -106,14 +112,24 @@ fun ReflectionSection(
                     onGenerate()
                 }
             }
-        } else {
-            PrimaryButton(
-                text = if (loading) "Píšu reflexi…" else "Napsat reflexi",
-                enabled = !loading,
-                testTag = "reflection_generate",
-                leading = spinner,
-            ) {
-                onGenerate()
+        } else if (canGenerate) {
+            // The day is already stored but has no reflection (an older entry, or
+            // a save whose generation failed) — keep a quiet way to fill it in,
+            // without turning the form into two competing actions.
+            if (loading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    spinner?.invoke()
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Píšu reflexi…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextTertiary,
+                    )
+                }
+            } else {
+                SecondaryButton(text = "Vygenerovat reflexi", testTag = "reflection_generate") {
+                    onGenerate()
+                }
             }
         }
     }

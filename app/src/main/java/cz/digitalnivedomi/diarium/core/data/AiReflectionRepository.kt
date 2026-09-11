@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.core.data
 
+import android.util.Log
 import cz.digitalnivedomi.diarium.BuildConfig
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import kotlinx.coroutines.CancellationException
@@ -10,33 +11,55 @@ import org.json.JSONObject
 import java.io.IOException
 
 /**
- * Generates the day's AI reflection.
+ * Generates the day's AI reflection **and stores it with the day**.
  *
  * The DeepSeek key lives only on our own server, so the app never talks to the
  * model: it POSTs the day's data plus the signed-in user's JWT to
  * `/api/ai/reflect` — the very endpoint the web app calls — and gets Czech prose
- * back. The endpoint reads the last 7 days from Supabase itself and stores the
- * result in `entries.ai_reflection`, which is why the body's `todayData` is only
- * a fallback for a day that is not in the database yet.
+ * back. That endpoint only *reads* the last 7 days from Supabase and *returns*
+ * the text; it writes nothing (verified against
+ * `src/app/api/ai/reflect/route.ts`). Persisting is the caller's job — the web
+ * frontend does it by carrying `ai_reflection` inside its save payload — so this
+ * repository does it too, with a small authenticated PostgREST PATCH right after
+ * the server answers. Without that write the user would read a freshly generated
+ * reflection that the database never received.
  *
- * No `apikey`/`service_role` header exists here on purpose: the JWT alone is what
- * the endpoint authenticates with, the same way the browser posts it.
+ * The write goes out with the signed-in user's own JWT and relies on the RLS
+ * policy `entries_own` (an owner may update their rows). No `apikey`/`service_role`
+ * header exists here on purpose: the JWT alone is what the endpoint and PostgREST
+ * authenticate with, the same way the browser posts it, and a service key must
+ * never ship inside the APK.
  *
- * Request building and response parsing are both plain functions
- * ([buildReflectPayload], [parseReflection]) so the whole contract is unit-testable
- * without a network, exactly like [SupabaseClient].
+ * Request building, response parsing and the persistence URL/body are all plain
+ * functions ([buildReflectPayload], [parseReflection], [reflectionPatchUrl],
+ * [reflectionPatchBody]) so the whole contract is unit-testable without a network,
+ * exactly like [SupabaseClient].
  */
 class AiReflectionRepository(
     private val sessionStore: SessionStore? = null,
     private val transport: HttpTransport = OkHttpTransport(),
     private val endpoint: String = BuildConfig.AI_REFLECT_URL,
+    /**
+     * The authenticated PostgREST client that writes the generated text back to
+     * the day's row. Defaults to a client over the same session, so the two
+     * production wirings ([cz.digitalnivedomi.diarium.ui.checkin.CheckInDeps],
+     * [cz.digitalnivedomi.diarium.ui.home.DashboardDeps]) keep working untouched;
+     * tests inject a client whose transport is faked.
+     */
+    private val supabase: SupabaseClient? = sessionStore?.let { SupabaseClient(it) },
 ) {
 
     /**
-     * Asks the server for [date]'s reflection and returns its text, or the Czech
-     * message that belongs to the failure. [entry] travels as the fallback data
-     * set; [userName] is optional because the app only knows it when the session
-     * carries `user_metadata.full_name`.
+     * Asks the server for [date]'s reflection, returns its text, and — once the
+     * server answered — writes that text into the day's `entries` row as a side
+     * effect, so no screen has to remember to persist it.
+     *
+     * A *generation* failure returns the Czech message that belongs to it. A
+     * *write* failure never hides the text: the user keeps reading what the server
+     * just produced and the failure is logged (see [persistReflection]).
+     *
+     * [entry] travels as the fallback data set; [userName] is optional because the
+     * app only knows it when the session carries `user_metadata.full_name`.
      */
     suspend fun generate(date: String, entry: DiaryEntry, userName: String? = null): Result<String> =
         withContext(Dispatchers.IO) {
@@ -71,7 +94,12 @@ class AiReflectionRepository(
                     IllegalStateException("$MESSAGE_GENERIC (${e.javaClass.simpleName})."),
                 )
             }
-            parseReflection(response)
+            val result = parseReflection(response)
+            // The endpoint returns prose, it does not store it: write it back here,
+            // for every caller at once, so the check-in's post-save flow and the
+            // dashboard's "Vygenerovat reflexi" can never drop it again.
+            result.onSuccess { text -> persistReflection(userId, date, text) }
+            result
         }
 
     /**
@@ -79,6 +107,35 @@ class AiReflectionRepository(
      * when it is not there, never invented and never fetched over the network.
      */
     fun userName(): String? = SessionContext(sessionStore).userName()
+
+    /**
+     * Writes [text] into the `(user_id, date)` row through PostgREST, with the
+     * user's own JWT. Called only after the server answered with prose.
+     *
+     * The write can never cost the user their reflection: any failure (offline,
+     * RLS, a stale token) is logged and swallowed, because the text is on screen
+     * right now and losing it would be worse than it staying unpersisted. A day
+     * with no row yet matches nothing — PostgREST answers 204 for a PATCH that
+     * touches zero rows — so "no row" is quiet by construction.
+     */
+    private fun persistReflection(userId: String, date: String, text: String) {
+        val client = supabase ?: return
+        try {
+            val response = client.patch(
+                path = ENTRIES_PATH,
+                body = reflectionPatchBody(text),
+                query = reflectionPatchQuery(userId, date),
+                extraHeaders = mapOf("Prefer" to PREFER_MINIMAL),
+            )
+            if (!response.isSuccessful) {
+                Log.w(LOG_TAG, "reflection PATCH failed: HTTP ${response.code}")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "reflection PATCH failed: ${e.javaClass.simpleName}")
+        }
+    }
 
     companion object {
 
@@ -90,6 +147,19 @@ class AiReflectionRepository(
         const val MESSAGE_CONNECT = "Nepodařilo se připojit k serveru."
         const val MESSAGE_EMPTY = "AI vrátila prázdnou odpověď."
         const val MESSAGE_GENERIC = "Reflexi se nepodařilo vygenerovat"
+
+        /** The PostgREST table the generated reflection is written back to. */
+        const val ENTRIES_PATH = "entries"
+
+        /**
+         * Asks PostgREST for `return=minimal`, so a successful PATCH answers 204
+         * with no body — the app needs to know *whether* the write worked, not to
+         * read the row back.
+         */
+        const val PREFER_MINIMAL = "return=minimal"
+
+        /** Log tag for a write that could not be persisted (never shown to the user). */
+        const val LOG_TAG = "DiariumAI"
 
         /**
          * The exact body `/api/ai/reflect` expects: the web's snake_case field
@@ -144,6 +214,31 @@ class AiReflectionRepository(
             }
             return Result.failure(IllegalStateException(message))
         }
+
+        /**
+         * The PostgREST query that scopes the write to exactly one owner's row for
+         * one day. A plain ISO date (`yyyy-MM-dd`) survives
+         * [SupabaseClient.buildUrl]'s encoding untouched (`-` is unreserved), which
+         * is what keeps the `eq` filter matching the `date` column.
+         */
+        fun reflectionPatchQuery(userId: String, date: String): Map<String, String> =
+            linkedMapOf("user_id" to "eq.$userId", "date" to "eq.$date")
+
+        /**
+         * The partial update written for a generated [text]: only `ai_reflection`,
+         * never the form's own columns, so persisting a reflection can never touch
+         * what the user typed.
+         */
+        fun reflectionPatchBody(text: String): JSONObject =
+            JSONObject().put("ai_reflection", text)
+
+        /**
+         * The exact URL the persistence PATCH targets. Pure — it only joins strings
+         * through [SupabaseClient.buildUrl] — so the contract (and the plain
+         * `yyyy-MM-dd` date) is asserted in a plain JVM test.
+         */
+        fun reflectionPatchUrl(baseUrl: String, userId: String, date: String): String =
+            SupabaseClient.buildUrl(baseUrl, ENTRIES_PATH, reflectionPatchQuery(userId, date))
 
         /** Our endpoint answers `{ "error": "..." }`; `message` is accepted too. */
         private fun serverMessage(response: HttpResponse): String? =

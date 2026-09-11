@@ -158,7 +158,10 @@ fun CheckInScreen(
     }
 
     /**
-     * "Napsat reflexi" — the web's AI block, native.
+     * The AI reflection request — the web's AI block, native. It is fired by the
+     * save itself (and by the "Vygenerovat reflexi" action on an already stored
+     * day), never by a button that competes with "Uložit check-in"; whatever the
+     * server answers is persisted by [AiReflectionRepository.generate].
      *
      * Order matters: anything unsaved is pushed first, and a failed save aborts
      * the request instead of letting the AI reflect on a day it cannot see. The
@@ -388,10 +391,13 @@ fun CheckInScreen(
             loading = state.reflectionLoading,
             error = state.reflectionError,
             onGenerate = { generateReflection() },
+            // Only a day that is really stored can have a reflection filled in
+            // later; an unsaved (or empty) day just says the save will write it.
+            canGenerate = state.entry.hasContent(),
         )
 
         PrimaryButton(
-            text = if (state.saving) "⏳ Ukládám..." else "✓ Uložit do vaultu",
+            text = if (state.saving) "⏳ Ukládám..." else "✓ Uložit check-in",
             enabled = !state.saving,
             testTag = "save_button",
         ) { save() }

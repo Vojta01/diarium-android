@@ -37,19 +37,20 @@ class PickersRepository(
 
         val userRows = readUserActivities()
 
-        if (catalog.isEmpty() && userRows.isEmpty()) return@withContext PickerDefaults.ACTIVITY_FALLBACK
+        if (catalog.isEmpty() && userRows.isEmpty()) return@withContext dedupeActivities(PickerDefaults.ACTIVITY_FALLBACK)
 
         val byKey = LinkedHashMap<String, ActivityDef>()
         catalog.forEach { byKey[it.key] = it }
         userRows.forEach { row -> byKey[row.key] = row }
 
-        val visible = byKey.values.filter { it.isActive }
-        if (visible.isEmpty()) PickerDefaults.ACTIVITY_FALLBACK else visible.sortedWith(activityOrder)
+        val visible = dedupeActivities(byKey.values.filter { it.isActive })
+        if (visible.isEmpty()) dedupeActivities(PickerDefaults.ACTIVITY_FALLBACK)
+        else visible.sortedWith(activityOrder)
     }
 
     /** User rows hidden by the user (shown in the "skryté" restore list). */
     suspend fun hiddenActivities(): List<ActivityDef> = withContext(Dispatchers.IO) {
-        val hidden = readUserActivities().filter { !it.isActive }
+        val hidden = dedupeActivities(readUserActivities().filter { !it.isActive })
         if (hidden.isEmpty()) emptyList()
         else hidden.sortedWith(activityOrder)
     }
@@ -117,8 +118,8 @@ class PickersRepository(
         val defaultKeys = defaults.map { it.key }.toSet()
         val customs = userHabits.filter { it.isActive && it.key !in defaultKeys }
 
-        val visible = defaults + customs
-        if (visible.isEmpty()) PickerDefaults.HABIT_FALLBACK else visible
+        val visible = dedupeHabits(defaults + customs)
+        if (visible.isEmpty()) dedupeHabits(PickerDefaults.HABIT_FALLBACK) else visible
     }
 
     /** Active scales for the user, in `sort_order`. */
@@ -258,3 +259,57 @@ class PickersRepository(
         }
     }
 }
+
+// ── Case-insensitive label de-duplication ───────────────────────────────────
+
+/**
+ * Collapses activities whose labels differ only by letter case into one item.
+ *
+ * WHY THIS EXISTS: the database has, at times, held two rows for the same
+ * activity — e.g. key `hacking` (label `Hacking`) next to key `hacking_` (label
+ * `hacking`) — and the check-in then rendered the label twice, once per casing.
+ * The duplicate rows are cleaned up on the data side, but this read must stay
+ * robust to a re-occurrence: it never trusts the rows to be unique by label, so
+ * the app can never show two chips that differ only by case again. Do not
+ * remove it in the belief that the database is now clean.
+ *
+ * One item is kept per lower-cased label. The kept item is the first row whose
+ * label starts with an upper-case letter if there is one, otherwise the first
+ * row. The kept row's icon, color and category are preserved. The output keeps
+ * the input order of the surviving rows. Pure, so it is unit-tested directly.
+ */
+internal fun dedupeActivities(items: List<ActivityDef>): List<ActivityDef> =
+    dedupeByLabel(items) { it.label }
+
+/**
+ * Habits counterpart of [dedupeActivities]. Symmetric by design — the same
+ * case-insensitive collapse — and it never alters `isNegative` or any other
+ * field of the surviving row.
+ */
+internal fun dedupeHabits(items: List<HabitDef>): List<HabitDef> =
+    dedupeByLabel(items) { it.label }
+
+/**
+ * Generic case-insensitive de-duplication by label: groups rows by
+ * `PickerDefaults.normalizeLabel(labelOf(it))`, keeps the preferred-casing row
+ * of each group and returns the survivors in their original input order.
+ */
+private fun <T> dedupeByLabel(items: List<T>, labelOf: (T) -> String): List<T> {
+    // normalized label -> (index in the input, kept item)
+    val kept = LinkedHashMap<String, Pair<Int, T>>()
+    items.forEachIndexed { index, item ->
+        val key = PickerDefaults.normalizeLabel(labelOf(item))
+        val current = kept[key]
+        when {
+            current == null -> kept[key] = index to item
+            // Prefer the upper-case variant; the first one wins on a tie.
+            !startsWithUpperCase(labelOf(current.second)) && startsWithUpperCase(labelOf(item)) ->
+                kept[key] = index to item
+        }
+    }
+    return kept.values.sortedBy { it.first }.map { it.second }
+}
+
+/** True when the label's first non-space character is an upper-case letter. */
+private fun startsWithUpperCase(label: String): Boolean =
+    label.trim().firstOrNull()?.isUpperCase() == true

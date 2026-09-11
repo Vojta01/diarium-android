@@ -13,12 +13,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
+import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
 import cz.digitalnivedomi.diarium.ui.checkin.MOOD_CHOICES
 import cz.digitalnivedomi.diarium.ui.checkin.SLEEP_CHOICES
@@ -52,6 +54,13 @@ import java.util.Locale
  * dashes; a section whose field is empty on a *saved* day is left out entirely
  * rather than padded with placeholders.
  *
+ * One more rule, the owner's own (2026-09-11, see [isRecordedDay]): a day is a
+ * record only when the mood is filled. The phone-sync worker writes an `entries` row
+ * for every synced day, so a row with screen time but no mood (2026-09-07) is listed
+ * here — the synced numbers are real and the owner may want them — but the card is
+ * dimmed and carries a "check-in nevyplněn" hint instead of posing as a journaled
+ * day. It is never dropped silently.
+ *
  * Everything but the reflection comes from the [DiaryEntry] the calendar already
  * loaded, so opening a day costs no request. The AI reflection is simply part of
  * that row, so it appears when it exists and is absent otherwise.
@@ -78,7 +87,18 @@ fun DayDetail(
     scaleMax: Map<String, Int> = emptyMap(),
     onOpenCheckIn: (String) -> Unit,
 ) {
-    val accent = if (entry != null) moodColor(entry.mood) else Indigo
+    // No row at all: the owner never opened this day, so offer the check-in.
+    if (entry == null) {
+        EmptyDayCard(date = date, modifier = modifier, onOpenCheckIn = onOpenCheckIn)
+        return
+    }
+
+    // The owner's rule (see isRecordedDay): a day counts as a record only when the
+    // mood is filled. A row the phone synced — screen time, unlocks, top apps — has no
+    // mood, so it is NOT a journaled day: it takes the neutral indigo accent and a
+    // visible "check-in nevyplněn" hint instead of a mood colour and emoji.
+    val recorded = isRecordedDay(entry.mood)
+    val accent = if (recorded) moodColor(entry.mood) else Indigo
     val haptics = rememberLightHaptics()
 
     GlassCard(modifier = modifier.fillMaxWidth(), accent = accent) {
@@ -89,10 +109,11 @@ fun DayDetail(
                 Text(
                     text = longDateOf(date),
                     style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary,
+                    // Dimmed on a synced-only day: nothing here is a record.
+                    color = if (recorded) TextPrimary else TextSecondary,
                 )
             }
-            if (entry != null) {
+            if (recorded) {
                 IconBadge(accent = accent, size = 44) {
                     Text(text = historyMoodEmoji(entry.mood), fontSize = 22.sp)
                 }
@@ -100,141 +121,178 @@ fun DayDetail(
         }
         VSpace(12)
 
-        if (entry == null) {
-            EmptyDay(date = date, onOpenCheckIn = onOpenCheckIn)
-            return@GlassCard
-        }
-
-        // Nálada — the day's headline, so it is a sentence in the mood's own colour
-        // rather than a label/value row like the numbers below it.
-        val moodLabel = historyMoodLabel(entry.mood)
-        if (moodLabel != null) {
-            Text(
-                text = moodLabel,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = moodColor(entry.mood),
-            )
-        } else {
-            SectionHint("Nálada pro tento den nebyla vyplněná.")
-        }
-        VSpace(12)
-        GlassDivider()
-        VSpace(12)
-
-        ReadOnlyRow(label = "😴 Spánek", value = historySleepLabel(entry.sleepQuality))
-        VSpace(6)
-        ReadOnlyRow(label = "😰 Stres", value = historyStressLabel(entry.stress))
-        VSpace(6)
-        ReadOnlyRow(label = "🌤️ Počasí", value = historyWeatherText(entry.weather))
-
-        val activities = entry.activities.filter { it.isNotBlank() }
-        if (activities.isNotEmpty()) {
-            VSpace(14)
-            SectionHeader("🏃 Aktivity")
-            VSpace(6)
-            BulletList(activities)
-        }
-
-        val habits = entry.habits.entries.toList()
-        if (habits.isNotEmpty()) {
-            VSpace(14)
-            SectionHeader("🔁 Návyky")
-            VSpace(6)
-            habits.forEach { (key, done) ->
-                ReadOnlyRow(
-                    label = historyHabitLabel(key),
-                    value = if (done) "Ano" else "Ne",
-                )
-                VSpace(4)
-            }
-        }
-
-        val gratitude = entry.filteredGratitude()
-        if (gratitude.isNotEmpty()) {
-            VSpace(14)
-            SectionHeader("🙏 Vděčnost")
-            VSpace(6)
-            BulletList(gratitude)
-        }
-
-        val note = entry.note
-        if (note.isNotBlank()) {
-            VSpace(14)
-            SectionHeader("📝 Poznámka")
-            VSpace(6)
-            Text(text = note, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-        }
-
-        val scales = entry.positiveScaleValues()
-        if (scales.isNotEmpty()) {
-            VSpace(14)
-            SectionHeader("📊 Škály")
-            VSpace(6)
-            scales.forEach { (key, value) ->
-                ReadOnlyRow(
-                    label = scaleNames[key] ?: key,
-                    value = scaleValueText(value, key, scaleMax),
-                )
-                VSpace(4)
-            }
-        }
-
-        val screenTime = entry.phoneScreenTime
-        val unlocks = entry.phoneUnlocks
-        val topApps = entry.phoneTopApps
-        if (screenTime != null || unlocks != null || topApps.isNotEmpty()) {
-            VSpace(14)
-            SectionHeader("📱 Screen time")
-            VSpace(6)
-            if (screenTime != null) {
-                // Stored in seconds (the worker's unit), shown in minutes like the dashboard.
-                ReadOnlyRow(label = "Čas na obrazovce", value = formatMinutes(screenTime / 60))
-            }
-            if (unlocks != null) {
-                VSpace(4)
-                ReadOnlyRow(label = "Odemknutí", value = unlocks.toString())
-            }
-            if (topApps.isNotEmpty()) {
-                VSpace(6)
-                SectionHint("Nejpoužívanější aplikace")
-                topApps.take(5).forEach { app ->
+        // The body of a synced-only day is faded so the card reads as "listed, but not
+        // journaled", while the call-to-action below keeps full strength — fixing the
+        // day is the one thing that must not fade with it.
+        Column(modifier = Modifier.alpha(if (recorded) 1f else UNRECORDED_ALPHA)) {
+            if (recorded) {
+                // Nálada — the day's headline, a sentence in the mood's own colour
+                // rather than a label/value row like the numbers below it.
+                val moodLabel = historyMoodLabel(entry.mood)
+                if (moodLabel != null) {
                     Text(
-                        text = "• ${app.app} — ${formatMinutes(app.minutes)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(vertical = 1.dp),
+                        text = moodLabel,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = moodColor(entry.mood),
                     )
                 }
+            } else {
+                // Say it plainly: the row is here only because the phone synced it,
+                // the owner's check-in is still missing.
+                SectionHint(UNRECORDED_HINT)
+                VSpace(2)
+                SectionHint(
+                    "Data níže pochází z automatické synchronizace telefonu. " +
+                        "Doplň check-in a den se začne počítat mezi zápisy.",
+                )
             }
-        }
+            VSpace(12)
+            GlassDivider()
+            VSpace(12)
 
-        VSpace(14)
-        SectionHeader("📷 Fotka")
-        VSpace(6)
-        ReadOnlyRow(
-            label = "Fotka",
-            value = if (entry.photoPath.isNullOrBlank()) "Nepřiložena" else "Přiložena",
-        )
-
-        // Only rendered when the day actually has one: an AI section that says
-        // "no reflection yet" on every past day would be noise, not information.
-        val reflection = entry.aiReflection
-        if (!reflection.isNullOrBlank()) {
-            VSpace(14)
-            SectionHeader("🤖 AI Reflexe")
+            ReadOnlyRow(label = "😴 Spánek", value = historySleepLabel(entry.sleepQuality))
             VSpace(6)
-            ReflectionBox(text = reflection)
+            ReadOnlyRow(label = "😰 Stres", value = historyStressLabel(entry.stress))
+            VSpace(6)
+            ReadOnlyRow(label = "🌤️ Počasí", value = historyWeatherText(entry.weather))
+
+            val activities = entry.activities.filter { it.isNotBlank() }
+            if (activities.isNotEmpty()) {
+                VSpace(14)
+                SectionHeader("🏃 Aktivity")
+                VSpace(6)
+                BulletList(activities)
+            }
+
+            val habits = entry.habits.entries.toList()
+            if (habits.isNotEmpty()) {
+                VSpace(14)
+                SectionHeader("🔁 Návyky")
+                VSpace(6)
+                habits.forEach { (key, done) ->
+                    ReadOnlyRow(
+                        label = historyHabitLabel(key),
+                        value = if (done) "Ano" else "Ne",
+                    )
+                    VSpace(4)
+                }
+            }
+
+            val gratitude = entry.filteredGratitude()
+            if (gratitude.isNotEmpty()) {
+                VSpace(14)
+                SectionHeader("🙏 Vděčnost")
+                VSpace(6)
+                BulletList(gratitude)
+            }
+
+            val note = entry.note
+            if (note.isNotBlank()) {
+                VSpace(14)
+                SectionHeader("📝 Poznámka")
+                VSpace(6)
+                Text(text = note, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+            }
+
+            val scales = entry.positiveScaleValues()
+            if (scales.isNotEmpty()) {
+                VSpace(14)
+                SectionHeader("📊 Škály")
+                VSpace(6)
+                scales.forEach { (key, value) ->
+                    ReadOnlyRow(
+                        label = scaleNames[key] ?: key,
+                        value = scaleValueText(value, key, scaleMax),
+                    )
+                    VSpace(4)
+                }
+            }
+
+            val screenTime = entry.phoneScreenTime
+            val unlocks = entry.phoneUnlocks
+            val topApps = entry.phoneTopApps
+            if (screenTime != null || unlocks != null || topApps.isNotEmpty()) {
+                VSpace(14)
+                SectionHeader("📱 Screen time")
+                VSpace(6)
+                if (screenTime != null) {
+                    // Stored in seconds (the worker's unit), shown in minutes like the dashboard.
+                    ReadOnlyRow(label = "Čas na obrazovce", value = formatMinutes(screenTime / 60))
+                }
+                if (unlocks != null) {
+                    VSpace(4)
+                    ReadOnlyRow(label = "Odemknutí", value = unlocks.toString())
+                }
+                if (topApps.isNotEmpty()) {
+                    VSpace(6)
+                    SectionHint("Nejpoužívanější aplikace")
+                    topApps.take(5).forEach { app ->
+                        Text(
+                            text = "• ${app.app} — ${formatMinutes(app.minutes)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(vertical = 1.dp),
+                        )
+                    }
+                }
+            }
+
+            VSpace(14)
+            SectionHeader("📷 Fotka")
+            VSpace(6)
+            ReadOnlyRow(
+                label = "Fotka",
+                value = if (entry.photoPath.isNullOrBlank()) "Nepřiložena" else "Přiložena",
+            )
+
+            // Only rendered when the day actually has one: an AI section that says
+            // "no reflection yet" on every past day would be noise, not information.
+            val reflection = entry.aiReflection
+            if (!reflection.isNullOrBlank()) {
+                VSpace(14)
+                SectionHeader("🤖 AI Reflexe")
+                VSpace(6)
+                ReflectionBox(text = reflection)
+            }
         }
 
         VSpace(16)
         PrimaryButton(
-            text = "✏️ Upravit tento záznam",
+            // A synced-only day has no journaled record yet, so the action offers to
+            // create one rather than to edit something that does not exist.
+            text = if (recorded) "✏️ Upravit tento záznam" else "✏️ Vyplnit check-in",
             testTag = "history_open_checkin",
         ) {
             haptics()
             onOpenCheckIn(date)
         }
+    }
+}
+
+/** Short Czech marker for a day the phone synced but nobody journaled. */
+internal const val UNRECORDED_HINT = "bez nálady — check-in nevyplněn"
+
+/** How much a synced-only day's body is faded: listed, but visibly not a record. */
+private const val UNRECORDED_ALPHA = 0.72f
+
+/** A day with no row at all — the same card frame, filled with the way in. */
+@Composable
+private fun EmptyDayCard(
+    date: String,
+    modifier: Modifier,
+    onOpenCheckIn: (String) -> Unit,
+) {
+    GlassCard(modifier = modifier.fillMaxWidth(), accent = Indigo) {
+        SectionHeader("📅 Detail dne")
+        VSpace(6)
+        Text(
+            text = longDateOf(date),
+            style = MaterialTheme.typography.titleMedium,
+            color = TextPrimary,
+        )
+        VSpace(12)
+        EmptyDay(date = date, onOpenCheckIn = onOpenCheckIn)
     }
 }
 

@@ -223,4 +223,27 @@ class HistoryCalendarTest {
         assertEquals("2026-09-01", HistoryCalendar.iso(HistoryCalendar.firstOfMonth(2026, 9)))
         assertEquals("2026-09-30", HistoryCalendar.iso(HistoryCalendar.lastOfMonth(2026, 9)))
     }
+
+    /**
+     * The owner's rule (2026-09-11): the calendar marks a day as logged only when the
+     * mood is filled. A day whose row came from the phone's sync — screen time and
+     * unlocks, no mood — must look exactly like a day with no row at all.
+     */
+    @Test
+    fun `only a filled mood makes the calendar mark a day as logged`() {
+        assertTrue(HistoryCalendar.isLogged(1))
+        assertTrue(HistoryCalendar.isLogged(3))
+        assertTrue(HistoryCalendar.isLogged(5))
+        // No row at all, and a synced-only row (the row mapper reads a missing `mood`
+        // column as 0): both are unmarked, which is the point — the calendar cannot and
+        // must not tell them apart.
+        assertFalse(HistoryCalendar.isLogged(null))
+        assertFalse(HistoryCalendar.isLogged(0))
+    }
+
+    @Test
+    fun `a synced-only day and a day with no row get the same neutral cell`() {
+        assertEquals(HistoryCalendar.isLogged(null), HistoryCalendar.isLogged(0))
+        assertFalse(HistoryCalendar.isLogged(0))
+    }
 }

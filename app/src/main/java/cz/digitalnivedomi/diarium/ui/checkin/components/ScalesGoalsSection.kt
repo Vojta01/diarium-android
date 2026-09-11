@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,7 +36,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import cz.digitalnivedomi.diarium.core.data.DailyGoal
 import cz.digitalnivedomi.diarium.core.data.Scale
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
@@ -120,7 +120,10 @@ private fun ScaleSliderRow(
 
     Column(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(text = if (scale.emoji.isBlank()) "📊" else scale.emoji, fontSize = 18.sp)
+            Text(
+                text = if (scale.emoji.isBlank()) "📊" else scale.emoji,
+                fontSize = CheckInIconSize.rowIcon,
+            )
             Spacer(Modifier.width(8.dp))
             Text(
                 text = scale.name,
@@ -137,7 +140,11 @@ private fun ScaleSliderRow(
             )
             if (set) {
                 Spacer(Modifier.width(8.dp))
-                ScaleClearButton(testTag = "scale_${scale.id}_clear", onClear = onClear)
+                ScaleClearButton(
+                    testTag = "scale_${scale.id}_clear",
+                    scaleName = scale.name,
+                    onClear = onClear,
+                )
             }
         }
         Spacer(Modifier.height(4.dp))
@@ -173,24 +180,30 @@ private fun ScaleSliderRow(
 /**
  * Small icon-only clear affordance, shown only while the scale has a value. The
  * content description is what a screen reader announces (there is no text label
- * on screen, and no text "Vymazat" button anywhere in the section).
+ * on screen, and no text "Vymazat" button anywhere in the section), and it names
+ * the scale so a reader knows which value it clears.
  */
 @Composable
-private fun ScaleClearButton(testTag: String, onClear: () -> Unit) {
+private fun ScaleClearButton(testTag: String, scaleName: String, onClear: () -> Unit) {
     Box(
         modifier = Modifier
             .testTagOrEmpty(testTag)
+            // 44dp square: the glyph is small, the target is not.
+            .size(CheckInIconSize.touchTarget)
             .clip(CircleShape)
             .background(Color.White.copy(alpha = 0.08f))
             .clickable { onClear() }
             .semantics {
                 role = Role.Button
-                contentDescription = "Vymazat hodnotu"
-            }
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+                contentDescription = if (scaleName.isBlank()) {
+                    "Vymazat hodnotu"
+                } else {
+                    "Vymazat hodnotu: $scaleName"
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = "✕", color = TextTertiary, fontSize = 12.sp)
+        Text(text = "✕", color = TextTertiary, fontSize = CheckInIconSize.clearGlyph)
     }
 }
 
@@ -274,8 +287,14 @@ fun GoalsSection(
                     .padding(horizontal = 10.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (goal.emoji.isNotBlank()) {
+                    // Same rule as an activity: the icon anchors the row and is
+                    // never drawn at body-text size.
+                    Text(text = goal.emoji, fontSize = CheckInIconSize.rowIcon)
+                    Spacer(Modifier.width(8.dp))
+                }
                 Text(
-                    text = "${goal.emoji} ${goal.name}",
+                    text = goal.name,
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextPrimary,
                     modifier = Modifier.weight(1f),

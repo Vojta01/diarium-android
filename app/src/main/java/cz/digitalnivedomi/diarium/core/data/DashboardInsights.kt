@@ -10,36 +10,43 @@ package cz.digitalnivedomi.diarium.core.data
  */
 
 /**
- * The three deliberate marks a day can carry in the mood row.
+ * The two deliberate marks a day can carry in the mood row.
  *
- * A day the user logged without answering the mood question is not the same as a
- * day they never opened: the first is [LoggedWithoutMood] and has to read as "no
- * mood filled in", the second is [NoEntry] and stays quiet. Collapsing the two is
- * exactly what made the Monday disc look like a broken, empty grey circle.
+ * There used to be a third — a neutral indigo disc with an en-dash for "a row
+ * exists but the mood question was never answered" — but the owner's rule
+ * (2026-09-11, see [isRecordedDay]) is that a day counts only when the mood is
+ * filled. The phone sync writes an `entries` row for every day, so the presence
+ * of a row says nothing about whether the owner journaled: 2026-09-07 carries
+ * 5 h 58 min of screen time and 196 unlocks yet no mood. Such a day must read
+ * exactly like one with no row at all — [Missing] — never like a logged day.
  */
 enum class MoodDiscState {
     /** The day has a mood: emoji on a soft mood-coloured disc. */
     Mood,
 
-    /** The day has an entry but no mood: a neutral indigo disc with an en-dash. */
-    LoggedWithoutMood,
-
-    /** No entry at all: the quietest treatment. */
-    NoEntry,
+    /** No mood filled in — whether or not a synced row exists: the quiet disc. */
+    Missing,
 }
 
 /**
- * Which mark [mood] plus entry presence select.
+ * Which mark [mood] selects.
+ *
+ * Only `mood` can be trusted to mean "the owner journaled": screen time, unlocks
+ * and top apps are written by the phone-sync worker, which creates an `entries`
+ * row for every day, so the mere presence of a row says nothing. That is why this
+ * function deliberately ignores whether a row exists — a mood-less day (0 or null)
+ * is [MoodDiscState.Missing] even when the phone synced numbers for it, and a day
+ * with a mood is [MoodDiscState.Mood]. See [isRecordedDay] for the full rule.
+ *
+ * This is the intentional deviation from the web, which draws any row as a logged
+ * day.
  *
  * A mood of 0 means "not answered" (the check-in stores 0 for an untouched
- * picker), so it becomes the neutral mark rather than the worst colour on the
- * scale.
+ * picker) and null means "no value", so both read as missing rather than as the
+ * worst colour on the scale.
  */
-fun moodDiscState(hasEntry: Boolean, mood: Int): MoodDiscState = when {
-    !hasEntry -> MoodDiscState.NoEntry
-    mood > 0 -> MoodDiscState.Mood
-    else -> MoodDiscState.LoggedWithoutMood
-}
+fun moodDiscState(mood: Int?): MoodDiscState =
+    if (isRecordedDay(mood)) MoodDiscState.Mood else MoodDiscState.Missing
 
 /** How many apps the "Nejpoužívanější aplikace" block lists. */
 const val TOP_APPS_LIMIT = 5

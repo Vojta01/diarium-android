@@ -32,12 +32,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
+import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
+import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 
 /**
@@ -80,7 +83,13 @@ fun CheckInSection(
             Spacer(Modifier.weight(1f))
             trailing?.invoke()
             Spacer(Modifier.width(6.dp))
-            Text(if (expanded) "▴" else "▾", color = TextTertiary, fontSize = 12.sp)
+            Text(
+                text = if (expanded) "▴" else "▾",
+                // Quiet indigo accent so an open section reads as active
+                // without adding a second colour family.
+                color = if (expanded) IndigoLight else TextTertiary,
+                fontSize = 12.sp,
+            )
         }
         if (expanded) {
             Spacer(Modifier.height(8.dp))
@@ -142,24 +151,33 @@ fun EmojiOption(
         modifier = modifier
             .testTagOrEmpty(testTag)
             .clip(shape)
-            .background(if (selected) accent.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.04f))
+            .background(if (selected) accent.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.05f))
             .border(
                 width = 1.dp,
-                color = if (selected) accent.copy(alpha = 0.75f) else Outline.copy(alpha = 0.5f),
+                color = if (selected) accent.copy(alpha = 0.85f) else Outline.copy(alpha = 0.5f),
                 shape = shape,
             )
             .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 10.dp),
+            .padding(horizontal = 8.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(text = emoji, fontSize = if (selected) 30.sp else 26.sp)
+        // The mood emoji stays the largest thing on the screen (28/34sp against
+        // the chip's 22/24sp); the selected day grows without any animation.
+        Text(
+            text = emoji,
+            fontSize = if (selected) CheckInIconSize.scaleSelected else CheckInIconSize.scale,
+        )
         if (label != null) {
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(4.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (selected) accent else TextTertiary,
-                maxLines = 1,
+                color = if (selected) accent else TextSecondary,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                // Two lines instead of one so a longer label is never
+                // truncated, centred under its icon.
+                maxLines = 2,
+                textAlign = TextAlign.Center,
             )
         }
     }
@@ -176,7 +194,7 @@ fun EmojiChoiceRow(
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         choices.forEach { choice ->
             EmojiOption(
@@ -237,14 +255,17 @@ fun SelectableChip(
         modifier = modifier
             .testTagOrEmpty(testTag)
             .clip(shape)
-            .background(if (selected) accent.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.05f))
+            .background(if (selected) accent.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.06f))
             .border(
                 width = 1.dp,
-                color = if (selected) accent.copy(alpha = 0.7f) else Outline.copy(alpha = 0.55f),
+                color = if (selected) accent.copy(alpha = 0.85f) else Outline.copy(alpha = 0.55f),
                 shape = shape,
             )
             .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            // Bigger icons need a taller pill; 46dp also clears the 44dp
+            // minimum touch target on phones.
+            .heightIn(min = CheckInIconSize.chipMinHeight)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
         if (icon == null || icon.isBlank()) {
             // Callers whose emoji is already part of `text` (hide/restore,
@@ -254,8 +275,11 @@ fun SelectableChip(
             // Activities and weather own their emoji separately so it can be
             // drawn larger than the label instead of at text size.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = icon, fontSize = 17.sp)
-                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = icon,
+                    fontSize = if (selected) CheckInIconSize.chipSelected else CheckInIconSize.chip,
+                )
+                Spacer(Modifier.width(8.dp))
                 ChipLabel(text = text, selected = selected)
             }
         }
@@ -268,8 +292,13 @@ private fun ChipLabel(text: String, selected: Boolean) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodyMedium,
-        color = if (selected) TextPrimary else TextPrimary.copy(alpha = 0.8f),
-        fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+        // One step up from bodyMedium (13.5sp) and slightly tightened, so the
+        // label still reads as secondary next to the 22/24sp icon.
+        fontSize = 14.sp,
+        letterSpacing = (-0.1).sp,
+        lineHeight = 18.sp,
+        color = if (selected) TextPrimary else TextPrimary.copy(alpha = 0.85f),
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
     )
 }
 
@@ -285,14 +314,14 @@ fun GlassIconButton(
     Box(
         modifier = modifier
             .testTagOrEmpty(testTag)
-            .size(38.dp)
+            .size(40.dp)
             .clip(CircleShape)
             .background(accent.copy(alpha = 0.16f))
             .border(1.dp, accent.copy(alpha = 0.35f), CircleShape)
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
-        Text(text = text, color = TextPrimary, fontSize = 14.sp)
+        Text(text = text, color = TextPrimary, fontSize = CheckInIconSize.actionGlyph)
     }
 }
 

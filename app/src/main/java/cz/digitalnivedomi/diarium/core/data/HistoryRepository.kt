@@ -6,9 +6,18 @@ import java.time.LocalDate
  * One visible month of entries, keyed by ISO date — everything the "Historie"
  * screen renders from.
  *
- * The days that have no check-in are simply absent from [entries]; the calendar
- * draws those cells empty rather than inventing a zero entry, exactly like the
- * web view (`src/components/CalendarView.tsx` builds a `moodMap` the same way).
+ * [entries] holds **every** row the month read returned, including the days the
+ * screen-time worker synced without the owner filling anything in. Those rows are
+ * kept (the owner may want to see the synced screen time) but they must never be
+ * counted or drawn as a journaled day — see [recordedCount] and [isRecorded], and
+ * [isRecordedDay] for the owner's rule (2026-09-11): only a filled mood makes a day
+ * a record. So there are two different questions, and they have different answers:
+ * *does a row exist?* ([entryOn]) and *did the owner journal it?* ([isRecorded]).
+ *
+ * A day with no row at all is simply absent from [entries]; the calendar draws that
+ * cell empty rather than inventing a zero entry, exactly like the web view
+ * (`src/components/CalendarView.tsx` builds a `moodMap` the same way). A synced-only
+ * row is the opposite case: present in [entries], yet still not a record.
  */
 data class HistoryData(
     val year: Int,
@@ -16,7 +25,7 @@ data class HistoryData(
     val month: Int,
     /** The day the screen considered "today" when this month was read. */
     val today: String,
-    /** ISO date -> that day's entry. */
+    /** ISO date -> that day's entry, synced-only rows included. */
     val entries: Map<String, DiaryEntry>,
 ) {
     /** How many days the loaded month has — leap February included. */
@@ -25,8 +34,39 @@ data class HistoryData(
     /** The check-in for an ISO [date], or null when that day has none. */
     fun entryOn(date: String): DiaryEntry? = entries[date]
 
-    /** The mood marker the calendar draws for a day: null when it has no entry. */
-    fun moodOn(date: String): Int? = entries[date]?.mood
+    /**
+     * The mood marker the calendar draws for a day: null when that day is *not* a
+     * record. A row the phone synced without a mood is reported here as "no marker"
+     * on purpose, so it paints the same neutral cell as a day with no row — see
+     * [isRecordedDay].
+     */
+    fun moodOn(date: String): Int? = entries[date]?.mood?.takeIf { isRecordedDay(it) }
+
+    /**
+     * Did the owner journal [date]? True only when the day has a row **and** its mood
+     * is filled — a day that only carries synced phone data (screen time, unlocks) is
+     * not a record, per the owner's rule (see [isRecordedDay]).
+     */
+    fun isRecorded(date: String): Boolean = isRecordedDay(entries[date]?.mood)
+
+    /**
+     * True when [date] has a row that the phone synced but nobody journaled — the
+     * "entry exists, mood missing" case the calendar must not present as a record.
+     */
+    fun isSyncedOnly(date: String): Boolean =
+        entries[date] != null && !isRecordedDay(entries[date]?.mood)
+
+    /**
+     * How many days of the month count as records. This is the number the screen
+     * prints ("máš N zápisů"), so a month of synced-only rows reports 0.
+     */
+    val recordedCount: Int get() = entries.values.count { isRecordedDay(it.mood) }
+
+    /**
+     * Rows that exist without a mood: days the phone synced but nobody journaled.
+     * They stay in [entries] — only the count and the marking treat them as missing.
+     */
+    val syncedOnlyCount: Int get() = entries.size - recordedCount
 }
 
 /**

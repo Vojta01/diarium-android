@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,9 +14,43 @@ if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
 
+// ---------------------------------------------------------------------------
+// Stable release signing.
+//
+// Every CI run used to build with the auto-generated *debug* keystore, so each
+// build carried a different signature: Android treat...[truncated]
+
 android {
     namespace = "cz.digitalnivedomi.diarium"
     compileSdk = 34
+
+    // The stable release key (see the note above). Locally the values live in the
+    // gitignored keystore.properties next to this module; CI injects the same four
+    // values as ANDROID_KEYSTORE_* env vars after decoding the secret. When neither
+    // is present the config is simply not created, so the release buildType can
+    // fall back to the debug key with a loud warning instead of failing.
+    val localKeystoreProps = rootProject.file("keystore.properties")
+    val envKeystorePath = System.getenv("ANDROID_KEYSTORE_FILE")
+    signingConfigs {
+        if (localKeystoreProps.exists() || !envKeystorePath.isNullOrBlank()) {
+            create("release") {
+                if (localKeystoreProps.exists()) {
+                    val props = Properties().apply {
+                        localKeystoreProps.inputStream().use { load(it) }
+                    }
+                    storeFile = file(props.getProperty("storeFile"))
+                    storePassword = props.getProperty("storePassword")
+                    keyAlias = props.getProperty("keyAlias")
+                    keyPassword = props.getProperty("keyPassword")
+                } else {
+                    storeFile = file(envKeystorePath!!)
+                    storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                    keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                    keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+                }
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "cz.digitalnivedomi.diarium"
@@ -54,6 +90,16 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            val stableSigning = signingConfigs.findByName("release")
+            if (stableSigning == null) {
+                logger.warn(
+                    "Diarium: no release keystore found (keystore.properties / ANDROID_KEYSTORE_* env vars) — " +
+                        "this release APK is signed with the DEBUG key and must not be distributed."
+                )
+                signingConfig = signingConfigs.getByName("debug")
+            } else {
+                signingConfig = stableSigning
+            }
         }
     }
 
