@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.home
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
@@ -19,7 +20,16 @@ import cz.digitalnivedomi.diarium.core.data.SupabaseClient
  * signed-in user's own JWT; the dashboard reads the user's rows under that JWT and
  * never needs (or receives) a server-side key.
  */
-class DashboardDeps(val dashboard: DashboardRepository? = null) {
+class DashboardDeps(
+    val dashboard: DashboardRepository? = null,
+    /**
+     * AI reflection for the signed-in user, used by the dashboard's "generate"
+     * button. Null while signed out: the button then reports the connection
+     * failure instead of hiding, so the card looks the same online and offline.
+     * Nothing here is touched on load — the endpoint is called only on a tap.
+     */
+    val reflection: AiReflectionRepository? = null,
+) {
 
     val online: Boolean get() = dashboard != null
 
@@ -36,6 +46,7 @@ class DashboardDeps(val dashboard: DashboardRepository? = null) {
                 dashboard = DashboardRepository(
                     EntriesRepository(client, SessionContext(sessionStore)),
                 ),
+                reflection = AiReflectionRepository(sessionStore),
             )
         }
     }

@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.home
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,13 +35,19 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DashboardData
-import cz.digitalnivedomi.diarium.core.data.DashboardReflection
+import cz.digitalnivedomi.diarium.core.data.DashboardNewestEntry
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
+import cz.digitalnivedomi.diarium.core.data.MoodDiscState
+import cz.digitalnivedomi.diarium.core.data.formatTopAppDuration
+import cz.digitalnivedomi.diarium.core.data.moodDiscState
+import cz.digitalnivedomi.diarium.core.data.rankTopApps
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
 import cz.digitalnivedomi.diarium.ui.checkin.MOOD_CHOICES
 import cz.digitalnivedomi.diarium.ui.checkin.SLEEP_CHOICES
@@ -71,6 +80,7 @@ import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import cz.digitalnivedomi.diarium.ui.theme.moodColor
 import java.time.DayOfWeek
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * The dashboard — "Přehled", the app's home tab.
@@ -137,7 +147,11 @@ fun DashboardScreen(
         when {
             state.loading -> LoadingCard()
             state.errorMessage != null -> ErrorCard(state.errorMessage.orEmpty()) { reloadTrigger++ }
-            data != null -> DashboardContent(data = data, onOpenCheckIn = onOpenCheckIn)
+            data != null -> DashboardContent(
+                data = data,
+                onOpenCheckIn = onOpenCheckIn,
+                reflectionRepository = deps.reflection,
+            )
         }
 
         VSpace(Spacing.screenBottom)
@@ -210,7 +224,11 @@ private fun stressLabelOf(entry: DiaryEntry): String =
 private fun formatAverageMood(value: Double): String = String.format(Locale.US, "%.1f", value)
 
 @Composable
-private fun DashboardContent(data: DashboardData, onOpenCheckIn: (String) -> Unit) {
+private fun DashboardContent(
+    data: DashboardData,
+    onOpenCheckIn: (String) -> Unit,
+    reflectionRepository: AiReflectionRepository?,
+) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Spacing.section),
@@ -221,12 +239,15 @@ private fun DashboardContent(data: DashboardData, onOpenCheckIn: (String) -> Uni
         StaggeredItem(1) { StreakCard(data = data) }
         StaggeredItem(2) { WeekCard(data = data) }
         StaggeredItem(3) { ScreenTimeCard(data = data) }
-        // The "Dnes" card already carries today's reflection, so the dedicated card
-        // appears only when the newest reflection is from an earlier day — the same
-        // text never shows twice.
-        val reflection = data.reflection
-        if (reflection != null && reflection.date != data.today) {
-            StaggeredItem(4) { ReflectionCard(reflection = reflection) }
+        // The reflection card keys off the newest logged day, never off the newest
+        // day that happens to carry a reflection: showing "Ze dne 9. 9." while
+        // 10. 9. was on screen is the bug this fixes. It is hidden only when the
+        // "Dnes" card already renders that exact text, so nothing shows twice.
+        val newest = data.newestEntry
+        if (newest != null && !(newest.date == data.today && newest.reflection != null)) {
+            StaggeredItem(4) {
+                ReflectionCard(newest = newest, repository = reflectionRepository)
+            }
         }
     }
 }
@@ -415,17 +436,31 @@ private fun WeekCard(data: DashboardData) {
         ) {
             data.week.forEach { day ->
                 val isToday = day.date == data.today
+                val state = moodDiscState(day.hasEntry, day.mood)
                 val mood = moodColor(day.mood)
-                // Both branches must be a Brush: there is no `background(Color)`
-                // overload in play here, so the quiet day is a solid-colour brush.
-                val fill: Brush = if (day.hasEntry) {
-                    // A soft glow: the mood colour fades down the disc instead of
-                    // filling it fully saturated.
-                    Brush.verticalGradient(
-                        listOf(mood.copy(alpha = 0.30f), mood.copy(alpha = 0.10f)),
-                    )
-                } else {
-                    SolidColor(Color.White.copy(alpha = 0.04f))
+                // Three deliberate marks, not two: a logged day without a mood is
+                // its own state, so it can never render as an empty grey hole the
+                // user reads as broken (the Monday disc that prompted this fix).
+                // Every branch must be a Brush: there is no `background(Color)`
+                // overload here, so an even fill is a solid-colour brush.
+                val fill: Brush = when (state) {
+                    MoodDiscState.Mood ->
+                        // A soft glow: the mood colour fades down the disc instead
+                        // of filling it fully saturated.
+                        Brush.verticalGradient(
+                            listOf(mood.copy(alpha = 0.30f), mood.copy(alpha = 0.10f)),
+                        )
+                    // A tidy neutral indigo disc — clearly deliberate, clearly not
+                    // a mood value.
+                    MoodDiscState.LoggedWithoutMood -> SolidColor(Indigo.copy(alpha = 0.08f))
+                    MoodDiscState.NoEntry -> SolidColor(Color.White.copy(alpha = 0.04f))
+                }
+                val borderWidth =
+                    if (isToday && state != MoodDiscState.LoggedWithoutMood) 2.dp else 1.2.dp
+                val borderColor = when (state) {
+                    MoodDiscState.Mood -> if (isToday) Indigo else mood.copy(alpha = 0.55f)
+                    MoodDiscState.LoggedWithoutMood -> Indigo.copy(alpha = 0.35f)
+                    MoodDiscState.NoEntry -> if (isToday) Indigo else Outline.copy(alpha = 0.5f)
                 }
                 Column(
                     modifier = Modifier.weight(1f),
@@ -436,24 +471,30 @@ private fun WeekCard(data: DashboardData) {
                             .size(34.dp)
                             .clip(CircleShape)
                             .background(fill)
-                            .border(
-                                width = if (isToday) 2.dp else 1.2.dp,
-                                color = when {
-                                    isToday -> Indigo
-                                    day.hasEntry -> mood.copy(alpha = 0.55f)
-                                    else -> Outline.copy(alpha = 0.5f)
-                                },
-                                shape = CircleShape,
-                            ),
+                            .border(width = borderWidth, color = borderColor, shape = CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            // The emoji carries the mood colour in its own glyphs; the
-                            // disc stays translucent so the two do not fight.
-                            text = if (day.hasEntry) moodEmojiOf(day.mood) else "·",
-                            fontSize = 17.sp,
-                            color = if (day.hasEntry) Color.Unspecified else TextTertiary,
-                        )
+                        when (state) {
+                            // The emoji carries the mood colour in its own glyphs;
+                            // the disc stays translucent so the two do not fight.
+                            MoodDiscState.Mood -> Text(
+                                text = moodEmojiOf(day.mood),
+                                fontSize = 17.sp,
+                                color = Color.Unspecified,
+                            )
+                            // An en-dash: a day that was filled in, just without a
+                            // mood. Never the empty/grey treatment.
+                            MoodDiscState.LoggedWithoutMood -> Text(
+                                text = "–",
+                                fontSize = 15.sp,
+                                color = TextTertiary,
+                            )
+                            MoodDiscState.NoEntry -> Text(
+                                text = "·",
+                                fontSize = 17.sp,
+                                color = TextTertiary,
+                            )
+                        }
                     }
                     VSpace(4)
                     Text(
@@ -463,6 +504,12 @@ private fun WeekCard(data: DashboardData) {
                     )
                 }
             }
+        }
+        // The legend appears only when a neutral disc is actually on screen, so the
+        // en-dash can never be read as a rendering bug.
+        if (data.week.any { moodDiscState(it.hasEntry, it.mood) == MoodDiscState.LoggedWithoutMood }) {
+            VSpace(8)
+            SectionHint("– = den bez vyplněné nálady")
         }
         VSpace(12)
         GlassDivider()
@@ -574,22 +621,82 @@ private fun ScreenTimeCard(data: DashboardData) {
             SectionHeader("Nejpoužívanější aplikace")
             VSpace(2)
             SectionHint("Ze dne ${shortDateOf(topApps.date)}")
-            VSpace(6)
-            topApps.apps.take(5).forEach { app ->
-                Text(
-                    text = "• ${app.app} — ${formatMinutes(app.minutes)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                    modifier = Modifier.padding(vertical = 1.dp),
-                )
+            VSpace(10)
+            // Ranked here, not rendered straight from the query: the raw database
+            // order buried the real leaders (Snooker 37 min) behind five rows that
+            // happened to come first (Hermes WebUI 8 min).
+            val ranked = rankTopApps(topApps.apps)
+            if (ranked.size < 3) {
+                // Two rows cannot show a ranking; an honest hint beats a near-empty
+                // list that reads as missing data.
+                SectionHint("Pro žebříček nejpoužívanějších aplikací je tu zatím málo dat.")
+            } else {
+                val maxMinutes = ranked.first().minutes
+                ranked.forEach { app ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = app.app,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = formatTopAppDuration(app.minutes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextTertiary,
+                        )
+                    }
+                    VSpace(5)
+                    // A thin bar scaled to the largest value shown, so the ranking
+                    // is visible at a glance.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color.White.copy(alpha = 0.07f)),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(
+                                    (app.minutes.toFloat() / maxMinutes).coerceIn(0f, 1f),
+                                )
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(Brush.horizontalGradient(listOf(IndigoLight, Indigo))),
+                        )
+                    }
+                    VSpace(11)
+                }
             }
         }
     }
 }
 
-/** 🤖 The AI reflection of the newest day that has one. */
+/**
+ * 🤖 The AI reflection of the newest logged day.
+ *
+ * The card keys off the newest entry, never off the newest day that happens to
+ * carry a reflection: it shows that day's text when it has one, and otherwise
+ * offers to generate one for it. A generation request fires only on the tap —
+ * nothing network-bound runs while the screen loads.
+ */
 @Composable
-private fun ReflectionCard(reflection: DashboardReflection) {
+private fun ReflectionCard(
+    newest: DashboardNewestEntry,
+    repository: AiReflectionRepository?,
+) {
+    val scope = rememberCoroutineScope()
+    var text by remember(newest.date) { mutableStateOf(newest.reflection) }
+    var loading by remember(newest.date) { mutableStateOf(false) }
+    var error by remember(newest.date) { mutableStateOf<String?>(null) }
+
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         SectionHeader("🤖 AI Reflexe")
         VSpace(4)
@@ -599,9 +706,90 @@ private fun ReflectionCard(reflection: DashboardReflection) {
             color = TextPrimary,
         )
         VSpace(2)
-        SectionHint("Ze dne ${shortDateOf(reflection.date)}")
+        SectionHint("Ze dne ${shortDateOf(newest.date)}")
         VSpace(10)
-        ReflectionBox(text = reflection.text)
+
+        val current = text
+        if (!current.isNullOrBlank()) {
+            ReflectionBox(text = current)
+        } else {
+            SectionHint("Reflexe pro tento den ještě není vygenerovaná.")
+            VSpace(12)
+            GlassActionButton(
+                text = if (loading) "Generuji reflexi…" else "Vygenerovat reflexi",
+                enabled = !loading,
+                leadingSpinner = loading,
+            ) {
+                // The only place a request is ever fired: the user's tap.
+                val repo = repository
+                if (repo == null) {
+                    error = AiReflectionRepository.MESSAGE_CONNECT
+                } else if (!loading) {
+                    loading = true
+                    error = null
+                    scope.launch {
+                        repo.generate(newest.date, newest.entry, repo.userName())
+                            .onSuccess { generated ->
+                                text = generated
+                                loading = false
+                            }
+                            .onFailure { failure ->
+                                // The repository's own Czech sentence, verbatim: a
+                                // 429 cooldown must be shown as-is, never retried
+                                // in a loop.
+                                error = failure.message ?: AiReflectionRepository.MESSAGE_GENERIC
+                                loading = false
+                            }
+                    }
+                }
+            }
+        }
+
+        error?.let { message ->
+            VSpace(10)
+            ErrorBanner(message)
+        }
+    }
+}
+
+/**
+ * Full-width glass action in the brand indigo, used by the reflection card's
+ * "generate" button. Deliberately glass (translucent indigo fill + border) so it
+ * sits with the rest of the card rather than shouting like a filled primary.
+ */
+@Composable
+private fun GlassActionButton(
+    text: String,
+    enabled: Boolean = true,
+    leadingSpinner: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Indigo.copy(alpha = if (enabled) 0.18f else 0.07f))
+            .border(1.dp, Indigo.copy(alpha = if (enabled) 0.50f else 0.20f), shape)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(vertical = 13.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (leadingSpinner) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = IndigoLight,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                text = text,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (enabled) TextPrimary else TextTertiary,
+            )
+        }
     }
 }
 
