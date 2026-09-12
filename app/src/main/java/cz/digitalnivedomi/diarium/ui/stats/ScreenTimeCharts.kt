@@ -18,7 +18,11 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +57,8 @@ import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
+import cz.digitalnivedomi.diarium.ui.theme.Gradients
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -355,11 +361,21 @@ private fun BarChartTrack(
         selectedIndex = selectedIndex,
     )
 
+    val haptics = rememberHaptics()
+    // Bars travel to their height whenever the window or the metric changes; the
+    // value is identical, only the drawn height is animated (0 -> 1 of the full bar).
+    val grow = remember { Animatable(0f) }
+    LaunchedEffect(window, metric) {
+        grow.snapTo(0f)
+        grow.animateTo(1f, tween(durationMillis = 520, easing = FastOutSlowInEasing))
+    }
+
     Box(modifier = Modifier.fillMaxWidth().height(SCREEN_TIME_TRACK)) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val count = window.size
             if (count == 0) return@Canvas
             val slot = size.width / count
+            val grown = grow.value
 
             listOf(0.25f, 0.5f, 0.75f).forEach { fraction ->
                 val y = size.height * fraction
@@ -377,12 +393,17 @@ private fun BarChartTrack(
                 // A day the worker never reported draws no column at all; the label row
                 // is what tells "the phone said zero" from "nothing was ever synced".
                 if (!ScreenTimeBars.drawsBar(value)) return@forEachIndexed
-                val barHeight = size.height * ScreenTimeBars.barFraction(value, maxValue) * BAR_HEADROOM
+                val barHeight = size.height * ScreenTimeBars.barFraction(value, maxValue) * BAR_HEADROOM * grown
+                if (barHeight <= 0f) return@forEachIndexed
+                // Same bucket colour as before (the mapping stays web-identical), just
+                // painted as a top-bright ramp with a pill cap so a column reads as a
+                // lit object instead of a flat stripe.
+                val bucket = BUCKET_COLORS[metric.bucketOf(value).coerceIn(0, BUCKET_COLORS.lastIndex)]
                 drawRoundRect(
-                    color = BUCKET_COLORS[metric.bucketOf(value).coerceIn(0, BUCKET_COLORS.lastIndex)],
+                    brush = Gradients.fill(listOf(bucket, bucket.copy(alpha = 0.42f)), vertical = true),
                     topLeft = Offset(index * slot + (slot - barWidth) / 2f, size.height - barHeight),
                     size = Size(barWidth, barHeight),
-                    cornerRadius = CornerRadius(3f, 3f),
+                    cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
                     alpha = if (selectedDate == null || selectedDate == day.date) 1f else 0.35f,
                 )
             }
@@ -391,11 +412,11 @@ private fun BarChartTrack(
                 val y = size.height -
                     ScreenTimeBars.averageLineFraction(average, maxValue) * size.height * BAR_HEADROOM
                 drawLine(
-                    color = Color.White.copy(alpha = 0.45f),
+                    color = IndigoLight.copy(alpha = 0.55f),
                     start = Offset(0f, y),
                     end = Offset(size.width, y),
-                    strokeWidth = 2f,
-                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f),
+                    strokeWidth = 1.5f,
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f),
                 )
             }
         }
@@ -407,7 +428,10 @@ private fun BarChartTrack(
                         .weight(1f)
                         .fillMaxHeight()
                         .testTagOrEmpty(metric.testTag)
-                        .clickable { onSelectDate(day.date) },
+                        .clickable {
+                            haptics.selection()
+                            onSelectDate(day.date)
+                        },
                 )
             }
         }

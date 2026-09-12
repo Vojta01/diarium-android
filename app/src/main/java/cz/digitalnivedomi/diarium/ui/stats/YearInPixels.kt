@@ -40,7 +40,10 @@ import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.gradientBorder
+import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
+import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
@@ -144,6 +147,7 @@ private fun MonthCard(
     selected: String?,
     onSelect: (String) -> Unit,
 ) {
+    val haptics = rememberHaptics()
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -186,13 +190,16 @@ private fun MonthCard(
                     } else {
                         val isToday = cell.date == today
                         val isSelected = cell.date == selected
+                        val cellShape = RoundedCornerShape(4.dp)
+                        // No per-cell animation state here on purpose: a year is ~370
+                        // cells, so a layer per cell would cost more than it shows.
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .aspectRatio(1f)
                                 .padding(2.dp)
                                 .testTagOrEmpty("year_pixel_${cell.date}")
-                                .clip(RoundedCornerShape(3.dp))
+                                .clip(cellShape)
                                 .background(
                                     if (cell.mood > 0) {
                                         moodColor(cell.mood).copy(alpha = if (isSelected) 1f else 0.85f)
@@ -201,13 +208,20 @@ private fun MonthCard(
                                     },
                                 )
                                 .then(
-                                    if (isToday) {
-                                        Modifier.border(1.5.dp, Indigo, RoundedCornerShape(3.dp))
-                                    } else {
-                                        Modifier
+                                    when {
+                                        isSelected -> Modifier.gradientBorder(
+                                            cellShape,
+                                            listOf(IndigoLight, Indigo),
+                                            width = 1.5.dp,
+                                        )
+                                        isToday -> Modifier.border(1.5.dp, Indigo, cellShape)
+                                        else -> Modifier
                                     },
                                 )
-                                .clickable { onSelect(cell.date) },
+                                .clickable {
+                                    haptics.selection()
+                                    onSelect(cell.date)
+                                },
                         )
                     }
                 }
