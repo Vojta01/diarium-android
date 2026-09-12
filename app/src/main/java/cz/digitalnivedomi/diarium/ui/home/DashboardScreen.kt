@@ -51,6 +51,7 @@ import cz.digitalnivedomi.diarium.core.data.DashboardReflection
 import cz.digitalnivedomi.diarium.core.data.DashboardNewestEntry
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
+import cz.digitalnivedomi.diarium.core.data.MetricTrend
 import cz.digitalnivedomi.diarium.core.data.MoodDiscState
 import cz.digitalnivedomi.diarium.core.data.PhoneTopApp
 import cz.digitalnivedomi.diarium.core.data.formatTopAppDuration
@@ -69,6 +70,7 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.SecondaryButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.checkin.components.formatMinutes
 import cz.digitalnivedomi.diarium.ui.components.AnimatedCounter
+import cz.digitalnivedomi.diarium.ui.components.DayDetailDialog
 import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
@@ -82,6 +84,7 @@ import cz.digitalnivedomi.diarium.ui.components.SubScreenEntry
 import cz.digitalnivedomi.diarium.ui.nav.Routes
 import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
 import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.theme.Cyan
 import cz.digitalnivedomi.diarium.ui.theme.Dimens
@@ -127,8 +130,11 @@ fun DashboardScreen(
     deps: DashboardDeps = remember { DashboardDeps.offline() },
     onOpenCheckIn: (String) -> Unit = {},
     onOpen: (String) -> Unit = {},
+    // Owned by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
+    // the loaded numbers have to outlive this composable, otherwise returning from a
+    // sub-screen re-reads everything and lands back at the top of the list.
+    holder: DashboardStateHolder = remember { DashboardStateHolder() },
 ) {
-    val holder = remember { DashboardStateHolder() }
     val state = holder.state
     val data = state.data
     val repository = deps.dashboard
@@ -168,7 +174,10 @@ fun DashboardScreen(
         when {
             // Still loading: card-shaped skeletons, never a spinner floating in the
             // middle of an empty screen. The copy stays, so the read is still visible.
-            state.loading -> DashboardSkeleton()
+            // Skeletons only while there is nothing to show yet. A refresh (resume,
+            // retry, coming back from a pushed screen) keeps the numbers on screen, which
+            // is also what lets the saved scroll offset land back on the same pixels.
+            state.loading && data == null -> DashboardSkeleton()
             state.errorMessage != null -> ErrorCard(state.errorMessage.orEmpty()) { reloadTrigger++ }
             data != null -> DashboardContent(
                 data = data,
@@ -259,6 +268,12 @@ private fun DashboardContent(
     onReload: () -> Unit,
     reflectionRepository: AiReflectionRepository?,
 ) {
+    // One day opened from the mood strip, one hero number opened as a fourteen-day
+    // breakdown. Both live here: they only decide which window is on top of the
+    // screen, nothing about what is loaded.
+    var detailDate by remember { mutableStateOf<String?>(null) }
+    var metricKind by remember { mutableStateOf<DashboardMetricKind?>(null) }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Spacing.section),
@@ -267,9 +282,11 @@ private fun DashboardContent(
         // capped by Entrance, so even a full dashboard settles in ~300ms.
         // The three headline numbers a day is read from come first, as hero cards;
         // the cards below stay the detail behind them.
-        StaggeredItem(0) { HeroStats(data = data) }
+        StaggeredItem(0) {
+            HeroStats(data = data, onOpenMetric = { kind -> metricKind = kind })
+        }
         StaggeredItem(1) { StreakCard(data = data) }
-        StaggeredItem(2) { WeekCard(data = data) }
+        StaggeredItem(2) { WeekCard(data = data, onOpenDay = { date -> detailDate = date }) }
         StaggeredItem(3) { ScreenTimeCard(data = data, onReload = onReload) }
         StaggeredItem(4) { UnlocksCard(data = data, onReload = onReload) }
         StaggeredItem(5) { TopAppsCard(data = data, onReload = onReload) }
@@ -292,6 +309,49 @@ private fun DashboardContent(
         // so the overview carries their entrances. Pure navigation, no read.
         StaggeredItem(6) { EntriesCard(onOpen = onOpen) }
     }
+
+    // The two windows sit beside the scrolling column, not inside it: opening a day
+    // from the metric window is then a plain state change here rather than a dialog
+    // stacked on a dialog.
+    val dayToShow = detailDate
+    if (dayToShow != null) {
+        DayDetailDialog(
+            date = dayToShow,
+            entry = data.entryByDate[dayToShow],
+            onDismiss = { detailDate = null },
+            onOpenCheckIn = onOpenCheckIn,
+        )
+    }
+    val metricToShow = metricKind
+    if (metricToShow != null) {
+        DashboardMetricDialog(
+            title = metricTitle(metricToShow),
+            kind = metricToShow,
+            accent = metricAccent(metricToShow, data),
+            week = data.week,
+            previousWeek = data.previousWeek,
+            today = data.today,
+            onDismiss = { metricKind = null },
+            onOpenDay = { date ->
+                metricKind = null
+                detailDate = date
+            },
+        )
+    }
+}
+
+/** The header of the metric window: the same name the hero card carries. */
+private fun metricTitle(kind: DashboardMetricKind): String = when (kind) {
+    DashboardMetricKind.SCREEN_TIME -> "Čas na obrazovce"
+    DashboardMetricKind.UNLOCKS -> "Odemknutí"
+    DashboardMetricKind.MOOD -> "Ø nálada"
+}
+
+/** The window's accent — the hero card's own, so the two read as one thing. */
+private fun metricAccent(kind: DashboardMetricKind, data: DashboardData): Color = when (kind) {
+    DashboardMetricKind.SCREEN_TIME -> Indigo
+    DashboardMetricKind.UNLOCKS -> Cyan
+    DashboardMetricKind.MOOD -> moodColor(data.averageMood?.roundToInt())
 }
 
 /**
@@ -303,7 +363,19 @@ private fun DashboardContent(
  * synced yet is an honest em dash, never a zero dressed up as data.
  */
 @Composable
-private fun HeroStats(data: DashboardData) {
+private fun HeroStats(
+    data: DashboardData,
+    /** Tapping a hero card opens the fourteen days behind its number. */
+    onOpenMetric: (DashboardMetricKind) -> Unit = {},
+) {
+    // Every caption below is computed from the same weeks the figure above it comes
+    // from, so a trend can never be summed differently from the number it describes.
+    val timeTrend = metricTrend(data.week, data.previousWeek, DashboardMetricKind.SCREEN_TIME)
+    val unlockTrend = metricTrend(data.week, data.previousWeek, DashboardMetricKind.UNLOCKS)
+    val moodTrend = metricTrend(data.week, data.previousWeek, DashboardMetricKind.MOOD)
+    val timePerDay = averagePerDay(data.week, DashboardMetricKind.SCREEN_TIME)
+    val unlocksPerDay = averagePerDay(data.week, DashboardMetricKind.UNLOCKS)
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Spacing.block),
@@ -315,6 +387,7 @@ private fun HeroStats(data: DashboardData) {
             accent = Indigo,
             elevated = true,
             glow = true,
+            onClick = { onOpenMetric(DashboardMetricKind.SCREEN_TIME) },
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconBadge(accent = Indigo, size = 48, gradient = true) {
@@ -339,6 +412,20 @@ private fun HeroStats(data: DashboardData) {
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary,
                     )
+                    // What the figure says: an average over the days that actually
+                    // carry screen time — a day without data is never a zero.
+                    if (data.screenTimeMinutes != null) {
+                        timePerDay?.let { perDay ->
+                            VSpace(Spacing.tiny)
+                            Text(
+                                text = "Ø ${formatMetricMinutes(perDay.roundToInt())} na den",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                            )
+                        }
+                    }
+                    VSpace(Spacing.tiny)
+                    TrendLine(trend = timeTrend, tone = TrendTone.USAGE)
                 }
             }
         }
@@ -355,6 +442,11 @@ private fun HeroStats(data: DashboardData) {
                 unit = null,
                 decimals = 0,
                 caption = "za posledních ${DashboardRepository.WEEK_DAYS} dní",
+                explanations = listOfNotNull(
+                    unlocksPerDay?.let { "Ø ${it.roundToInt()} odemknutí na den" },
+                ),
+                trend = unlockTrend,
+                onClick = { onOpenMetric(DashboardMetricKind.UNLOCKS) },
             )
             HeroStatCard(
                 modifier = Modifier.weight(1f),
@@ -365,6 +457,17 @@ private fun HeroStats(data: DashboardData) {
                 unit = "/ 5",
                 decimals = 1,
                 caption = "za posledních ${DashboardRepository.WEEK_DAYS} dní",
+                explanations = listOfNotNull(
+                    data.averageMood?.let { average ->
+                        val face = moodFace(average)
+                        val word = moodWord(average)
+                        if (face == null || word == null) null else "$face $word nálada"
+                    },
+                    data.averageMood?.let { "průměr ze 7 dní (1–5)" },
+                ),
+                trend = moodTrend,
+                trendTone = TrendTone.MOOD,
+                onClick = { onOpenMetric(DashboardMetricKind.MOOD) },
             )
         }
     }
@@ -381,12 +484,21 @@ private fun HeroStatCard(
     modifier: Modifier = Modifier,
     unit: String? = null,
     decimals: Int = 0,
+    /** The lines that say what the number means, right under the existing caption. */
+    explanations: List<String> = emptyList(),
+    /** This week against the last, or null to draw no trend row at all. */
+    trend: MetricTrend? = null,
+    /** Mood's arrow means the opposite of usage's, so the tone travels with it. */
+    trendTone: TrendTone = TrendTone.USAGE,
+    /** Tapping the card opens the fourteen-day breakdown behind the number. */
+    onClick: (() -> Unit)? = null,
 ) {
     GlassCard(
         modifier = modifier,
         accent = accent,
         elevated = true,
         glow = true,
+        onClick = onClick,
     ) {
         Text(text = emoji, fontSize = 20.sp)
         VSpace(Spacing.small)
@@ -404,6 +516,18 @@ private fun HeroStatCard(
             style = MaterialTheme.typography.labelSmall,
             color = TextSecondary,
         )
+        explanations.forEach { line ->
+            VSpace(Spacing.tiny)
+            Text(
+                text = line,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+        }
+        if (trend != null) {
+            VSpace(Spacing.tiny)
+            TrendLine(trend = trend, tone = trendTone)
+        }
     }
 }
 
@@ -789,7 +913,12 @@ private fun StreakCard(data: DashboardData) {
 
 /** 🎭 Nálada — one cell per day of the week window, coloured by mood. */
 @Composable
-private fun WeekCard(data: DashboardData) {
+private fun WeekCard(
+    data: DashboardData,
+    /** Tapping a day in the strip opens the whole record of that day. */
+    onOpenDay: (String) -> Unit = {},
+) {
+    val haptics = rememberHaptics()
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader("🎭 Nálada")
         VSpace(4)
@@ -798,6 +927,8 @@ private fun WeekCard(data: DashboardData) {
             style = MaterialTheme.typography.titleMedium,
             color = TextPrimary,
         )
+        VSpace(Spacing.tight)
+        SectionHint("Klepnutím na den otevřeš celý jeho záznam.")
         VSpace(14)
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -830,7 +961,18 @@ private fun WeekCard(data: DashboardData) {
                     MoodDiscState.Missing -> if (isToday) Indigo else Outline.copy(alpha = 0.5f)
                 }
                 Column(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        // Each day is its own target: a tap opens that day's whole
+                        // record — mood, gratitude, AI reflection — which is what the
+                        // strip was asked for. GlassCard's own press scale is not
+                        // available on a cell this small, so the tick is explicit.
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            haptics.light()
+                            onOpenDay(day.date)
+                        }
+                        .padding(vertical = Spacing.tiny),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Box(

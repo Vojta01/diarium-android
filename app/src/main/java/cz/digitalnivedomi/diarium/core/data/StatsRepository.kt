@@ -16,6 +16,12 @@ data class StatsData(
     val today: String,
     /** Every loaded day, oldest first, at most one per date. */
     val days: List<StatsDay>,
+    /**
+     * The same rows as full entries, keyed by ISO date — the loaded range is already
+     * in memory, so tapping a day (a best/worst day, a bar) can open its whole record
+     * with no second request. Empty in tests that build the data by hand.
+     */
+    val entryByDate: Map<String, DiaryEntry> = emptyMap(),
 ) {
 
     /** The [daysCount] calendar days ending at [today], oldest first. */
@@ -115,7 +121,11 @@ class StatsRepository(private val entries: EntriesRepository) {
             val days = byDate.values
                 .sortedBy { it.date }
                 .map { row -> toStatsDay(row.date, row.entry) }
-            return StatsData(today = today, days = days)
+            return StatsData(
+                today = today,
+                days = days,
+                entryByDate = byDate.mapValues { (_, row) -> row.entry },
+            )
         }
 
         /** The fields [StatsMath] needs from an entry, and nothing else. */

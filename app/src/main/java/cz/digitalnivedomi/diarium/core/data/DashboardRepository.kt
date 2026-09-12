@@ -51,6 +51,13 @@ data class DashboardData(
     val streak: Int,
     val longestStreak: Int,
     val week: List<DashboardDay>,
+    /**
+     * The same seven days, one week earlier — the baseline every "oproti minulému
+     * týdnu" under a number is compared against. Empty when the read held no older
+     * rows, and then the cards say there is nothing to compare instead of inventing
+     * a zero.
+     */
+    val previousWeek: List<DashboardDay> = emptyList(),
     val averageMood: Double?,
     val screenTimeMinutes: Int?,
     val unlocks: Int?,
@@ -67,6 +74,14 @@ data class DashboardData(
     /** The newest logged day, whatever it holds. */
     val newestEntry: DashboardNewestEntry?,
     val lastGratitude: DashboardGratitude?,
+    /**
+     * Every loaded day's full record, keyed by ISO date ([LOAD_DAYS] days).
+     *
+     * The rows are already in memory — the read is a single range — so a tap on a day
+     * in the week strip can open the whole day's detail (mood, gratitude, reflection)
+     * without a second request. Empty in tests that build the dashboard by hand.
+     */
+    val entryByDate: Map<String, DiaryEntry> = emptyMap(),
 )
 
 /**
@@ -149,16 +164,9 @@ class DashboardRepository(private val entries: EntriesRepository) {
                 .map { it.date }
                 .toSet()
 
-            val week = weekWindow(today).map { date ->
-                val entry = byDate[date]
-                DashboardDay(
-                    date = date,
-                    mood = entry?.mood ?: 0,
-                    hasEntry = entry != null,
-                    screenTimeSeconds = entry?.phoneScreenTime,
-                    unlocks = entry?.phoneUnlocks,
-                )
-            }
+            val week = daysFor(weekWindow(today), byDate)
+            // Same shape, one week back: the trend captions compare like with like.
+            val previousWeek = daysFor(previousWindow(today), byDate)
 
             // A mood of 0 means "not answered", not "the worst possible day": the
             // check-in stores 0 for an untouched picker, so averaging it in would
@@ -175,6 +183,7 @@ class DashboardRepository(private val entries: EntriesRepository) {
                 streak = currentStreak(today, recordedDates),
                 longestStreak = longestStreak(recordedDates),
                 week = week,
+                previousWeek = previousWeek,
                 averageMood = if (moods.isEmpty()) null else moods.sum().toDouble() / moods.size,
                 screenTimeMinutes = seconds
                     .takeIf { it.isNotEmpty() }
@@ -186,6 +195,7 @@ class DashboardRepository(private val entries: EntriesRepository) {
                 newestEntry = newestEntry(byDate),
                 newestRecorded = newestRecorded(byDate),
                 lastGratitude = latestGratitude(byDate),
+                entryByDate = byDate,
             )
         }
 
@@ -231,6 +241,33 @@ class DashboardRepository(private val entries: EntriesRepository) {
             val end = LocalDate.parse(today)
             return (WEEK_DAYS - 1 downTo 0).map { back -> end.minusDays(back.toLong()).toString() }
         }
+
+        /**
+         * The seven calendar days *before* [weekWindow]: `today - 13 .. today - 7`.
+         * The unchanged week boundary keeps both windows the same length, which is
+         * what makes a percentage between them honest.
+         */
+        fun previousWindow(today: String): List<String> {
+            val end = LocalDate.parse(today).minusDays(WEEK_DAYS.toLong())
+            return (WEEK_DAYS - 1 downTo 0).map { back -> end.minusDays(back.toLong()).toString() }
+        }
+
+        /**
+         * One [DashboardDay] per date, missing days included as mood-less placeholders
+         * so both week windows always have exactly [WEEK_DAYS] entries and a chart can
+         * line them up without knowing which days exist.
+         */
+        fun daysFor(dates: List<String>, byDate: Map<String, DiaryEntry>): List<DashboardDay> =
+            dates.map { date ->
+                val entry = byDate[date]
+                DashboardDay(
+                    date = date,
+                    mood = entry?.mood ?: 0,
+                    hasEntry = entry != null,
+                    screenTimeSeconds = entry?.phoneScreenTime,
+                    unlocks = entry?.phoneUnlocks,
+                )
+            }
 
         /** Top apps of the latest day that captured any — an old snapshot beats none. */
         fun latestTopApps(byDate: Map<String, DiaryEntry>): DashboardTopApps? =

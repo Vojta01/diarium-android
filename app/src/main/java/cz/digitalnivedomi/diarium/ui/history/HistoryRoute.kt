@@ -14,8 +14,13 @@ import androidx.compose.ui.platform.LocalContext
  * a host that only switches tabs may ignore it, exactly like the dashboard route.
  */
 @Composable
-fun HistoryRoute(onOpenCheckIn: (String) -> Unit = {}) {
+fun HistoryRoute(
+    onOpenCheckIn: (String) -> Unit = {},
+    // Supplied by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
+    // the month that was read must not be re-read just because a day detail was opened.
+    holder: HistoryStateHolder = remember { HistoryStateHolder() },
+) {
     val context = LocalContext.current
     val deps = remember(context) { HistoryDeps.forContext(context) }
-    HistoryScreen(deps = deps, onOpenCheckIn = onOpenCheckIn)
+    HistoryScreen(deps = deps, onOpenCheckIn = onOpenCheckIn, holder = holder)
 }

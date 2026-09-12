@@ -57,7 +57,6 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import cz.digitalnivedomi.diarium.core.data.StatsData
 import cz.digitalnivedomi.diarium.core.data.StatsRepository
 import cz.digitalnivedomi.diarium.core.stats.ActivityStat
-import cz.digitalnivedomi.diarium.core.stats.MoodPoint
 import cz.digitalnivedomi.diarium.core.stats.StatsDay
 import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
@@ -90,7 +89,6 @@ import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.MotionTokens
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
-import cz.digitalnivedomi.diarium.ui.theme.SuccessGreen
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
@@ -122,8 +120,12 @@ import kotlin.math.roundToInt
  * only turns those numbers into glass cards.
  */
 @Composable
-fun StatsScreen(deps: StatsDeps = remember { StatsDeps.offline() }) {
-    val holder = remember { StatsStateHolder() }
+fun StatsScreen(
+    deps: StatsDeps = remember { StatsDeps.offline() },
+    // Owned by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
+    // switching tabs must not throw away the period that was just read.
+    holder: StatsStateHolder = remember { StatsStateHolder() },
+) {
     val state = holder.state
     val data = state.data
     val repository = deps.stats
@@ -161,7 +163,9 @@ fun StatsScreen(deps: StatsDeps = remember { StatsDeps.offline() }) {
         VSpace(Spacing.section)
 
         when {
-            state.loading -> LoadingCard()
+            // Placeholders only before the first read of a period lands; a reload keeps
+            // the previous numbers visible instead of blanking the screen under them.
+            state.loading && data == null -> LoadingCard()
             state.errorMessage != null -> ErrorCard(state.errorMessage.orEmpty()) { reloadTrigger++ }
             data != null -> StatsContent(
                 data = data,
@@ -399,7 +403,9 @@ private fun StatsContent(
             StaggeredItem(3) { MoodTrendCard(days = days) }
             StaggeredItem(4) { WeekdayCard(days = days) }
             StaggeredItem(5) { ActivityCard(days = days) }
-            StaggeredItem(6) { BestWorstCard(days = days) }
+            // The extremes own their own entrance (a header + one card per side), so
+            // the stagger lives inside the block, not in a second wrapping animatable.
+            BestWorstDayBlock(days = days, entryByDate = data.entryByDate)
         }
 
         // Hairline rule between two blocks, instead of whitespace alone.
@@ -940,70 +946,4 @@ private fun ActivityRow(stat: ActivityStat) {
     }
 }
 
-/** ▲ Nejlepší den / ▼ Nejhorší den, side by side, coloured by which one it is. */
-@Composable
-private fun BestWorstCard(days: List<StatsDay>) {
-    val best = StatsMath.bestDay(days) ?: return
-    val worst = StatsMath.worstDay(days) ?: best
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        DayCard(
-            title = "Nejlepší den",
-            arrow = "▲",
-            point = best,
-            days = days,
-            accent = SuccessGreen,
-            modifier = Modifier.weight(1f),
-        )
-        DayCard(
-            title = "Nejhorší den",
-            arrow = "▼",
-            point = worst,
-            days = days,
-            accent = ErrorRed,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun DayCard(
-    title: String,
-    arrow: String,
-    point: MoodPoint,
-    days: List<StatsDay>,
-    accent: Color,
-    modifier: Modifier = Modifier,
-) {
-    val activities = days.firstOrNull { it.date == point.date }?.activities.orEmpty()
-    GlassCard(modifier = modifier, accent = accent) {
-        SectionHeader("$arrow $title")
-        VSpace(8)
-        Text(
-            text = moodEmojiOf(point.mood),
-            fontSize = 26.sp,
-        )
-        VSpace(6)
-        Text(
-            text = moodLabelOf(point.mood),
-            style = MaterialTheme.typography.titleMedium,
-            color = TextPrimary,
-        )
-        VSpace(2)
-        Text(
-            text = shortDateOf(point.date),
-            style = MaterialTheme.typography.labelSmall,
-            color = TextSecondary,
-        )
-        if (activities.isNotEmpty()) {
-            VSpace(8)
-            SectionHint(
-                activities.take(3).joinToString(", ") +
-                    if (activities.size > 3) " …" else "",
-            )
-        }
-    }
-}

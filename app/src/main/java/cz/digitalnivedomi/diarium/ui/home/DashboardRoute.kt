@@ -17,8 +17,17 @@ import androidx.compose.ui.platform.LocalContext
 fun DashboardRoute(
     onOpenCheckIn: (String) -> Unit = {},
     onOpen: (String) -> Unit = {},
+    // Supplied by the app shell from [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]
+    // so the loaded dashboard survives a push/pop; the default keeps previews and tests
+    // working with a holder of their own.
+    holder: DashboardStateHolder = remember { DashboardStateHolder() },
 ) {
     val context = LocalContext.current
     val deps = remember(context) { DashboardDeps.forContext(context) }
-    DashboardScreen(deps = deps, onOpenCheckIn = onOpenCheckIn, onOpen = onOpen)
+    DashboardScreen(
+        deps = deps,
+        onOpenCheckIn = onOpenCheckIn,
+        onOpen = onOpen,
+        holder = holder,
+    )
 }
