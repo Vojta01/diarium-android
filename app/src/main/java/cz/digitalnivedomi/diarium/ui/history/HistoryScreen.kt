@@ -25,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,8 +97,10 @@ import java.time.LocalDate
 fun HistoryScreen(
     deps: HistoryDeps = remember { HistoryDeps.offline() },
     onOpenCheckIn: (String) -> Unit = {},
+    // Owned by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
+    // opening a day detail pushes a screen, and the month behind it must stay read.
+    holder: HistoryStateHolder = remember { HistoryStateHolder() },
 ) {
-    val holder = remember { HistoryStateHolder() }
     val state = holder.state
     val repository = deps.history
     val pickers = deps.pickers
@@ -105,9 +108,12 @@ fun HistoryScreen(
     // so it must not drift mid-session between the grid and the detail.
     val today = remember { HistoryCalendar.today() }
 
-    var year by remember { mutableStateOf(today.year) }
-    var month by remember { mutableStateOf(today.monthValue) }
-    var selected by remember { mutableStateOf<String?>(null) }
+    // Saveable: the shell keeps a tab's saved state while a sub-screen sits on top of
+    // it, so the month the owner was browsing and the day they had open come back
+    // exactly as they left them instead of snapping to today.
+    var year by rememberSaveable { mutableStateOf(today.year) }
+    var month by rememberSaveable { mutableStateOf(today.monthValue) }
+    var selected by rememberSaveable { mutableStateOf<String?>(null) }
     var reloadTrigger by remember { mutableStateOf(0) }
     // Scale id -> label / max, so the day detail names a scale instead of showing
     // the uuid an entry's `scale_values` is keyed by.
@@ -165,7 +171,10 @@ fun HistoryScreen(
                 month = month,
                 today = today,
                 data = monthData,
-                loading = state.loading,
+                // The grid may only wear the month it is drawing (see [monthData]
+                // below), so the placeholder belongs there while that month is missing —
+                // not on every refresh of a month that is already on screen.
+                loading = state.loading && monthData == null,
                 selected = selected,
                 onPrevious = {
                     val (previousYear, previousMonth) = HistoryCalendar.previousMonth(year, month)

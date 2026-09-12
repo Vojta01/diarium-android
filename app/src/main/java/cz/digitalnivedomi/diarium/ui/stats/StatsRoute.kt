@@ -12,8 +12,12 @@ import androidx.compose.ui.platform.LocalContext
  * (the app shell's tab host) only has to call `StatsRoute()`.
  */
 @Composable
-fun StatsRoute() {
+fun StatsRoute(
+    // Supplied by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
+    // the statistics are a tab, so their holder has to outlive the tab's composition.
+    holder: StatsStateHolder = remember { StatsStateHolder() },
+) {
     val context = LocalContext.current
     val deps = remember(context) { StatsDeps.forContext(context) }
-    StatsScreen(deps = deps)
+    StatsScreen(deps = deps, holder = holder)
 }

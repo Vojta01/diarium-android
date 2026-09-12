@@ -72,6 +72,7 @@ import cz.digitalnivedomi.diarium.ui.home.DashboardRoute
 import cz.digitalnivedomi.diarium.ui.nav.DiariumBottomBar
 import cz.digitalnivedomi.diarium.ui.nav.DiariumShellBackdrop
 import cz.digitalnivedomi.diarium.ui.nav.Routes
+import cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache
 import cz.digitalnivedomi.diarium.ui.nav.ShellMotion
 import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsDeps
 import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsScreen
@@ -151,6 +152,11 @@ fun DiariumApp(
 @Composable
 private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
     val navController = rememberNavController()
+    // The tab screens' state holders live here, above the NavHost, so navigating away
+    // and back does not rebuild them: Navigation disposes a destination's composition
+    // as soon as another one is pushed, so a holder created inside that composable was
+    // thrown away and everything re-read on return (see [ScreenStateCache]).
+    val screenStates = remember { ScreenStateCache() }
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -208,6 +214,7 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                 ) {
                     composable(Routes.HOME) {
                         DashboardRoute(
+                            holder = screenStates.dashboard,
                             // Switching tabs (not pushing a second tab) so the bottom bar
                             // stays in the state it would be in had check-in been tapped.
                             // A pushed screen keeps its own back-stack entry for the same destination,
@@ -232,13 +239,14 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                     }
                     composable(Routes.HISTORY) {
                         HistoryRoute(
+                            holder = screenStates.history,
                             onOpenCheckIn = { date ->
                                 requestedDate = date
                                 switchTab(Routes.CHECK_IN)
                             },
                         )
                     }
-                    composable(Routes.STATS) { StatsRoute() }
+                    composable(Routes.STATS) { StatsRoute(holder = screenStates.stats) }
                     composable(Routes.SETTINGS) {
                         SettingsScreen(
                             onSignOut = onSignOut,
