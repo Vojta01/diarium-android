@@ -3,7 +3,7 @@ package cz.digitalnivedomi.diarium.core.stats
 /**
  * The bar-label arithmetic the two screen-time charts share.
  *
- * Both charts (Statistiky's [cz.digitalnivedomi.diarium.ui.stats.ScreenTimeChart]
+ * Both charts (Statistiky's [cz.digitalnivedomi.diarium.ui.stats.ScreenTimeCharts]
  * and Přehled's screen-time card) print a value under their bars and carry the
  * day's unlock count, and both have to answer the same three questions: how does a
  * duration fit under a bar, when does the chart have no value to show, and which

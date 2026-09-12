@@ -69,6 +69,8 @@ import cz.digitalnivedomi.diarium.auth.AuthStatus
 import cz.digitalnivedomi.diarium.ui.auth.LoginScreen
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInRoute
 import cz.digitalnivedomi.diarium.ui.components.DiariumBackground
+import cz.digitalnivedomi.diarium.ui.export.ExportDeps
+import cz.digitalnivedomi.diarium.ui.export.ExportScreen
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
@@ -281,6 +283,13 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                         NotificationsSettingsScreen(deps = deps)
                     }
                 }
+                composable(Routes.EXPORT) {
+                    val context = LocalContext.current
+                    val deps = remember(context) { ExportDeps.forContext(context) }
+                    SubScreenChrome(title = "Export do CSV", onBack = { navController.popBackStack() }) {
+                        ExportScreen(deps = deps)
+                    }
+                }
             }
         }
     }
@@ -364,6 +373,25 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
                 title = "Notifikace",
                 hint = "Časy připomenutí, reporty a čas na obrazovce",
                 onClick = { onOpen(Routes.NOTIFICATIONS) },
+            )
+        }
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "Data",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            VSpace(4)
+            Text(
+                text = "Vlastní kopie deníku v souboru, který si uložíš, kam chceš.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+            VSpace(6)
+            SubScreenEntry(
+                emoji = "📤",
+                title = "Export do CSV",
+                hint = "Všechny zápisy do souboru, bez nových oprávnění",
+                onClick = { onOpen(Routes.EXPORT) },
             )
         }
         GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
