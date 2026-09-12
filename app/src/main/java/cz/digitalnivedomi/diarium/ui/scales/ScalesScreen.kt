@@ -250,11 +250,6 @@ private fun ScalesHeader(onAdd: () -> Unit, onSeed: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.weight(1f)) {
             Text(
-                text = "Škály",
-                style = MaterialTheme.typography.headlineSmall,
-                color = TextPrimary,
-            )
-            Text(
                 text = "Rozložení hodnot za posledních 30 dní.",
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,

@@ -102,13 +102,12 @@ object NotificationSettingsState {
         UsageAccessState.ALLOWED ->
             "Čas na obrazovce se čte přímo z telefonu (jako Digitální rovnováha)."
         UsageAccessState.DENIED ->
-            "Systém si pamatuje zamítnutí. Odinstaluj a znovu nainstaluj Diarium, pak přístup povol."
+            "Systém přístup zatím neumožnil. Otevři nastavení níže a přepínač u Diarium zapni — pak appku otevři znovu."
         UsageAccessState.ERRORED ->
-            "Přístup je zablokovaný systémem (MODE_ERRORED). Odinstaluj a znovu nainstaluj Diarium."
+            "Přístup se nepodařilo ověřit. Zapni přepínač v nastavení níže; kdyby zůstal šedý, přeinstaluj Diarium."
         UsageAccessState.UNDECIDED ->
             "Klikni na „Otevřít nastavení\" a povol Diariumu přístup k údajům o používání. " +
-                "Na Androidu 13+ navíc v App info → ⋮ → „Povolit omezená nastavení\", " +
-                "jinak přepínač zůstane šedý."
+                "Kdyby přepínač zůstal šedý, povol ještě v App info → ⋮ → „Povolit omezená nastavení\"."
     }
 
     fun exactAlarmChip(allowed: Boolean): String = if (allowed) "povoleno" else "nepovoleno"

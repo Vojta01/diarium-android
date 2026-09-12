@@ -19,13 +19,22 @@ import androidx.compose.ui.unit.dp
  * - [block]        between blocks inside one card
  * - [tight]        between a label and the value it names
  * - [cardPadding]  inner padding every [cz.digitalnivedomi.diarium.ui.components.GlassCard] applies
+ *
+ * Four more steps fill the gaps the screens used to type by hand ([tiny] 4dp,
+ * [small] 8dp, [large] 20dp, [huge] 28dp) so new code never has to invent a
+ * number that already exists in the ladder. Sizes (radii, strokes, touch targets)
+ * live in [Dimens], not here — this object is only "how far apart".
  */
 object Spacing {
+    val tiny = 4.dp
+    val tight = 6.dp
+    val small = 8.dp
+    val block = 12.dp
+    val section = 14.dp
+    val cardPadding = 18.dp
+    val large = 20.dp
+    val huge = 28.dp
     val gutter = 16.dp
     val screenTop = 14.dp
     val screenBottom = 40.dp
-    val section = 14.dp
-    val block = 12.dp
-    val tight = 6.dp
-    val cardPadding = 18.dp
 }

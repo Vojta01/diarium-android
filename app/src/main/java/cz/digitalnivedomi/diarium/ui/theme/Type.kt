@@ -9,7 +9,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Generous corner radii — part of the premium feel. */
+/**
+ * Shapes and the text scale, in one file because they are the same decision: the
+ * app is soft, generous and slightly oversized, never boxy Material default.
+ *
+ * Usage: never type a size by hand — take the role.
+ * ```
+ * Text(title, style = MaterialTheme.typography.headlineMedium)  // screen title
+ * Text(label, style = MaterialTheme.typography.labelSmall)      // section header
+ * ```
+ */
+
+/** Generous corner radii — part of the premium feel. Sizes mirror `Dimens`. */
 val DiariumShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
     small = RoundedCornerShape(12.dp),
@@ -24,23 +35,48 @@ private val Default = FontFamily.Default
  * The text scale the screens share. One style per role, so a screen title is
  * always the same title:
  *
+ * - hero number     → `displaySmall` (a streak, a big stat)
+ * - hero banner     → `displayMedium` / `displayLarge` (rare, one per screen max)
  * - screen title    → `headlineMedium` (used by `ScreenHeader`)
  * - card title      → `titleLarge` / `titleMedium`
  * - section header  → `labelSmall` uppercase (used by `SectionHeader`)
  * - body            → `bodyLarge` / `bodyMedium`
  * - caption         → `bodySmall` / `labelSmall`
  *
- * The complete ladder is written out (including `titleSmall`, `bodySmall` and
- * `labelMedium`) instead of falling back to the Material defaults, so the rhythm
- * cannot drift.
+ * The complete ladder is written out (including the display and headline steps,
+ * `titleSmall`, `bodySmall` and `labelMedium`) instead of falling back to the
+ * Material defaults, so the rhythm cannot drift. The weights step down as the
+ * size does — Bold for titles, Medium for labels, Normal for body — and every
+ * size is a whole number of sp so line boxes stay crisp on every density.
  */
 val DiariumTypography = Typography(
+    displayLarge = TextStyle(
+        fontFamily = Default,
+        fontWeight = FontWeight.Bold,
+        fontSize = 44.sp,
+        lineHeight = 50.sp,
+        letterSpacing = (-1.0).sp,
+    ),
+    displayMedium = TextStyle(
+        fontFamily = Default,
+        fontWeight = FontWeight.Bold,
+        fontSize = 36.sp,
+        lineHeight = 42.sp,
+        letterSpacing = (-0.8).sp,
+    ),
     displaySmall = TextStyle(
         fontFamily = Default,
         fontWeight = FontWeight.Bold,
         fontSize = 32.sp,
         lineHeight = 38.sp,
         letterSpacing = (-0.5).sp,
+    ),
+    headlineLarge = TextStyle(
+        fontFamily = Default,
+        fontWeight = FontWeight.Bold,
+        fontSize = 29.sp,
+        lineHeight = 35.sp,
+        letterSpacing = (-0.4).sp,
     ),
     headlineMedium = TextStyle(
         fontFamily = Default,
@@ -78,19 +114,21 @@ val DiariumTypography = Typography(
         fontWeight = FontWeight.Normal,
         fontSize = 15.sp,
         lineHeight = 23.sp,
+        letterSpacing = 0.05.sp,
     ),
     bodyMedium = TextStyle(
         fontFamily = Default,
         fontWeight = FontWeight.Normal,
-        fontSize = 13.5.sp,
+        fontSize = 14.sp,
         lineHeight = 20.sp,
+        letterSpacing = 0.1.sp,
     ),
     bodySmall = TextStyle(
         fontFamily = Default,
         fontWeight = FontWeight.Normal,
-        fontSize = 12.5.sp,
+        fontSize = 12.sp,
         lineHeight = 17.sp,
-        letterSpacing = 0.1.sp,
+        letterSpacing = 0.15.sp,
     ),
     labelLarge = TextStyle(
         fontFamily = Default,

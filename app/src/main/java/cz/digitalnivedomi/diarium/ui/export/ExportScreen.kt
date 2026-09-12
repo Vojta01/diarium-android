@@ -36,7 +36,7 @@ import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
-import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
+import cz.digitalnivedomi.diarium.ui.components.ScreenSubtitle
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
@@ -134,7 +134,7 @@ fun ExportScreen(deps: ExportDeps, today: LocalDate = LocalDate.now()) {
             .padding(top = Spacing.screenTop, bottom = Spacing.screenBottom),
         verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
-        ScreenHeader(title = ExportState.TITLE, subtitle = ExportState.SUBTITLE)
+        ScreenSubtitle(text = ExportState.SUBTITLE)
 
         when (phase) {
             ExportPhase.LOADING -> GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {

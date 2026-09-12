@@ -102,13 +102,6 @@ fun TemplatesScreen(deps: TemplatesDeps, modifier: Modifier = Modifier) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Text(
-            text = "Šablony",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = TextPrimary,
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
             text = "Vložíš je do poznámky v deníčku — vložení celou poznámku nahradí.",
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,

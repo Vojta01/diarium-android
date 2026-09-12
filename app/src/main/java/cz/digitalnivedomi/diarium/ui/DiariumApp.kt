@@ -1,9 +1,5 @@
 package cz.digitalnivedomi.diarium.ui
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,15 +28,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -56,13 +48,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -80,17 +69,16 @@ import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.history.HistoryRoute
 import cz.digitalnivedomi.diarium.ui.home.DashboardRoute
+import cz.digitalnivedomi.diarium.ui.nav.DiariumBottomBar
+import cz.digitalnivedomi.diarium.ui.nav.DiariumShellBackdrop
 import cz.digitalnivedomi.diarium.ui.nav.Routes
-import cz.digitalnivedomi.diarium.ui.nav.TopLevelDestination
+import cz.digitalnivedomi.diarium.ui.nav.ShellMotion
 import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsDeps
 import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsScreen
 import cz.digitalnivedomi.diarium.ui.stats.StatsRoute
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
-import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
-import cz.digitalnivedomi.diarium.ui.theme.Surface1
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
-import cz.digitalnivedomi.diarium.ui.theme.Violet
 
 /**
  * App shell and session gate.
@@ -151,7 +139,15 @@ fun DiariumApp(
     }
 }
 
-/** The signed-in shell: bottom-bar navigation over the four top-level screens. */
+/**
+ * The signed-in shell: bottom-bar navigation over the five top-level screens.
+ *
+ * The shell owns three things the screens never see: the backdrop
+ * ([DiariumShellBackdrop]) painted edge to edge behind the system bars, the bottom
+ * bar ([DiariumBottomBar], which handles its own navigation-bar inset), and the
+ * screen transitions ([ShellMotion]). Every screen keeps its own padding and its own
+ * content, so nothing below this function had to change.
+ */
 @Composable
 private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
     val navController = rememberNavController()
@@ -172,138 +168,170 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
         }
     }
 
-    Scaffold(
-        containerColor = Color.Transparent,
-        bottomBar = {
-            BottomBar(
-                currentRoute = currentRoute,
-                onSelect = { destination -> switchTab(destination.route) },
-            )
-        },
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                // Both insets are applied here so every tab starts below the status
-                // bar (the Dashboard title used to collide with it) while the bottom
-                // bar keeps its reserved space. Side insets are left untouched and no
-                // screen adds its own top padding, so this is a single correct inset.
-                .padding(
-                    top = padding.calculateTopPadding(),
-                    bottom = padding.calculateBottomPadding(),
-                ),
-        ) {
-            NavHost(
-                navController = navController,
-                // The overview is the app's front door: the numbers first, the form
-                // one tap away — the same order the web app uses.
-                startDestination = Routes.HOME,
-                modifier = Modifier.fillMaxSize(),
+    DiariumShellBackdrop {
+        Scaffold(
+            containerColor = Color.Transparent,
+            bottomBar = {
+                DiariumBottomBar(
+                    currentRoute = currentRoute,
+                    onSelect = { destination -> switchTab(destination.route) },
+                )
+            },
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    // Both insets are applied here so every tab starts below the status
+                    // bar (the Dashboard title used to collide with it) while the bottom
+                    // bar keeps its reserved space. Side insets are left untouched and no
+                    // screen adds its own top padding, so this is a single correct inset.
+                    // The backdrop behind it still runs edge to edge, which is what makes
+                    // the transparent bars read as part of the app.
+                    .padding(
+                        top = padding.calculateTopPadding(),
+                        bottom = padding.calculateBottomPadding(),
+                    ),
             ) {
-                composable(Routes.HOME) {
-                    DashboardRoute(
-                        // Switching tabs (not pushing a second tab) so the bottom bar
-                        // stays in the state it would be in had check-in been tapped.
-                        // A pushed screen keeps its own back-stack entry for the same destination,
-                        // which is why the popUpTo/extras mirror BottomBar's onSelect.
-                        onOpenCheckIn = { date ->
-                            requestedDate = date
-                            switchTab(Routes.CHECK_IN)
-                        },
-                        // The M5 screens (cíle, škály, šablony, odznaky) have no tab of
-                        // their own, so the dashboard's entry card pushes them here and
-                        // the back arrow in SubScreenChrome pops them again.
-                        onOpen = { route ->
-                            navController.navigate(route) { launchSingleTop = true }
-                        },
-                    )
-                }
-                composable(Routes.CHECK_IN) {
-                    CheckInRoute(
-                        requestedDate = requestedDate,
-                        onRequestedDateConsumed = { requestedDate = null },
-                    )
-                }
-                composable(Routes.HISTORY) {
-                    HistoryRoute(
-                        onOpenCheckIn = { date ->
-                            requestedDate = date
-                            switchTab(Routes.CHECK_IN)
-                        },
-                    )
-                }
-                composable(Routes.STATS) { StatsRoute() }
-                composable(Routes.SETTINGS) {
-                    SettingsScreen(
-                        onSignOut = onSignOut,
-                        onOpen = { route ->
-                            navController.navigate(route) { launchSingleTop = true }
-                        },
-                    )
-                }
-                composable(Routes.GOALS) {
-                    val context = LocalContext.current
-                    val deps = remember(context) { GoalsDeps.forContext(context) }
-                    SubScreenChrome(title = "Cíle", onBack = { navController.popBackStack() }) {
-                        GoalsScreen(deps = deps)
+                NavHost(
+                    navController = navController,
+                    // The overview is the app's front door: the numbers first, the form
+                    // one tap away — the same order the web app uses.
+                    startDestination = Routes.HOME,
+                    modifier = Modifier.fillMaxSize(),
+                    // Tabs dissolve into each other (see [ShellMotion]): no sideways
+                    // travel between peers, just enough motion to show that something
+                    // changed. Sub-screens override this with the slide below.
+                    enterTransition = { ShellMotion.tabEnter },
+                    exitTransition = { ShellMotion.tabExit },
+                    popEnterTransition = { ShellMotion.tabEnter },
+                    popExitTransition = { ShellMotion.tabExit },
+                ) {
+                    composable(Routes.HOME) {
+                        DashboardRoute(
+                            // Switching tabs (not pushing a second tab) so the bottom bar
+                            // stays in the state it would be in had check-in been tapped.
+                            // A pushed screen keeps its own back-stack entry for the same destination,
+                            // which is why the popUpTo/extras mirror BottomBar's onSelect.
+                            onOpenCheckIn = { date ->
+                                requestedDate = date
+                                switchTab(Routes.CHECK_IN)
+                            },
+                            // The M5 screens (cíle, škály, šablony, odznaky) have no tab of
+                            // their own, so the dashboard's entry card pushes them here and
+                            // the back arrow in SubScreenChrome pops them again.
+                            onOpen = { route ->
+                                navController.navigate(route) { launchSingleTop = true }
+                            },
+                        )
                     }
-                }
-                composable(Routes.SCALES) {
-                    val context = LocalContext.current
-                    val deps = remember(context) { ScalesDeps.forContext(context) }
-                    SubScreenChrome(title = "Škály", onBack = { navController.popBackStack() }) {
-                        ScalesScreen(deps = deps)
+                    composable(Routes.CHECK_IN) {
+                        CheckInRoute(
+                            requestedDate = requestedDate,
+                            onRequestedDateConsumed = { requestedDate = null },
+                        )
                     }
-                }
-                composable(Routes.TEMPLATES) {
-                    val context = LocalContext.current
-                    val deps = remember(context) { TemplatesDeps.forContext(context) }
-                    SubScreenChrome(title = "Šablony poznámek", onBack = { navController.popBackStack() }) {
-                        TemplatesScreen(deps = deps)
+                    composable(Routes.HISTORY) {
+                        HistoryRoute(
+                            onOpenCheckIn = { date ->
+                                requestedDate = date
+                                switchTab(Routes.CHECK_IN)
+                            },
+                        )
                     }
-                }
-                composable(Routes.ACHIEVEMENTS) {
-                    val context = LocalContext.current
-                    val deps = remember(context) { AchievementsDeps.forContext(context) }
-                    SubScreenChrome(title = "Odznaky", onBack = { navController.popBackStack() }) {
-                        AchievementsScreen(deps = deps)
+                    composable(Routes.STATS) { StatsRoute() }
+                    composable(Routes.SETTINGS) {
+                        SettingsScreen(
+                            onSignOut = onSignOut,
+                            onOpen = { route ->
+                                navController.navigate(route) { launchSingleTop = true }
+                            },
+                        )
                     }
-                }
-                composable(Routes.NOTIFICATIONS) {
-                    val context = LocalContext.current
-                    // Permission state lives in the system, so it has to be read
-                    // again every time the screen resumes — the user taps a row,
-                    // grants it in Settings and comes back expecting to see it.
-                    var permissionTick by remember { mutableStateOf(0) }
-                    LifecycleResumeEffect(Unit) {
-                        permissionTick++
-                        onPauseOrDispose { }
+                    subScreen(Routes.GOALS) {
+                        val context = LocalContext.current
+                        val deps = remember(context) { GoalsDeps.forContext(context) }
+                        SubScreenChrome(title = "Cíle", onBack = { navController.popBackStack() }) {
+                            GoalsScreen(deps = deps)
+                        }
                     }
-                    val deps = remember(context, permissionTick) {
-                        NotificationsSettingsDeps.forContext(context)
+                    subScreen(Routes.SCALES) {
+                        val context = LocalContext.current
+                        val deps = remember(context) { ScalesDeps.forContext(context) }
+                        SubScreenChrome(title = "Škály", onBack = { navController.popBackStack() }) {
+                            ScalesScreen(deps = deps)
+                        }
                     }
-                    SubScreenChrome(title = "Nastavení notifikací", onBack = { navController.popBackStack() }) {
-                        NotificationsSettingsScreen(deps = deps)
+                    subScreen(Routes.TEMPLATES) {
+                        val context = LocalContext.current
+                        val deps = remember(context) { TemplatesDeps.forContext(context) }
+                        SubScreenChrome(title = "Šablony poznámek", onBack = { navController.popBackStack() }) {
+                            TemplatesScreen(deps = deps)
+                        }
                     }
-                }
-                composable(Routes.EXPORT) {
-                    val context = LocalContext.current
-                    val deps = remember(context) { ExportDeps.forContext(context) }
-                    SubScreenChrome(title = "Export do CSV", onBack = { navController.popBackStack() }) {
-                        ExportScreen(deps = deps)
+                    subScreen(Routes.ACHIEVEMENTS) {
+                        val context = LocalContext.current
+                        val deps = remember(context) { AchievementsDeps.forContext(context) }
+                        SubScreenChrome(title = "Odznaky", onBack = { navController.popBackStack() }) {
+                            AchievementsScreen(deps = deps)
+                        }
                     }
-                }
-                composable(Routes.REPORTS) {
-                    val context = LocalContext.current
-                    val deps = remember(context) { ReportsDeps.forContext(context) }
-                    // The chrome carries the title, which comes from the same object the
-                    // screen uses, so the two cannot drift apart.
-                    SubScreenChrome(title = ReportsState.TITLE, onBack = { navController.popBackStack() }) {
-                        ReportsScreen(deps = deps)
+                    subScreen(Routes.NOTIFICATIONS) {
+                        val context = LocalContext.current
+                        // Permission state lives in the system, so it has to be read
+                        // again every time the screen resumes — the user taps a row,
+                        // grants it in Settings and comes back expecting to see it.
+                        var permissionTick by remember { mutableStateOf(0) }
+                        LifecycleResumeEffect(Unit) {
+                            permissionTick++
+                            onPauseOrDispose { }
+                        }
+                        val deps = remember(context, permissionTick) {
+                            NotificationsSettingsDeps.forContext(context)
+                        }
+                        SubScreenChrome(title = "Nastavení notifikací", onBack = { navController.popBackStack() }) {
+                            NotificationsSettingsScreen(deps = deps)
+                        }
+                    }
+                    subScreen(Routes.EXPORT) {
+                        val context = LocalContext.current
+                        val deps = remember(context) { ExportDeps.forContext(context) }
+                        SubScreenChrome(title = "Export do CSV", onBack = { navController.popBackStack() }) {
+                            ExportScreen(deps = deps)
+                        }
+                    }
+                    subScreen(Routes.REPORTS) {
+                        val context = LocalContext.current
+                        val deps = remember(context) { ReportsDeps.forContext(context) }
+                        // The chrome carries the title, which comes from the same object the
+                        // screen uses, so the two cannot drift apart.
+                        SubScreenChrome(title = ReportsState.TITLE, onBack = { navController.popBackStack() }) {
+                            ReportsScreen(deps = deps)
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * Registers one of the pushed sub-screens.
+ *
+ * Identical to [composable] apart from the motion: a sub-screen slides in from the
+ * right and goes back out the same way, which is what makes the back arrow's
+ * behaviour legible — unlike the five tabs, which dissolve into each other because
+ * neither is "further in" than the other. Route strings, arguments and content are
+ * untouched.
+ */
+private fun NavGraphBuilder.subScreen(route: String, content: @Composable () -> Unit) {
+    composable(
+        route = route,
+        enterTransition = { ShellMotion.pushEnter },
+        exitTransition = { ShellMotion.pushExit },
+        popEnterTransition = { ShellMotion.tabEnter },
+        popExitTransition = { ShellMotion.popExit },
+    ) {
+        content()
     }
 }
 
@@ -475,94 +503,5 @@ private fun SubScreenChrome(title: String, onBack: () -> Unit, content: @Composa
             )
         }
         content()
-    }
-}
-
-/**
- * Bottom navigation.
- *
- * A Material 3 [NavigationBar] with the selection animated by hand: one float per
- * tab drives the icon pop and the indigo indicator pill, labels stay visible in
- * both states (dimmed regular → indigo semibold), and a fading indigo hairline
- * separates the bar from the content instead of a hard grey rule.
- *
- * Insets stay on the bar itself — [NavigationBar] pads its own row for the
- * gesture/navigation area, and the colour is painted by the column behind it, so
- * the strip is filled edge to edge without the content ever sliding under it.
- */
-@Composable
-private fun BottomBar(
-    currentRoute: String?,
-    onSelect: (TopLevelDestination) -> Unit,
-) {
-    val haptics = LocalHapticFeedback.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Surface1.copy(alpha = 0.94f)),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(
-                    Brush.horizontalGradient(
-                        listOf(
-                            Color.Transparent,
-                            Indigo.copy(alpha = 0.45f),
-                            Violet.copy(alpha = 0.35f),
-                            Color.Transparent,
-                        ),
-                    ),
-                ),
-        )
-        NavigationBar(
-            containerColor = Color.Transparent,
-            tonalElevation = 0.dp,
-        ) {
-            TopLevelDestination.entries.forEach { destination ->
-                val selected = currentRoute == destination.route
-                val selection by animateFloatAsState(
-                    targetValue = if (selected) 1f else 0f,
-                    animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-                    label = "bottomBarSelection",
-                )
-                NavigationBarItem(
-                    selected = selected,
-                    onClick = {
-                        // Light tick on tab change; the platform tick needs no
-                        // VIBRATE permission.
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onSelect(destination)
-                    },
-                    icon = {
-                        Icon(
-                            imageVector = if (selected) destination.selectedIcon else destination.unselectedIcon,
-                            contentDescription = destination.label,
-                            modifier = Modifier.graphicsLayer {
-                                val scale = 1f + 0.1f * selection
-                                scaleX = scale
-                                scaleY = scale
-                            },
-                        )
-                    },
-                    label = {
-                        Text(
-                            text = destination.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        )
-                    },
-                    alwaysShowLabel = true,
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = Color.White,
-                        selectedTextColor = IndigoLight,
-                        indicatorColor = Indigo.copy(alpha = 0.26f),
-                        unselectedIconColor = TextSecondary,
-                        unselectedTextColor = TextSecondary,
-                    ),
-                )
-            }
-        }
     }
 }

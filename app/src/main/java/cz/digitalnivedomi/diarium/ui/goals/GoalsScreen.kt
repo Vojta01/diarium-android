@@ -90,13 +90,6 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
             ) {
                 Column {
                     Text(
-                        text = "🎯 Cíle",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
                         text = "Denní, týdenní a měsíční cíle s 🔥 streakem",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary,
