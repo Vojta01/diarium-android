@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -71,27 +72,48 @@ fun CheckInSection(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
+    val haptics = rememberHaptics()
+    // One animated caret instead of two glyphs: the arrow physically turns.
+    val caretTurn by animateFloatAsState(
+        targetValue = if (expanded) 0f else -90f,
+        animationSpec = tween(durationMillis = 220),
+        label = "checkInCaret",
+    )
     Column(modifier = modifier.fillMaxWidth().padding(bottom = 16.dp)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .clickable { expanded = !expanded }
-                .padding(vertical = 4.dp),
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.White.copy(alpha = 0.045f))
+                .clickable {
+                    haptics.selection()
+                    expanded = !expanded
+                }
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .testTagOrEmpty("section_$title"),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.size(8.dp).clip(CircleShape).background(Indigo))
-            Spacer(Modifier.width(8.dp))
+            // Accent bar instead of the old dot: reads as a section marker and
+            // stays inside the indigo family.
+            Box(
+                Modifier
+                    .size(width = 3.dp, height = 18.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Brush.verticalGradient(listOf(Indigo, IndigoLight))),
+            )
+            Spacer(Modifier.width(10.dp))
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
                 color = TextPrimary,
             )
             Spacer(Modifier.weight(1f))
             trailing?.invoke()
             Spacer(Modifier.width(6.dp))
             Text(
-                text = if (expanded) "▴" else "▾",
+                text = "▾",
+                modifier = Modifier.graphicsLayer(rotationZ = caretTurn),
                 // Quiet indigo accent so an open section reads as active
                 // without adding a second colour family.
                 color = if (expanded) IndigoLight else TextTertiary,
