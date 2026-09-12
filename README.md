@@ -18,6 +18,18 @@ stejný, takže se nová verze **instaluje přes předchozí** (data zůstanou).
 
 ---
 
+## alpha19 — grafy a heatmapa
+
+- **Sloupce v grafech** mají gradient (světlejší nahoře) a **kulaté konce** místo
+  hranatých a při změně období nebo metriky **plynule narostou** z nulové výšky
+- **Průměrná linka** je indigo a tenká — čte se jako orientační čára, ne jako
+  druhá datová řada (dřív byla tlustá bílá)
+- **Klepnutí na den** v grafu i **na buňku v „Rok v pixelech"** zabliká haptikou;
+  vybraná buňka má gradientní rámeček a je plně sytá
+- buňky heatmapy mají kulatější rohy (4 dp)
+- barevné mapování (bucket podle času na obrazovce, barva podle nálady) zůstalo
+  **beze změny** — kvůli paritě s webem
+
 ## alpha18 — hlavičky sekcí a klávesnice
 
 - **Hlavičky sekcí v Check-inu** jsou teď prémiové: místo nenápadné tečky mají
@@ -85,10 +97,10 @@ Obrazovka **Nastavení → 🤖 AI Přehledy** (týdenní/měsíční report, hi
 
 ---
 
-## Technické údaje (alpha18)
+## Technické údaje (alpha19)
 
-- verze `2.0.0-alpha18` (versionCode `2000018`), minSdk 26
-- APK: **14 522 729 B**, sha256 `ae37ffd0e3f03babfc95fb427d86c0fd3ac29aa21893452254e4924a196434bf`
+- verze `2.0.0-alpha19` (versionCode `2000019`), minSdk 26
+- APK: **14 522 729 B**, sha256 `61fa37f9c688dc3ad9950698e40f12ed2a744f2aec55fac7185883c8bbd95752`
 - unit testy: **592 / 592** hotových, 0 chyb
 - podpis: stabilní klíč (od alpha11 se verze instalují přes sebe)
 - klíče (DeepSeek, Supabase service_role, VAPID, FCM) jsou **jen na serveru**, v APK nejsou
