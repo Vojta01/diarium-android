@@ -18,6 +18,17 @@ stejný, takže se nová verze **instaluje přes předchozí** (data zůstanou).
 
 ---
 
+## alpha18 — hlavičky sekcí a klávesnice
+
+- **Hlavičky sekcí v Check-inu** jsou teď prémiové: místo nenápadné tečky mají
+  indigo **gradientní proužek** a leží na jemném skleněném pásu, takže je na první
+  pohled vidět, kde začíná „Nálada", „Kvalita spánku", „Aktivity"…
+- **Šipka sekce se plynule otáčí** (místo skoku mezi dvěma znaky) a klepnutí na
+  hlavičku **zabliká haptikou** — je poznat, že se sekce sbalila
+- **Klávesnice už nezakrývá pole**: psaní poznámky a reflexe má `imePadding`, takže
+  se obsah odscrolluje nad klávesnici (appka kreslí přes celý displej)
+- název sekce je polotučný (lepší orientace při projíždění formuláře)
+
 ## alpha17 — doladění vzhledu a použitelnosti
 
 **Nejvíc je to vidět na Check-inu** (obrazovka, kterou otevíráš nejčastěji):
@@ -74,10 +85,10 @@ Obrazovka **Nastavení → 🤖 AI Přehledy** (týdenní/měsíční report, hi
 
 ---
 
-## Technické údaje (alpha17)
+## Technické údaje (alpha18)
 
-- verze `2.0.0-alpha17` (versionCode `2000017`), minSdk 26
-- APK: **14 522 729 B**, sha256 `7711919fe82c31ce3bd06d28310234b46c56365aa2bdc2c8b9b016754ae860e3`
+- verze `2.0.0-alpha18` (versionCode `2000018`), minSdk 26
+- APK: **14 522 729 B**, sha256 `ae37ffd0e3f03babfc95fb427d86c0fd3ac29aa21893452254e4924a196434bf`
 - unit testy: **592 / 592** hotových, 0 chyb
 - podpis: stabilní klíč (od alpha11 se verze instalují přes sebe)
 - klíče (DeepSeek, Supabase service_role, VAPID, FCM) jsou **jen na serveru**, v APK nejsou
