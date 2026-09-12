@@ -11,6 +11,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,6 +42,11 @@ import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.ScreenSubtitle
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
+import cz.digitalnivedomi.diarium.ui.components.AccentBar
+import cz.digitalnivedomi.diarium.ui.components.accentGlow
+import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
+import cz.digitalnivedomi.diarium.ui.theme.Dimens
+import cz.digitalnivedomi.diarium.ui.theme.Gradients
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -234,6 +243,7 @@ private fun ReportCard(
     onGenerate: () -> Unit,
     onRetry: () -> Unit,
 ) {
+    val haptics = rememberHaptics()
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
         accent = if (phase == ReportPhase.ERROR) WarnColor else Indigo,
@@ -299,14 +309,30 @@ private fun ReportCard(
 
         if (online) {
             VSpace(Spacing.block)
-            OutlinedButton(
-                onClick = onGenerate,
+            Button(
+                onClick = {
+                    haptics.light()
+                    onGenerate()
+                },
                 enabled = !generating,
-                modifier = Modifier.testTag(generateTag(type)),
+                shape = RoundedCornerShape(Dimens.radiusCard),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Indigo,
+                    contentColor = Color.White,
+                    disabledContainerColor = Indigo.copy(alpha = 0.45f),
+                    disabledContentColor = Color.White.copy(alpha = 0.70f),
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(Dimens.controlHeight)
+                    .accentGlow(Indigo, alpha = 0.30f)
+                    .testTag(generateTag(type)),
             ) {
                 Text(
-                    if (generating) ReportsState.GENERATING_LABEL
+                    text = if (generating) ReportsState.GENERATING_LABEL
                     else ReportsState.generateLabel(type),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
             if (generating) {
@@ -323,11 +349,19 @@ private fun ReportCard(
             }
             if (phase == ReportPhase.ERROR) {
                 VSpace(Spacing.block)
-                OutlinedButton(
+                Button(
                     onClick = onRetry,
-                    modifier = Modifier.testTag(ReportsRetryButtonTag),
+                    shape = RoundedCornerShape(Dimens.radiusCard),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = WarnColor.copy(alpha = 0.16f),
+                        contentColor = WarnColor,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(Dimens.controlHeight)
+                        .testTag(ReportsRetryButtonTag),
                 ) {
-                    Text(ReportsState.RETRY)
+                    Text(ReportsState.RETRY, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -360,12 +394,16 @@ private fun ReportBody(content: String) {
     ReportsState.blocks(content).forEachIndexed { index, block ->
         if (index > 0) VSpace(Spacing.block)
         when (block) {
-            is Block.Heading -> Text(
-                text = inlineText(block.text),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = TextPrimary,
-            )
+            is Block.Heading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                AccentBar(colors = Gradients.brand)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = inlineText(block.text),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextPrimary,
+                )
+            }
 
             is Block.Bullet -> Row(
                 modifier = Modifier.fillMaxWidth(),

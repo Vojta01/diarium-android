@@ -49,9 +49,14 @@ import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.Pressable
+import cz.digitalnivedomi.diarium.ui.components.accentGlow
+import cz.digitalnivedomi.diarium.ui.components.gradientBorder
 import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
+import cz.digitalnivedomi.diarium.ui.theme.Gradients
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
+import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -323,57 +328,62 @@ private fun RowScope.DayCell(
     testTag: String,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(14.dp)
     val accent = if (entry != null) moodColor(entry.mood) else Indigo
     val haptics = rememberLightHaptics()
-    val borderColor = when {
-        isSelected -> accent
-        isToday -> Indigo
-        else -> Outline.copy(alpha = 0.7f)
-    }
 
-    Box(
+    Pressable(
+        onClick = {
+            haptics()
+            onClick()
+        },
         modifier = Modifier
             .weight(1f)
             .aspectRatio(1f)
-            .testTag(testTag)
-            .clip(shape)
-            .background(
-                if (entry != null) accent.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.04f),
-            )
-            .border(
-                width = if (isSelected || isToday) 2.dp else 1.dp,
-                color = borderColor,
-                shape = shape,
-            )
-            .then(
-                if (selectable) {
-                    Modifier.clickable {
-                        haptics()
-                        onClick()
-                    }
-                } else {
-                    Modifier
-                },
-            ),
-        contentAlignment = Alignment.Center,
+            .testTag(testTag),
+        shape = shape,
+        enabled = selectable,
+        haptics = false,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = dayOfMonth.toString(),
-                style = MaterialTheme.typography.labelMedium,
-                color = when {
-                    !selectable -> TextTertiary.copy(alpha = 0.5f)
-                    entry != null -> TextPrimary
-                    else -> TextSecondary
-                },
-                fontWeight = if (entry != null) FontWeight.Medium else FontWeight.Normal,
-            )
-            if (entry != null) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(text = historyMoodEmoji(entry.mood), fontSize = 12.sp, maxLines = 1)
-                    if (!entry.photoPath.isNullOrBlank()) {
-                        Text(text = "📷", fontSize = 8.sp, maxLines = 1)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(shape)
+                .background(
+                    when {
+                        isSelected -> accent.copy(alpha = 0.30f)
+                        entry != null -> accent.copy(alpha = 0.20f)
+                        else -> Color.White.copy(alpha = 0.04f)
+                    },
+                )
+                .then(
+                    when {
+                        isSelected -> Modifier.gradientBorder(shape, Gradients.brand, width = 2.dp)
+                        isToday -> Modifier.border(2.dp, Indigo, shape)
+                        entry != null -> Modifier.border(1.dp, accent.copy(alpha = 0.55f), shape)
+                        else -> Modifier.border(1.dp, Outline.copy(alpha = 0.7f), shape)
+                    },
+                )
+                .then(if (isToday) Modifier.accentGlow(IndigoLight, alpha = 0.22f) else Modifier),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = dayOfMonth.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = when {
+                        !selectable -> TextTertiary.copy(alpha = 0.5f)
+                        entry != null -> TextPrimary
+                        else -> TextSecondary
+                    },
+                    fontWeight = if (entry != null) FontWeight.Medium else FontWeight.Normal,
+                )
+                if (entry != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(text = historyMoodEmoji(entry.mood), fontSize = 12.sp, maxLines = 1)
+                        if (!entry.photoPath.isNullOrBlank()) {
+                            Text(text = "\uD83D\uDCF7", fontSize = 8.sp, maxLines = 1)
+                        }
                     }
                 }
             }

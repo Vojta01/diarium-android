@@ -19,6 +19,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -35,8 +37,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -48,6 +52,7 @@ import cz.digitalnivedomi.diarium.core.data.DashboardNewestEntry
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.MoodDiscState
+import cz.digitalnivedomi.diarium.core.data.PhoneTopApp
 import cz.digitalnivedomi.diarium.core.data.formatTopAppDuration
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.moodDiscState
@@ -63,7 +68,7 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.ReadOnlyRow
 import cz.digitalnivedomi.diarium.ui.checkin.components.SecondaryButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.checkin.components.formatMinutes
-import cz.digitalnivedomi.diarium.ui.components.BrandSpinner
+import cz.digitalnivedomi.diarium.ui.components.AnimatedCounter
 import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
@@ -71,24 +76,30 @@ import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.IconBadge
 import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
+import cz.digitalnivedomi.diarium.ui.components.ShimmerBox
+import cz.digitalnivedomi.diarium.ui.components.StatusDot
 import cz.digitalnivedomi.diarium.ui.components.SubScreenEntry
 import cz.digitalnivedomi.diarium.ui.nav.Routes
 import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
+import cz.digitalnivedomi.diarium.ui.theme.Cyan
+import cz.digitalnivedomi.diarium.ui.theme.Dimens
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
+import cz.digitalnivedomi.diarium.ui.theme.Gradients
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
-import cz.digitalnivedomi.diarium.ui.theme.Cyan
-import cz.digitalnivedomi.diarium.ui.theme.Violet
+import cz.digitalnivedomi.diarium.ui.theme.MotionTokens
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
+import cz.digitalnivedomi.diarium.ui.theme.Violet
 import cz.digitalnivedomi.diarium.ui.theme.moodColor
 import java.time.DayOfWeek
 import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 /**
@@ -155,12 +166,15 @@ fun DashboardScreen(
         VSpace(Spacing.section)
 
         when {
-            state.loading -> LoadingCard()
+            // Still loading: card-shaped skeletons, never a spinner floating in the
+            // middle of an empty screen. The copy stays, so the read is still visible.
+            state.loading -> DashboardSkeleton()
             state.errorMessage != null -> ErrorCard(state.errorMessage.orEmpty()) { reloadTrigger++ }
             data != null -> DashboardContent(
                 data = data,
                 onOpenCheckIn = onOpenCheckIn,
                 onOpen = onOpen,
+                onReload = { reloadTrigger++ },
                 reflectionRepository = deps.reflection,
             )
         }
@@ -174,6 +188,9 @@ private const val ERROR_LOAD = "Přehled se nepodařilo načíst."
 
 /** Height of the bar track: the tallest day fills it. */
 private val BAR_TRACK = 96.dp
+
+/** Paragraph break inside a reflection: two line breaks, with any spaces between. */
+private val PARAGRAPH_BREAK = Regex("\\n\\s*\\n")
 
 /** Czech full date, used for the "Dnes" card. */
 private val longDate = java.time.format.DateTimeFormatter.ofPattern(
@@ -239,6 +256,7 @@ private fun DashboardContent(
     data: DashboardData,
     onOpenCheckIn: (String) -> Unit,
     onOpen: (String) -> Unit,
+    onReload: () -> Unit,
     reflectionRepository: AiReflectionRepository?,
 ) {
     Column(
@@ -247,11 +265,14 @@ private fun DashboardContent(
     ) {
         // Cards fade in one after another as the data lands — the stagger is
         // capped by Entrance, so even a full dashboard settles in ~300ms.
+        // The three headline numbers a day is read from come first, as hero cards;
+        // the cards below stay the detail behind them.
+        StaggeredItem(0) { HeroStats(data = data) }
         StaggeredItem(1) { StreakCard(data = data) }
         StaggeredItem(2) { WeekCard(data = data) }
-        StaggeredItem(3) { ScreenTimeCard(data = data) }
-        StaggeredItem(4) { UnlocksCard(data = data) }
-        StaggeredItem(5) { TopAppsCard(data = data) }
+        StaggeredItem(3) { ScreenTimeCard(data = data, onReload = onReload) }
+        StaggeredItem(4) { UnlocksCard(data = data, onReload = onReload) }
+        StaggeredItem(5) { TopAppsCard(data = data, onReload = onReload) }
         // The card keys off the newest *recorded* day (mood filled, see RecordDay):
         // a day the phone only synced is not a record and must not blank the card
         // (2026-09-12). Hidden only when the "Dnes" card already renders that exact
@@ -269,7 +290,158 @@ private fun DashboardContent(
         }
         // The M5 screens have no tab of their own (the bar already carries five),
         // so the overview carries their entrances. Pure navigation, no read.
-        StaggeredItem(5) { EntriesCard(onOpen = onOpen) }
+        StaggeredItem(6) { EntriesCard(onOpen = onOpen) }
+    }
+}
+
+/**
+ * The three hero stats of the daily summary — screen time, unlocks and the week's
+ * average mood — as big glass cards with a counting number and a small caption.
+ *
+ * Every value comes from the same [DashboardData] the detail cards below read, so a
+ * hero can never disagree with the chart it summarises. A number the phone has not
+ * synced yet is an honest em dash, never a zero dressed up as data.
+ */
+@Composable
+private fun HeroStats(data: DashboardData) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Spacing.block),
+    ) {
+        // The flagship figure gets the full width and the biggest type; the two
+        // counts sit beside each other underneath it.
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            accent = Indigo,
+            elevated = true,
+            glow = true,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconBadge(accent = Indigo, size = 48, gradient = true) {
+                    Text(text = "📱", fontSize = 22.sp)
+                }
+                Spacer(Modifier.width(Spacing.block))
+                Column(modifier = Modifier.weight(1f)) {
+                    SectionHeader("Čas na obrazovce")
+                    VSpace(Spacing.tight)
+                    HeroValueRow(
+                        value = data.screenTimeMinutes?.toDouble(),
+                        unit = "min",
+                        style = MaterialTheme.typography.headlineMedium,
+                    )
+                    VSpace(Spacing.tiny)
+                    Text(
+                        text = if (data.screenTimeMinutes != null) {
+                            "Celkem za posledních ${DashboardRepository.WEEK_DAYS} dní"
+                        } else {
+                            "Data se ještě nenasynchronizovala."
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.block),
+        ) {
+            HeroStatCard(
+                modifier = Modifier.weight(1f),
+                emoji = "🔓",
+                label = "Odemknutí",
+                accent = Cyan,
+                value = data.unlocks?.toDouble(),
+                unit = null,
+                decimals = 0,
+                caption = "za posledních ${DashboardRepository.WEEK_DAYS} dní",
+            )
+            HeroStatCard(
+                modifier = Modifier.weight(1f),
+                emoji = "🎭",
+                label = "Ø nálada",
+                accent = moodColor(data.averageMood?.roundToInt()),
+                value = data.averageMood,
+                unit = "/ 5",
+                decimals = 1,
+                caption = "za posledních ${DashboardRepository.WEEK_DAYS} dní",
+            )
+        }
+    }
+}
+
+/** One half-width hero stat: emoji, label, counting value and a caption. */
+@Composable
+private fun HeroStatCard(
+    emoji: String,
+    label: String,
+    accent: Color,
+    value: Double?,
+    caption: String,
+    modifier: Modifier = Modifier,
+    unit: String? = null,
+    decimals: Int = 0,
+) {
+    GlassCard(
+        modifier = modifier,
+        accent = accent,
+        elevated = true,
+        glow = true,
+    ) {
+        Text(text = emoji, fontSize = 20.sp)
+        VSpace(Spacing.small)
+        SectionHeader(label)
+        VSpace(Spacing.tight)
+        HeroValueRow(
+            value = value,
+            unit = unit,
+            decimals = decimals,
+            style = MaterialTheme.typography.titleLarge,
+        )
+        VSpace(Spacing.tiny)
+        Text(
+            text = caption,
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary,
+        )
+    }
+}
+
+/**
+ * The hero figure itself: the [AnimatedCounter], plus its unit as a *small*
+ * secondary caption, so the eye lands on the number and never on "min" or "/ 5".
+ */
+@Composable
+private fun HeroValueRow(
+    value: Double?,
+    unit: String?,
+    style: TextStyle,
+    decimals: Int = 0,
+) {
+    Row(verticalAlignment = Alignment.Bottom) {
+        if (value == null) {
+            Text(
+                text = "—",
+                style = style.copy(fontWeight = FontWeight.Bold),
+                color = TextSecondary,
+            )
+        } else {
+            AnimatedCounter(
+                value = value,
+                decimals = decimals,
+                style = style.copy(fontWeight = FontWeight.Bold),
+                color = TextPrimary,
+            )
+        }
+        if (unit != null) {
+            Spacer(Modifier.width(Spacing.tiny))
+            Text(
+                text = unit,
+                style = MaterialTheme.typography.labelMedium,
+                color = TextSecondary,
+                modifier = Modifier.padding(bottom = 3.dp),
+            )
+        }
     }
 }
 
@@ -324,35 +496,157 @@ private fun EntriesCard(onOpen: (String) -> Unit) {
     }
 }
 
-/** Visible loading: never a zeroed dashboard while the read is in flight. */
+/**
+ * Visible loading, drawn as the shape of what is coming: the caption, a hero card,
+ * a usage chart and the top-apps list.
+ *
+ * This replaces the old spinner-in-a-card — a spinner says "wait", a skeleton says
+ * "here is what will be here". The Czech copy is unchanged, so the screen still
+ * states what it is doing; a quiet [StatusDot] carries the "still running" signal
+ * the spinner used to.
+ */
 @Composable
-private fun LoadingCard() {
-    GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            BrandSpinner()
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(
-                    text = "Načítám přehled…",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary,
-                )
-                VSpace(2)
-                SectionHint("Chvilku strpení, stahuju posledních ${DashboardRepository.LOAD_DAYS} dní.")
+private fun DashboardSkeleton() {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Spacing.section),
+    ) {
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            accent = Indigo,
+            elevated = true,
+            glow = true,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Načítám přehled…",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary,
+                    )
+                    VSpace(2)
+                    SectionHint("Chvilku strpení, stahuju posledních ${DashboardRepository.LOAD_DAYS} dní.")
+                }
+                Spacer(Modifier.width(Spacing.block))
+                StatusDot(accent = IndigoLight)
+            }
+        }
+        SkeletonHeroCard()
+        SkeletonChartCard()
+        SkeletonListCard(rows = 4)
+    }
+}
+
+/** One shimmering line, at the width the real text will occupy. */
+@Composable
+private fun SkeletonLine(fraction: Float, height: Dp = Dimens.skeletonLine) {
+    ShimmerBox(
+        modifier = Modifier
+            .fillMaxWidth(fraction)
+            .height(height),
+        shape = RoundedCornerShape(Dimens.radiusXs),
+    )
+}
+
+/** The hero strip's shape: the wide screen-time card and the two half-width stats. */
+@Composable
+private fun SkeletonHeroCard() {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Spacing.block),
+    ) {
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            SkeletonLine(fraction = 0.34f)
+            VSpace(Spacing.block)
+            SkeletonLine(fraction = 0.46f, height = 26.dp)
+            VSpace(Spacing.small)
+            SkeletonLine(fraction = 0.62f)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.block),
+        ) {
+            repeat(2) {
+                GlassCard(modifier = Modifier.weight(1f)) {
+                    SkeletonLine(fraction = 0.5f)
+                    VSpace(Spacing.block)
+                    SkeletonLine(fraction = 0.7f, height = 20.dp)
+                    VSpace(Spacing.small)
+                    SkeletonLine(fraction = 0.9f)
+                }
             }
         }
     }
 }
 
-/** Failed load: the repository's own Czech sentence, plus one way out. */
+/** A usage chart's shape: the total, then seven bars on the bar track. */
+@Composable
+private fun SkeletonChartCard() {
+    // Fixed heights, so the skeleton itself never jitters while it waits.
+    val bars = listOf(0.34f, 0.52f, 0.44f, 0.66f, 0.48f, 0.78f, 0.58f)
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        SkeletonLine(fraction = 0.44f, height = 14.dp)
+        VSpace(Spacing.small)
+        SkeletonLine(fraction = 0.26f)
+        VSpace(Spacing.block)
+        SkeletonLine(fraction = 0.30f, height = 26.dp)
+        VSpace(Spacing.block)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            bars.forEach { fraction ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(BAR_TRACK),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    ShimmerBox(
+                        modifier = Modifier
+                            .width(16.dp)
+                            .height((BAR_TRACK.value * fraction).dp.coerceAtLeast(6.dp)),
+                        shape = RoundedCornerShape(Dimens.radiusXs),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The top-apps list's shape: an app name, its duration and a proportional bar. */
+@Composable
+private fun SkeletonListCard(rows: Int) {
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        SkeletonLine(fraction = 0.56f, height = 14.dp)
+        VSpace(Spacing.small)
+        SkeletonLine(fraction = 0.30f)
+        VSpace(Spacing.block)
+        repeat(rows) { index ->
+            if (index > 0) VSpace(Spacing.block)
+            SkeletonLine(fraction = 0.44f)
+            VSpace(Spacing.tight)
+            SkeletonLine(fraction = 0.88f, height = 8.dp)
+        }
+    }
+}
+
+/**
+ * Failed load: the repository's own Czech sentence inside the app's empty-state
+ * treatment, plus the one way out (`Zkusit znovu`).
+ */
 @Composable
 private fun ErrorCard(message: String, onRetry: () -> Unit) {
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = ErrorRed) {
-        SectionHeader("Načtení přehledu")
-        VSpace(10)
-        ErrorBanner(message)
-        VSpace(14)
-        PrimaryButton(text = "Zkusit znovu", testTag = "dashboard_retry") { onRetry() }
+        EmptyState(
+            emoji = "⚠️",
+            title = "Načtení přehledu",
+            message = message,
+            accent = ErrorRed,
+            action = {
+                PrimaryButton(text = "Zkusit znovu", testTag = "dashboard_retry") { onRetry() }
+            },
+        )
     }
 }
 
@@ -598,9 +892,12 @@ private fun WeekCard(data: DashboardData) {
  * both. A shared [UsageCard] keeps the two looking like parts of the same app.
  */
 @Composable
-private fun ScreenTimeCard(data: DashboardData) {
+private fun ScreenTimeCard(data: DashboardData, onReload: () -> Unit) {
     UsageCard(
         title = "📱 Čas na obrazovce",
+        emptyEmoji = "📱",
+        emptyTitle = "Zatím žádná data",
+        accent = Indigo,
         week = data.week,
         today = data.today,
         valueOf = { day -> day.screenTimeSeconds },
@@ -612,6 +909,7 @@ private fun ScreenTimeCard(data: DashboardData) {
             "Až je telefon odešle, uvidíš tady sloupce za posledních " +
             "${DashboardRepository.WEEK_DAYS} dní.",
         legend = "Číslo pod sloupcem = čas na obrazovce ten den.",
+        onReload = onReload,
     )
 }
 
@@ -623,9 +921,12 @@ private fun ScreenTimeCard(data: DashboardData) {
  * chart rather than a second indigo one.
  */
 @Composable
-private fun UnlocksCard(data: DashboardData) {
+private fun UnlocksCard(data: DashboardData, onReload: () -> Unit) {
     UsageCard(
         title = "🔓 Odemknutí",
+        emptyEmoji = "🔓",
+        emptyTitle = "Zatím žádná data",
+        accent = Cyan,
         week = data.week,
         today = data.today,
         valueOf = { day -> day.unlocks },
@@ -637,6 +938,7 @@ private fun UnlocksCard(data: DashboardData) {
             "Až je telefon odešle, uvidíš tady sloupce za posledních " +
             "${DashboardRepository.WEEK_DAYS} dní.",
         legend = "Číslo pod sloupcem = počet odemknutí ten den.",
+        onReload = onReload,
     )
 }
 
@@ -649,65 +951,100 @@ private fun UnlocksCard(data: DashboardData) {
  * list never passes for today's.
  */
 @Composable
-private fun TopAppsCard(data: DashboardData) {
+private fun TopAppsCard(data: DashboardData, onReload: () -> Unit) {
     val topApps = data.rankedTopApps ?: data.topApps ?: return
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader("Nejpoužívanější aplikace")
         VSpace(2)
+        // The anchoring caption is unchanged: the list is always tied to the day it
+        // was captured on, so an older snapshot never passes for today's.
         SectionHint("Ze dne ${shortDateOf(topApps.date)}")
-        VSpace(10)
+        VSpace(Spacing.block)
         // Ranked here, not rendered straight from the query: the raw database
         // order buried the real leaders (Snooker 37 min) behind five rows that
         // happened to come first (Hermes WebUI 8 min).
         val ranked = rankTopApps(topApps.apps)
         if (ranked.size < DashboardRepository.RANKED_TOP_APPS_MIN) {
-            // Two rows cannot show a ranking; an honest hint beats a near-empty
-            // list that reads as missing data.
-            SectionHint("Pro žebříček nejpoužívanějších aplikací je tu zatím málo dat.")
+            // Two rows cannot show a ranking; a real empty state with a next step
+            // beats a near-empty list that reads as missing data.
+            EmptyState(
+                emoji = "📊",
+                title = "Zatím málo dat",
+                message = "Pro žebříček nejpoužívanějších aplikací je tu zatím málo dat.",
+                accent = Indigo,
+                action = {
+                    SecondaryButton(text = "Aktualizovat") { onReload() }
+                },
+            )
         } else {
             val maxMinutes = ranked.first().minutes
-            ranked.forEach { app ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = app.app,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = formatTopAppDuration(app.minutes),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextTertiary,
-                    )
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(Spacing.block),
+            ) {
+                ranked.forEachIndexed { index, app ->
+                    // A capped stagger, so a long list still lands in one breath.
+                    StaggeredItem(index.coerceAtMost(6)) {
+                        TopAppRow(app = app, maxMinutes = maxMinutes)
+                    }
                 }
-                VSpace(5)
-                // A thin bar scaled to the largest value shown, so the ranking
-                // is visible at a glance.
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color.White.copy(alpha = 0.07f)),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(
-                                (app.minutes.toFloat() / maxMinutes).coerceIn(0f, 1f),
-                            )
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(Brush.horizontalGradient(listOf(IndigoLight, Indigo))),
-                    )
-                }
-                VSpace(11)
             }
+        }
+    }
+}
+
+/**
+ * One ranked app: its name, its duration and a bar proportional to the leader.
+ *
+ * The bar is filled with the brand gradient and rounded to a full cap, and its
+ * width is animated, so a re-rank slides instead of jumping.
+ */
+@Composable
+private fun TopAppRow(app: PhoneTopApp, maxMinutes: Int) {
+    val target = if (maxMinutes <= 0) 0f else (app.minutes.toFloat() / maxMinutes).coerceIn(0f, 1f)
+    val fill by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(
+            durationMillis = MotionTokens.slowMillis,
+            easing = MotionTokens.decelerateEasing,
+        ),
+        label = "topAppBar",
+    )
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = app.app,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(Spacing.small))
+            Text(
+                text = formatTopAppDuration(app.minutes),
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+        }
+        VSpace(Spacing.tight)
+        // A thin bar scaled to the largest value shown, so the ranking is visible
+        // at a glance.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color.White.copy(alpha = 0.07f)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fill)
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Gradients.fill(Gradients.brand)),
+            )
         }
     }
 }
@@ -719,11 +1056,15 @@ private fun TopAppsCard(data: DashboardData) {
  * Shared by [ScreenTimeCard] and [UnlocksCard], so the two charts differ only in the
  * number they plot — a split must not make them look like two different apps. A day
  * the phone never synced draws a stub bar and prints "—", so "nothing reported" can
- * never read as a very quiet day.
+ * never read as a very quiet day. A chart with no data at all becomes an [EmptyState]
+ * with a refresh action instead of a lone grey line.
  */
 @Composable
 private fun UsageCard(
     title: String,
+    emptyEmoji: String,
+    emptyTitle: String,
+    accent: Color?,
     week: List<DashboardDay>,
     today: String,
     valueOf: (DashboardDay) -> Int?,
@@ -733,9 +1074,10 @@ private fun UsageCard(
     totalHint: String,
     emptyHint: String,
     legend: String,
+    onReload: () -> Unit,
 ) {
     val maxValue = week.mapNotNull(valueOf).maxOrNull() ?: 0
-    GlassCard(modifier = Modifier.fillMaxWidth()) {
+    GlassCard(modifier = Modifier.fillMaxWidth(), accent = accent) {
         SectionHeader(title)
         VSpace(4)
         Text(
@@ -743,10 +1085,19 @@ private fun UsageCard(
             style = MaterialTheme.typography.titleMedium,
             color = TextPrimary,
         )
-        VSpace(10)
+        VSpace(Spacing.block)
 
         if (total == null) {
-            SectionHint(emptyHint)
+            // Nothing synced: an empty state with a next step, not a bare grey line.
+            EmptyState(
+                emoji = emptyEmoji,
+                title = emptyTitle,
+                message = emptyHint,
+                accent = accent ?: Indigo,
+                action = {
+                    SecondaryButton(text = "Aktualizovat") { onReload() }
+                },
+            )
             return@GlassCard
         }
 
