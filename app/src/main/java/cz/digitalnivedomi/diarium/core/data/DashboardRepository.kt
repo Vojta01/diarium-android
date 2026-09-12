@@ -55,8 +55,16 @@ data class DashboardData(
     val screenTimeMinutes: Int?,
     val unlocks: Int?,
     val topApps: DashboardTopApps?,
+    /** The same, restricted to the newest day whose list is long enough to rank. */
+    val rankedTopApps: DashboardTopApps?,
     val reflection: DashboardReflection?,
-    /** The newest logged day — what the reflection card keys off. */
+    /**
+     * The newest *recorded* day (mood filled) — the day the reflection card speaks
+     * about. [newestEntry] may be a day the phone merely synced, which is not a
+     * record at all and must not hide yesterday's reflection.
+     */
+    val newestRecorded: DashboardNewestEntry?,
+    /** The newest logged day, whatever it holds. */
     val newestEntry: DashboardNewestEntry?,
     val lastGratitude: DashboardGratitude?,
 )
@@ -173,8 +181,10 @@ class DashboardRepository(private val entries: EntriesRepository) {
                     ?.let { values -> Math.round(values.sum() / 60.0).toInt() },
                 unlocks = unlockCounts.takeIf { it.isNotEmpty() }?.sum(),
                 topApps = latestTopApps(byDate),
+                rankedTopApps = rankedTopApps(byDate),
                 reflection = latestReflection(byDate),
                 newestEntry = newestEntry(byDate),
+                newestRecorded = newestRecorded(byDate),
                 lastGratitude = latestGratitude(byDate),
             )
         }
@@ -226,6 +236,41 @@ class DashboardRepository(private val entries: EntriesRepository) {
         fun latestTopApps(byDate: Map<String, DiaryEntry>): DashboardTopApps? =
             latestWith(byDate) { it.phoneTopApps.isNotEmpty() }
                 ?.let { (date, entry) -> DashboardTopApps(date, entry.phoneTopApps) }
+
+        /** Below this a list cannot show a ranking, and the card says so instead. */
+        const val RANKED_TOP_APPS_MIN = 3
+
+        /**
+         * Top apps of the newest day whose list is long enough to rank.
+         *
+         * A day the phone synced this morning holds two or three apps and would
+         * replace a complete snapshot from yesterday with a stub — the defect the
+         * owner reported on 2026-09-12 ("seznam používaných aplikací"). The card
+         * prefers the newest *rankable* day and only falls back to [latestTopApps]
+         * when no day qualifies; the date is printed with the list, so an older
+         * snapshot never pretends to be today.
+         */
+        fun rankedTopApps(byDate: Map<String, DiaryEntry>): DashboardTopApps? =
+            latestWith(byDate) { it.phoneTopApps.size >= RANKED_TOP_APPS_MIN }
+                ?.let { (date, entry) -> DashboardTopApps(date, entry.phoneTopApps) }
+
+        /**
+         * The newest *recorded* day (mood filled) — the day the reflection card
+         * talks about.
+         *
+         * The owner's rule (2026-09-12): a day the phone synced without a mood is
+         * not a record, so its empty reflection must not hide the text of the last
+         * day that has one ("chci, aby tam byla zatím ta včerejší z 11. 9.").
+         */
+        fun newestRecorded(byDate: Map<String, DiaryEntry>): DashboardNewestEntry? {
+            val date = byDate
+                .filterValues { isRecordedDay(it.mood) }
+                .keys
+                .sortedDescending()
+                .firstOrNull()
+                ?: return null
+            return DashboardNewestEntry(date, byDate.getValue(date))
+        }
 
         /** The reflection the dashboard shows: the newest day that has one. */
         fun latestReflection(byDate: Map<String, DiaryEntry>): DashboardReflection? =

@@ -43,6 +43,13 @@ object Routes {
      * no schedule of its own for these).
      */
     const val NOTIFICATIONS = "notifications"
+
+    /**
+     * Data sub-screen: the CSV export. It has no tab of its own either — it is
+     * opened from Nastavení and writes the file through the Storage Access
+     * Framework, so the export needs no permission and no server round-trip.
+     */
+    const val EXPORT = "export"
 }
 
 /** Routes that get a tab in the bottom bar, in display order. */

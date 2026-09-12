@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DashboardData
+import cz.digitalnivedomi.diarium.core.data.DashboardDay
+import cz.digitalnivedomi.diarium.core.data.DashboardReflection
 import cz.digitalnivedomi.diarium.core.data.DashboardNewestEntry
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
@@ -77,6 +79,8 @@ import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
+import cz.digitalnivedomi.diarium.ui.theme.Cyan
+import cz.digitalnivedomi.diarium.ui.theme.Violet
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -243,18 +247,24 @@ private fun DashboardContent(
     ) {
         // Cards fade in one after another as the data lands — the stagger is
         // capped by Entrance, so even a full dashboard settles in ~300ms.
-        StaggeredItem(0) { TodayCard(data = data, onOpenCheckIn = onOpenCheckIn) }
         StaggeredItem(1) { StreakCard(data = data) }
         StaggeredItem(2) { WeekCard(data = data) }
         StaggeredItem(3) { ScreenTimeCard(data = data) }
-        // The reflection card keys off the newest logged day, never off the newest
-        // day that happens to carry a reflection: showing "Ze dne 9. 9." while
-        // 10. 9. was on screen is the bug this fixes. It is hidden only when the
-        // "Dnes" card already renders that exact text, so nothing shows twice.
-        val newest = data.newestEntry
-        if (newest != null && !(newest.date == data.today && newest.reflection != null)) {
-            StaggeredItem(4) {
-                ReflectionCard(newest = newest, repository = reflectionRepository)
+        StaggeredItem(4) { UnlocksCard(data = data) }
+        StaggeredItem(5) { TopAppsCard(data = data) }
+        // The card keys off the newest *recorded* day (mood filled, see RecordDay):
+        // a day the phone only synced is not a record and must not blank the card
+        // (2026-09-12). Hidden only when the "Dnes" card already renders that exact
+        // text, so nothing shows twice.
+        val anchor = data.newestRecorded ?: data.newestEntry
+        val todayShowsIt = !data.todayEntry?.aiReflection.isNullOrBlank()
+        if (!todayShowsIt && (anchor != null || data.reflection != null)) {
+            StaggeredItem(6) {
+                ReflectionCard(
+                    anchor = anchor,
+                    latest = data.reflection,
+                    repository = reflectionRepository,
+                )
             }
         }
         // The M5 screens have no tab of their own (the bar already carries five),
@@ -581,17 +591,152 @@ private fun WeekCard(data: DashboardData) {
 }
 
 /**
- * 📱 Screen time — a bar per day plus the window's totals.
+ * 📱 The screen-time chart of the week window.
  *
- * A day the worker has not synced yet has no value at all (`null`, not zero), and the
- * card says so instead of drawing flat bars: "nothing synced" and "almost no screen
- * time" must not look the same.
+ * Split from the unlock count on 2026-09-12: the owner asked for one chart for the
+ * time on screen and its own chart for the unlocks, instead of one card carrying
+ * both. A shared [UsageCard] keeps the two looking like parts of the same app.
  */
 @Composable
 private fun ScreenTimeCard(data: DashboardData) {
-    val maxSeconds = data.week.mapNotNull { it.screenTimeSeconds }.maxOrNull() ?: 0
+    UsageCard(
+        title = "📱 Čas na obrazovce",
+        week = data.week,
+        today = data.today,
+        valueOf = { day -> day.screenTimeSeconds },
+        valueLabel = { seconds -> ScreenTimeSeries.secondsLabel(seconds) },
+        barBrush = Brush.verticalGradient(listOf(IndigoLight, Indigo)),
+        total = data.screenTimeMinutes?.let { minutes -> formatMinutes(minutes) },
+        totalHint = "Celkem za posledních ${DashboardRepository.WEEK_DAYS} dní",
+        emptyHint = "Data o screen timu se ještě nenasynchronizovala. " +
+            "Až je telefon odešle, uvidíš tady sloupce za posledních " +
+            "${DashboardRepository.WEEK_DAYS} dní.",
+        legend = "Číslo pod sloupcem = čas na obrazovce ten den.",
+    )
+}
+
+/**
+ * 🔓 The same seven days, one bar per day's unlock count.
+ *
+ * Its own card and its own scale: 200 unlocks used to be invisible next to a
+ * six-hour screen-time bar. Cyan-to-violet keeps it a sibling of the screen-time
+ * chart rather than a second indigo one.
+ */
+@Composable
+private fun UnlocksCard(data: DashboardData) {
+    UsageCard(
+        title = "🔓 Odemknutí",
+        week = data.week,
+        today = data.today,
+        valueOf = { day -> day.unlocks },
+        valueLabel = { unlocks -> unlocks?.toString() ?: ScreenTimeSeries.NO_DATA },
+        barBrush = Brush.verticalGradient(listOf(Cyan, Violet)),
+        total = data.unlocks?.let { count -> "$count odemknutí" },
+        totalHint = "Celkem za posledních ${DashboardRepository.WEEK_DAYS} dní",
+        emptyHint = "Počet odemknutí se ještě nenasynchronizoval. " +
+            "Až je telefon odešle, uvidíš tady sloupce za posledních " +
+            "${DashboardRepository.WEEK_DAYS} dní.",
+        legend = "Číslo pod sloupcem = počet odemknutí ten den.",
+    )
+}
+
+/**
+ * 🏆 The newest day whose app list is long enough to rank.
+ *
+ * The card prefers a complete snapshot from an older day over the two or three apps
+ * a morning sync has captured — the defect the owner reported on 2026-09-12
+ * ("stejně tak seznam používaných aplikací"). The day is always printed, so an older
+ * list never passes for today's.
+ */
+@Composable
+private fun TopAppsCard(data: DashboardData) {
+    val topApps = data.rankedTopApps ?: data.topApps ?: return
     GlassCard(modifier = Modifier.fillMaxWidth()) {
-        SectionHeader("📱 Screen time")
+        SectionHeader("Nejpoužívanější aplikace")
+        VSpace(2)
+        SectionHint("Ze dne ${shortDateOf(topApps.date)}")
+        VSpace(10)
+        // Ranked here, not rendered straight from the query: the raw database
+        // order buried the real leaders (Snooker 37 min) behind five rows that
+        // happened to come first (Hermes WebUI 8 min).
+        val ranked = rankTopApps(topApps.apps)
+        if (ranked.size < DashboardRepository.RANKED_TOP_APPS_MIN) {
+            // Two rows cannot show a ranking; an honest hint beats a near-empty
+            // list that reads as missing data.
+            SectionHint("Pro žebříček nejpoužívanějších aplikací je tu zatím málo dat.")
+        } else {
+            val maxMinutes = ranked.first().minutes
+            ranked.forEach { app ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = app.app,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = formatTopAppDuration(app.minutes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                    )
+                }
+                VSpace(5)
+                // A thin bar scaled to the largest value shown, so the ranking
+                // is visible at a glance.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.White.copy(alpha = 0.07f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(
+                                (app.minutes.toFloat() / maxMinutes).coerceIn(0f, 1f),
+                            )
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Brush.horizontalGradient(listOf(IndigoLight, Indigo))),
+                    )
+                }
+                VSpace(11)
+            }
+        }
+    }
+}
+
+/**
+ * One usage chart: a title, the window's total, a bar per day with that day's value
+ * printed under it, and the weekday captions.
+ *
+ * Shared by [ScreenTimeCard] and [UnlocksCard], so the two charts differ only in the
+ * number they plot — a split must not make them look like two different apps. A day
+ * the phone never synced draws a stub bar and prints "—", so "nothing reported" can
+ * never read as a very quiet day.
+ */
+@Composable
+private fun UsageCard(
+    title: String,
+    week: List<DashboardDay>,
+    today: String,
+    valueOf: (DashboardDay) -> Int?,
+    valueLabel: (Int?) -> String,
+    barBrush: Brush,
+    total: String?,
+    totalHint: String,
+    emptyHint: String,
+    legend: String,
+) {
+    val maxValue = week.mapNotNull(valueOf).maxOrNull() ?: 0
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        SectionHeader(title)
         VSpace(4)
         Text(
             text = "Posledních ${DashboardRepository.WEEK_DAYS} dní",
@@ -600,36 +745,26 @@ private fun ScreenTimeCard(data: DashboardData) {
         )
         VSpace(10)
 
-        if (data.screenTimeMinutes == null && data.unlocks == null) {
-            SectionHint(
-                "Data o screen timu se ještě nenasynchronizovala. " +
-                    "Až je telefon odešle, uvidíš tady sloupce za posledních " +
-                    "${DashboardRepository.WEEK_DAYS} dní.",
-            )
+        if (total == null) {
+            SectionHint(emptyHint)
             return@GlassCard
         }
 
-        data.screenTimeMinutes?.let { minutes ->
-            Text(
-                text = formatMinutes(minutes),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary,
-            )
-            SectionHint("Celkem za posledních ${DashboardRepository.WEEK_DAYS} dní")
-        }
-        data.unlocks?.let { count ->
-            VSpace(6)
-            GlassChip(text = "🔓 $count odemknutí")
-        }
+        Text(
+            text = total,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = TextPrimary,
+        )
+        SectionHint(totalHint)
         VSpace(16)
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            data.week.forEach { day ->
-                val seconds = day.screenTimeSeconds
+            week.forEach { day ->
+                val value = valueOf(day)
                 Column(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -638,7 +773,7 @@ private fun ScreenTimeCard(data: DashboardData) {
                         modifier = Modifier.height(BAR_TRACK),
                         contentAlignment = Alignment.BottomCenter,
                     ) {
-                        if (seconds == null || maxSeconds == 0) {
+                        if (value == null || maxValue == 0) {
                             // Nothing synced (or nothing to scale against): a stub,
                             // not a bar that could be mistaken for a small value.
                             Box(
@@ -652,19 +787,19 @@ private fun ScreenTimeCard(data: DashboardData) {
                             Box(
                                 modifier = Modifier
                                     .width(16.dp)
-                                    .height((BAR_TRACK.value * seconds / maxSeconds).coerceAtLeast(6f).dp)
+                                    .height(
+                                        (BAR_TRACK.value * value / maxValue)
+                                            .coerceAtLeast(6f)
+                                            .dp,
+                                    )
                                     .clip(RoundedCornerShape(6.dp))
-                                    .background(Brush.verticalGradient(listOf(IndigoLight, Indigo))),
+                                    .background(barBrush),
                             )
                         }
                     }
                     VSpace(4)
-                    // The day's own numbers, printed under its bar: the compact
-                    // screen time, then — only when the phone reported any — the
-                    // unlock count. A day that never synced reads "—" and stays
-                    // visibly empty instead of looking like a "0m" day.
                     Text(
-                        text = ScreenTimeSeries.secondsLabel(seconds),
+                        text = valueLabel(value),
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary,
                         maxLines = 1,
@@ -674,135 +809,88 @@ private fun ScreenTimeCard(data: DashboardData) {
                             unbounded = true,
                         ),
                     )
-                    ScreenTimeSeries.unlockLabel(day.unlocks)?.let { unlock ->
-                        Text(
-                            text = unlock,
-                            fontSize = 9.sp,
-                            color = TextTertiary,
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier.wrapContentWidth(
-                                align = Alignment.CenterHorizontally,
-                                unbounded = true,
-                            ),
-                        )
-                    }
                     VSpace(2)
                     Text(
-                        text = dayLabel(day.date, data.today),
+                        text = dayLabel(day.date, today),
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (day.date == data.today) TextPrimary else TextTertiary,
+                        color = if (day.date == today) TextPrimary else TextTertiary,
                     )
                 }
             }
         }
 
         VSpace(8)
-        SectionHint(ScreenTimeSeries.LEGEND)
-
-        data.topApps?.let { topApps ->
-            VSpace(14)
-            GlassDivider()
-            VSpace(10)
-            SectionHeader("Nejpoužívanější aplikace")
-            VSpace(2)
-            SectionHint("Ze dne ${shortDateOf(topApps.date)}")
-            VSpace(10)
-            // Ranked here, not rendered straight from the query: the raw database
-            // order buried the real leaders (Snooker 37 min) behind five rows that
-            // happened to come first (Hermes WebUI 8 min).
-            val ranked = rankTopApps(topApps.apps)
-            if (ranked.size < 3) {
-                // Two rows cannot show a ranking; an honest hint beats a near-empty
-                // list that reads as missing data.
-                SectionHint("Pro žebříček nejpoužívanějších aplikací je tu zatím málo dat.")
-            } else {
-                val maxMinutes = ranked.first().minutes
-                ranked.forEach { app ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = app.app,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = formatTopAppDuration(app.minutes),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextTertiary,
-                        )
-                    }
-                    VSpace(5)
-                    // A thin bar scaled to the largest value shown, so the ranking
-                    // is visible at a glance.
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(Color.White.copy(alpha = 0.07f)),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(
-                                    (app.minutes.toFloat() / maxMinutes).coerceIn(0f, 1f),
-                                )
-                                .height(4.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(Brush.horizontalGradient(listOf(IndigoLight, Indigo))),
-                        )
-                    }
-                    VSpace(11)
-                }
-            }
-        }
+        SectionHint(legend)
     }
 }
 
 /**
- * 🤖 The AI reflection of the newest logged day.
+ * 🤖 The AI reflection the dashboard shows.
  *
- * The card keys off the newest entry, never off the newest day that happens to
- * carry a reflection: it shows that day's text when it has one, and otherwise
- * offers to generate one for it. A generation request fires only on the tap —
- * nothing network-bound runs while the screen loads.
+ * Two rules, both from 2026-09-12:
+ *
+ * 1. The card speaks about the newest **recorded** day (mood filled) — a day the
+ *    phone merely synced is not a record, so its empty reflection must not hide the
+ *    text of the last day that has one ("denní reflexe se zde opět nezobrazuje, chci
+ *    tam zatím tu včerejší z 11. 9.").
+ * 2. When that day has no text yet, the newest reflection there is stays on screen
+ *    with its own date — the card is never blank while a reflection exists. The
+ *    generate button still belongs to the recorded day, which is the only day a
+ *    reflection can be generated for.
+ *
+ * A generation request fires only on the tap — nothing network-bound runs while the
+ * screen loads.
  */
 @Composable
 private fun ReflectionCard(
-    newest: DashboardNewestEntry,
+    anchor: DashboardNewestEntry?,
+    latest: DashboardReflection?,
     repository: AiReflectionRepository?,
 ) {
     val scope = rememberCoroutineScope()
-    var text by remember(newest.date) { mutableStateOf(newest.reflection) }
-    var loading by remember(newest.date) { mutableStateOf(false) }
-    var error by remember(newest.date) { mutableStateOf<String?>(null) }
+    val anchorText = anchor?.reflection?.takeIf { it.isNotBlank() }
+    val shown = anchorText ?: latest?.text
+    val shownDate = if (anchorText != null) anchor?.date else latest?.date
+    var text by remember(shownDate) { mutableStateOf(shown) }
+    var label by remember(shownDate) { mutableStateOf(shownDate) }
+    var loading by remember(shownDate) { mutableStateOf(false) }
+    var error by remember(shownDate) { mutableStateOf<String?>(null) }
+
+    // Only a recorded day can have a reflection generated: an unrecorded one has
+    // nothing to reflect on.
+    val missing = anchor?.takeIf { it.reflection.isNullOrBlank() }
 
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         SectionHeader("🤖 AI Reflexe")
         VSpace(4)
         Text(
-            text = "Naposledy vygenerovaná",
+            text = if (anchorText != null) "Naposledy vygenerovaná" else "Poslední reflexe",
             style = MaterialTheme.typography.titleMedium,
             color = TextPrimary,
         )
         VSpace(2)
-        SectionHint("Ze dne ${shortDateOf(newest.date)}")
+        label?.let { date -> SectionHint("Ze dne ${shortDateOf(date)}") }
         VSpace(10)
 
         val current = text
         if (!current.isNullOrBlank()) {
             ReflectionBox(text = current)
         } else {
-            SectionHint("Reflexe pro tento den ještě není vygenerovaná.")
+            SectionHint("Reflexe ještě nebyla vygenerovaná.")
+        }
+
+        if (missing != null) {
+            VSpace(10)
+            if (!current.isNullOrBlank()) {
+                SectionHint("Za ${shortDateOf(missing.date)} ji ještě nemáš.")
+            }
             VSpace(12)
             GlassActionButton(
-                text = if (loading) "Generuji reflexi…" else "Vygenerovat reflexi",
+                text = if (loading) {
+                    "Generuji reflexi…"
+                } else {
+                    "Vygenerovat reflexi za ${shortDateOf(missing.date)}"
+                },
                 enabled = !loading,
                 leadingSpinner = loading,
             ) {
@@ -814,9 +902,10 @@ private fun ReflectionCard(
                     loading = true
                     error = null
                     scope.launch {
-                        repo.generate(newest.date, newest.entry, repo.userName())
+                        repo.generate(missing.date, missing.entry, repo.userName())
                             .onSuccess { generated ->
                                 text = generated
+                                label = missing.date
                                 loading = false
                             }
                             .onFailure { failure ->

@@ -86,7 +86,8 @@ import kotlin.math.roundToInt
  *
  * One read ([StatsRepository], 400 days ending today) feeds three views that the web
  * splits across `AdvancedStats`, `ScreenTimeChart` and `YearInPixels`: the mood
- * statistics, the screen-time chart with its top apps, and the year in pixels. The
+ * statistics, the two screen-time charts (time and unlocks) with their top apps, and
+ * the year in pixels. The
  * range chips switch between 7 days, 30 days and the current year without a second
  * request — every window is a slice of what is already loaded.
  *
@@ -274,9 +275,10 @@ private fun StatsContent(
             StaggeredItem(5) { BestWorstCard(days = days) }
         }
 
-        // The screen-time chart keeps its own 7/30-day switch (the web's chart is
-        // always 7 days), so it is fed the whole read rather than the mood window.
-        StaggeredItem(6) { ScreenTimeChart(entries = data.days, today = data.today) }
+        // The screen-time card owns the 7/30-day switch (the web's chart is always
+        // 7 days) and the unlock chart under it shows the same window, so both are fed
+        // the whole read rather than the mood window.
+        StaggeredItem(6) { ScreenTimeCharts(entries = data.days, today = data.today) }
 
         // The year grid is the "Tento rok" tab's second half, exactly like the web
         // shows `YearInPixels` next to the year's mood numbers.
