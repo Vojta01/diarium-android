@@ -5,54 +5,79 @@ nejnovější testovací verze aplikace Diarium pro Android.
 
 | Co | Kde |
 |---|---|
-| Nejnovější APK | [`diarium.apk`](../../raw/apk/diarium.apk) |
-| Zmrazená verze | [`diarium-2.0.0-alpha16.apk`](../../raw/apk/diarium-2.0.0-alpha16.apk) |
-| Verze / datum | viz `version.txt` |
-| Starší verze | `diarium-2.0.0-alpha12 … -alpha15.apk` v této větvi |
+| Nejnovější APK | https://raw.githubusercontent.com/Vojta01/diarium-android/apk/diarium.apk |
+| Verze | `version.txt` |
+| Zdrojový kód | větev `main` tohoto repa |
 
-Zdrojový kód: [`main`](../../tree/main).
+**Stažení:** otevři odkaz v telefonu a potvrď instalaci. Od verze alpha11 je podpis
+stejný, takže se nová verze **instaluje přes předchozí** (data zůstanou).
 
-## Instalace
-1. Soubor otevřít v telefonu (Chrome).
-2. Android se zeptá na povolení instalace z tohoto zdroje → povolit.
-3. Nainstalovat. **Od alpha11 je APK podepsaný stabilním klíčem (CN=Diarium),
-   takže další verze se aktualizují přímo přes sebe.**
+> Pokud prohlížeč nabídne „otevřít v aplikaci / stáhnout", vyber stažení —
+> a v prohlížeči používej `raw.githubusercontent.com`, ne `github.com/.../raw/`
+> (ten vrací zkrácený soubor).
 
-## Co je v alpha16
+---
 
-**Nové: přepracovaný vzhled celé aplikace.** Přibyl jednotný design systém —
-skleněné karty s gradientním okrajem a jemným svitem, akcentové ikonové štítky,
-typografická škála, sjednocené rozestupy a sbírka animovaných prvků (počítadla,
-která dopočítají čísla, skeleton při načítání, nástup obsahu po částech).
+## alpha17 — doladění vzhledu a použitelnosti
 
-- **Spodní lišta** je animovaná — indikátor se plynule posouvá mezi ikonami,
-  klepnutí doprovází jemná haptická odezva. Obsah jde přes celý displej
-  (edge-to-edge) se správným odsazením od systémových lišt.
-- **Pozadí** (tmavý gradient s jemnou mřížkou) teď kreslí jen jednou shell,
-  takže se obrazovky nepřekrývají dvěma vrstvami.
-- **Odznaky**: skleněné karty, odemčené odznaky svítí a mají gradient, zamčené
-  jsou ztlumené s obrysem; místo spinneru skeleton, při chybě jasná hláška
-  s tlačítkem „Zkusit znovu“.
-- **Podobrazovky** (Cíle, Odznaky, Škály, Šablony, Export do CSV, AI Přehledy,
-  Nastavení notifikací) už netisknou svůj název dvakrát — titulek zůstal jen
-  v horní liště se šipkou zpět.
-- **Údaje o využití**: hláška uživatele neposílá k reinstalaci aplikace, ale vede
-  k přepínači v systémovém nastavení (přesně jak to na Androidu funguje).
+**Nejvíc je to vidět na Check-inu** (obrazovka, kterou otevíráš nejčastěji):
 
-### Z alpha15 (pokud jsi přeskočil)
+- výběr nálady se při klepnutí **plynule zvětší**, orámuje gradientem a **zabliká haptikou**
+- chipy a přepínače dostaly gradientní rámeček s akcentem; přepínač má knoflík,
+  který se plynule posouvá (ne skokem)
+- tlačítko **„Uložit check-in"** je indigo gradient se svitem, uložení potvrdí
+  **haptika** a karta „✓ Uloženo"
 
-- **AI Přehledy** (Nastavení → 🤖 AI Přehledy): týdenní a měsíční report
-  s datem období, tlačítkem „Vygenerovat nový“ a formátovaným textem.
+**Přehled** a **Statistiky s grafy** prošly vizuálním kolem — hero karty s animovanými
+čísly, skeleton místo spinneru při načítání, plynulé nástupy prvků, sjednocené
+prázdné stavy s jasnou další akcí.
 
-### Z alpha14 (pokud jsi přeskočil)
+**Odznaky**: odemčené odznaky svítí (glow + gradient), zamčené jsou ztlumené;
+načítání kreslí skeleton, chyba má tlačítko „Zkusit znovu".
 
-- **Karty na Přehledu se ptají na poslední zaznamenaný den**, ne na dnešek
-  (ranní synchronizace bez nálady den nezaloží) a datum píšou do popisku karty.
-- **Graf je rozdělený**: Přehled má tři karty (📱 čas na obrazovce, 🔓 odemknutí,
-  🏆 aplikace), Statistiky dva samostatné grafy s vlastní stupnicí a průměrem.
-- **Export do CSV** (Nastavení → Data → 📤 Export do CSV): sloupce 1:1 s webem.
+**Podobrazovky** (Cíle, Odznaky, Škály, Šablony, Notifikace, Export, AI Přehledy)
+už **netisknou svůj název dvakrát** — název zůstal jen v horní liště se šipkou zpět,
+pod ním je jen kontextový podtitulek.
 
-## Technické
-- Balíček: `cz.digitalnivedomi.diarium`, `minSdk 26`.
-- Podpis: stabilní klíč `CN=Diarium` (SHA-256 `0804b65b…`).
-- Testy: 592/592 zelených (`testDebugUnitTest`).
+**Login**: svatozář kolem loga, indigo CTA, chyba v kartě místo holého červeného textu,
+jemný nástup prvků.
+
+**AI Přehledy**: tlačítko generování jako indigo CTA s haptikou, nadpisy v reportu
+s akcentovým proužkem. **Export do CSV**: průběh jako kroková osa se skeletonem,
+tlačítko uložení je výrazné CTA (haptika i při úspěchu).
+
+**Kalendář v Historii**: buňky dne mají stisk s animací, vybraný den gradientní
+rámeček, dnešek jemný svit.
+
+**Údaje o využití**: hláška uživatele neposílá k reinstalaci, ale vede přímo
+k přepínači v systémovém nastavení (viz níže).
+
+### Z alpha16 (pokud jsi přeskočil)
+Nový sdílený design systém (skleněné karty s gradientním okrajem, akcentové ikonové
+štítky, animace, haptiky), spodní lišta s posuvným indikátorem a okraje přes celý
+displej. Smazaná mrtvá obrazovka „Připravujeme".
+
+### Z alpha15
+Obrazovka **Nastavení → 🤖 AI Přehledy** (týdenní/měsíční report, historie období).
+
+---
+
+## Zapnutí „Údaje o využití" (screen time)
+
+1. **Nastavení telefonu → Aplikace → Diarium → Údaje o využití** (nebo
+   Nastavení → Aplikace → Speciální přístup → Údaje o využití → Diarium) a zapni přepínač.
+2. Pokud je přepínač šedý: **Nastavení → Aplikace → Diarium → ⋮ → Povolit omezená nastavení**.
+3. Z PC: `adb shell appops set --uid cz.digitalnivedomi.diarium GET_USAGE_STATS allow`
+
+> Omezená nastavení se **netýkají** „Údajů o využití" — ty patří mezi systémová
+> oprávnění (app-op) a u aplikací mimo Google Play se udělují normálně.
+
+---
+
+## Technické údaje (alpha17)
+
+- verze `2.0.0-alpha17` (versionCode `2000017`), minSdk 26
+- APK: **14 522 729 B**, sha256 `7711919fe82c31ce3bd06d28310234b46c56365aa2bdc2c8b9b016754ae860e3`
+- unit testy: **592 / 592** hotových, 0 chyb
+- podpis: stabilní klíč (od alpha11 se verze instalují přes sebe)
+- klíče (DeepSeek, Supabase service_role, VAPID, FCM) jsou **jen na serveru**, v APK nejsou
