@@ -13,6 +13,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,8 +40,14 @@ import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
+import cz.digitalnivedomi.diarium.ui.components.SectionHeader
+import cz.digitalnivedomi.diarium.ui.components.ShimmerBox
+import cz.digitalnivedomi.diarium.ui.components.StatusDot
+import cz.digitalnivedomi.diarium.ui.components.accentGlow
+import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
 import cz.digitalnivedomi.diarium.ui.components.ScreenSubtitle
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.theme.Dimens
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
@@ -76,6 +86,7 @@ private val WarnColor = Color(0xFFF87171)
 fun ExportScreen(deps: ExportDeps, today: LocalDate = LocalDate.now()) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val haptics = rememberHaptics()
 
     var phase by remember { mutableStateOf(ExportPhase.LOADING) }
     var entries by remember { mutableStateOf<List<ExportEntry>>(emptyList()) }
@@ -98,7 +109,10 @@ fun ExportScreen(deps: ExportDeps, today: LocalDate = LocalDate.now()) {
                 // Built off the main thread: a multi-year diary is a multi-megabyte string.
                 val csv = withContext(Dispatchers.Default) { CsvExport.build(text) }
                 writeCsvToUri(context, uri, csv)
-                    .onSuccess { bytes -> status = ExportState.savedMessage(text.size, bytes) }
+                    .onSuccess { bytes ->
+                        haptics.success()
+                        status = ExportState.savedMessage(text.size, bytes)
+                    }
                     .onFailure { error -> status = ExportState.saveFailedMessage(error.message) }
             }
         }
@@ -139,13 +153,22 @@ fun ExportScreen(deps: ExportDeps, today: LocalDate = LocalDate.now()) {
         when (phase) {
             ExportPhase.LOADING -> GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    BrandSpinner()
+                    StatusDot(accent = IndigoLight)
                     Spacer(Modifier.width(12.dp))
                     Text(
                         text = ExportState.LOADING_LABEL,
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary,
                     )
+                }
+                VSpace(Spacing.block)
+                repeat(3) { line ->
+                    ShimmerBox(
+                        modifier = Modifier
+                            .fillMaxWidth(if (line == 2) 0.55f else 1f)
+                            .height(Dimens.skeletonLine),
+                    )
+                    if (line < 2) VSpace(Spacing.tight)
                 }
             }
 
@@ -163,11 +186,19 @@ fun ExportScreen(deps: ExportDeps, today: LocalDate = LocalDate.now()) {
                     modifier = Modifier.testTag(ExportStatusTag),
                 )
                 VSpace(Spacing.block)
-                OutlinedButton(
+                Button(
                     onClick = { reloadTick++ },
-                    modifier = Modifier.testTag(ExportRetryButtonTag),
+                    shape = RoundedCornerShape(Dimens.radiusCard),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = WarnColor.copy(alpha = 0.16f),
+                        contentColor = WarnColor,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(Dimens.controlHeight)
+                        .testTag(ExportRetryButtonTag),
                 ) {
-                    Text(ExportState.RETRY)
+                    Text(ExportState.RETRY, fontWeight = FontWeight.SemiBold)
                 }
             }
 
@@ -217,15 +248,29 @@ fun ExportScreen(deps: ExportDeps, today: LocalDate = LocalDate.now()) {
                     color = TextSecondary,
                 )
                 VSpace(Spacing.block)
-                OutlinedButton(
+                Button(
                     onClick = {
+                        haptics.light()
                         pending = entries
                         status = null
                         createDocument.launch(ExportState.fileName(today))
                     },
-                    modifier = Modifier.testTag(ExportSaveButtonTag),
+                    shape = RoundedCornerShape(Dimens.radiusCard),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Indigo,
+                        contentColor = Color.White,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(Dimens.controlHeight)
+                        .accentGlow(Indigo, alpha = 0.30f)
+                        .testTag(ExportSaveButtonTag),
                 ) {
-                    Text(ExportState.SAVE_ACTION)
+                    Text(
+                        text = ExportState.SAVE_ACTION,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
                 status?.let { message ->
                     VSpace(Spacing.tight)
@@ -247,11 +292,7 @@ fun ExportScreen(deps: ExportDeps, today: LocalDate = LocalDate.now()) {
         }
 
         GlassCard(modifier = Modifier.fillMaxWidth()) {
-            Text(
-                text = "Co soubor obsahuje",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary,
-            )
+            SectionHeader(title = "Co soubor obsahuje")
             VSpace(Spacing.tight)
             Text(
                 text = "Jeden řádek na den, od nejstaršího. Hlavička: ${CsvExport.headerLine()}",

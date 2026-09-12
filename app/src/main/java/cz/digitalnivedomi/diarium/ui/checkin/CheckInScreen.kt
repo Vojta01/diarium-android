@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -18,7 +20,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
@@ -46,7 +50,10 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.ScreenTimeSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.SleepSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.StressSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.WeatherSection
+import cz.digitalnivedomi.diarium.ui.components.GlassCard
+import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
+import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
@@ -141,6 +148,13 @@ fun CheckInScreen(
             ?: return Result.failure(IllegalStateException("Ukládání vyžaduje přihlášení."))
         val date = holder.date
         return repo.save(holder.entry, date).onSuccess { drafts?.clear(date) }
+    }
+
+    val haptics = rememberHaptics()
+
+    // A saved check-in gets a physical confirmation instead of a silent swap.
+    LaunchedEffect(state.saved) {
+        if (state.saved) haptics.success()
     }
 
     fun save() {
@@ -403,13 +417,23 @@ fun CheckInScreen(
         ) { save() }
 
         if (state.saved) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "✓ Uloženo",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Indigo,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Spacer(Modifier.height(10.dp))
+            GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "✓",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = IndigoLight,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = "Uloženo",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary,
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(48.dp))

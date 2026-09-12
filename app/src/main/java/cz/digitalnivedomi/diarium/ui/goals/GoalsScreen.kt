@@ -18,7 +18,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -45,6 +47,7 @@ import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
+import androidx.compose.ui.graphics.Brush
 import cz.digitalnivedomi.diarium.ui.theme.SuccessGreen
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
@@ -349,20 +352,23 @@ private fun GoalCard(item: GoalProgress, onEdit: () -> Unit, onDelete: () -> Uni
 @Composable
 private fun GoalProgressBar(fraction: Float, accent: Color) {
     val shape = RoundedCornerShape(999.dp)
+    val target = fraction.coerceIn(0f, 1f)
+    val animated by animateFloatAsState(targetValue = target, label = "goalProgress")
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(6.dp)
+            .height(8.dp)
             .clip(shape)
             .background(Color.White.copy(alpha = 0.08f)),
     ) {
-        if (fraction > 0f) {
+        if (animated > 0f) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                    .fillMaxWidth(animated)
                     .fillMaxHeight()
                     .clip(shape)
-                    .background(accent),
+                    .background(Brush.horizontalGradient(listOf(accent, IndigoLight))),
             )
         }
     }

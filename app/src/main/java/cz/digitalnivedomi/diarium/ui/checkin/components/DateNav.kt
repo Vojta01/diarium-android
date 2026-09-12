@@ -30,7 +30,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
+import androidx.compose.ui.graphics.Brush
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
+import cz.digitalnivedomi.diarium.ui.components.accentGlow
+import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
+import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
@@ -125,15 +129,24 @@ fun PrimaryButton(
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(16.dp)
+    val haptics = rememberHaptics()
     Box(
         modifier = modifier
             .fillMaxWidth()
             .testTagOrEmpty(testTag)
             .clip(shape)
-            .background(
-                if (enabled) Indigo.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.06f),
+            .then(
+                if (enabled) {
+                    Modifier.background(Brush.horizontalGradient(listOf(Indigo, IndigoLight)))
+                } else {
+                    Modifier.background(Color.White.copy(alpha = 0.06f))
+                },
             )
-            .clickable(enabled = enabled) { onClick() }
+            .then(if (enabled) Modifier.accentGlow(Indigo, alpha = 0.30f) else Modifier)
+            .clickable(enabled = enabled) {
+                haptics.light()
+                onClick()
+            }
             .padding(vertical = 14.dp),
         contentAlignment = Alignment.Center,
     ) {

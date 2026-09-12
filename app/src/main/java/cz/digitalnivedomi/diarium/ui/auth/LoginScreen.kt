@@ -37,7 +37,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
+import cz.digitalnivedomi.diarium.ui.components.GlowDisc
+import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.accentGlow
+import cz.digitalnivedomi.diarium.ui.theme.Dimens
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
@@ -76,7 +80,11 @@ fun LoginScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        BrandMark()
+        StaggeredItem(index = 0) {
+            GlowDisc(accent = Indigo, size = 104.dp) {
+                BrandMark()
+            }
+        }
 
         Spacer(Modifier.height(20.dp))
         Text(
@@ -94,12 +102,14 @@ fun LoginScreen(
         )
 
         Spacer(Modifier.height(24.dp))
-        GlassCard(modifier = Modifier.fillMaxWidth()) {
-            FeatureLine("Nálada, spánek, aktivity a poznámky")
-            VSpace(12)
-            FeatureLine("Kalendář, série a přehledy")
-            VSpace(12)
-            FeatureLine("Připomínky a AI reflexe")
+        StaggeredItem(index = 1) {
+            GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+                FeatureLine("Nálada, spánek, aktivity a poznámky")
+                VSpace(12)
+                FeatureLine("Kalendář, série a přehledy")
+                VSpace(12)
+                FeatureLine("Připomínky a AI reflexe")
+            }
         }
 
         Spacer(Modifier.height(24.dp))
@@ -108,21 +118,22 @@ fun LoginScreen(
             enabled = !isSigningIn,
             shape = MaterialTheme.shapes.medium,
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color.White,
-                contentColor = Ink,
-                disabledContainerColor = Color.White.copy(alpha = 0.55f),
-                disabledContentColor = TextTertiary,
+                containerColor = Indigo,
+                contentColor = Color.White,
+                disabledContainerColor = Indigo.copy(alpha = 0.45f),
+                disabledContentColor = Color.White.copy(alpha = 0.70f),
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp)
+                .height(Dimens.controlHeightLarge)
+                .accentGlow(Indigo, alpha = 0.35f)
                 .testTag(GoogleSignInButtonTag),
         ) {
             if (isSigningIn) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
                     strokeWidth = 2.dp,
-                    color = Indigo,
+                    color = Color.White,
                 )
             } else {
                 GoogleGlyph(modifier = Modifier.size(20.dp))
@@ -145,13 +156,18 @@ fun LoginScreen(
         }
 
         if (errorMessage != null) {
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = errorMessage,
-                style = MaterialTheme.typography.bodyMedium,
-                color = ErrorRed,
-                textAlign = TextAlign.Center,
-            )
+            Spacer(Modifier.height(14.dp))
+            GlassCard(modifier = Modifier.fillMaxWidth(), accent = ErrorRed) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(text = "⚠️", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = errorMessage,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ErrorRed,
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(20.dp))

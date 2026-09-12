@@ -20,6 +20,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,13 +30,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cz.digitalnivedomi.diarium.ui.components.accentGlow
+import cz.digitalnivedomi.diarium.ui.components.gradientBorder
+import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
@@ -147,17 +154,32 @@ fun EmojiOption(
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(16.dp)
+    val haptics = rememberHaptics()
+    // The selected tile grows with an animation instead of snapping size, so a
+    // tap reads as a physical selection.
+    val scale by animateFloatAsState(targetValue = if (selected) 1.06f else 1f, label = "emojiScale")
+
     Column(
         modifier = modifier
             .testTagOrEmpty(testTag)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
             .clip(shape)
-            .background(if (selected) accent.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.05f))
-            .border(
-                width = 1.dp,
-                color = if (selected) accent.copy(alpha = 0.85f) else Outline.copy(alpha = 0.5f),
-                shape = shape,
+            .background(if (selected) accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.05f))
+            .then(
+                if (selected) {
+                    Modifier.gradientBorder(shape, listOf(accent, IndigoLight), width = 1.5.dp)
+                } else {
+                    Modifier.border(1.dp, Outline.copy(alpha = 0.5f), shape)
+                },
             )
-            .clickable { onClick() }
+            .then(if (selected) Modifier.accentGlow(accent, alpha = 0.18f) else Modifier)
+            .clickable {
+                haptics.selection()
+                onClick()
+            }
             .padding(horizontal = 8.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -219,22 +241,37 @@ fun TogglePill(
     testTag: String? = null,
     onClick: () -> Unit,
 ) {
+    val haptics = rememberHaptics()
+    val travel by animateFloatAsState(targetValue = if (checked) 1f else 0f, label = "toggle")
+    val track = if (checked) {
+        Modifier.background(Brush.horizontalGradient(listOf(accent, IndigoLight)))
+    } else {
+        Modifier.background(Color.White.copy(alpha = 0.10f))
+    }
+
     Box(
         modifier = modifier
             .testTagOrEmpty(testTag)
             .size(width = 44.dp, height = 26.dp)
             .clip(CircleShape)
-            .background(if (checked) accent.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.10f))
-            .border(1.dp, if (checked) accent else Outline.copy(alpha = 0.6f), CircleShape)
-            .clickable { onClick() }
+            .then(track)
+            .then(
+                if (checked) Modifier.gradientBorder(CircleShape, listOf(accent, IndigoLight), width = 1.dp)
+                else Modifier.border(1.dp, Outline.copy(alpha = 0.6f), CircleShape),
+            )
+            .clickable {
+                haptics.light()
+                onClick()
+            }
             .padding(3.dp),
-        contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
+        contentAlignment = Alignment.CenterStart,
     ) {
         Box(
             Modifier
+                .offset(x = 18.dp * travel)
                 .size(20.dp)
                 .clip(CircleShape)
-                .background(Color.White.copy(alpha = if (checked) 0.95f else 0.5f)),
+                .background(Color.White.copy(alpha = 0.5f + 0.45f * travel)),
         )
     }
 }
@@ -251,17 +288,23 @@ fun SelectableChip(
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(20.dp)
+    val haptics = rememberHaptics()
     Box(
         modifier = modifier
             .testTagOrEmpty(testTag)
             .clip(shape)
-            .background(if (selected) accent.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.06f))
-            .border(
-                width = 1.dp,
-                color = if (selected) accent.copy(alpha = 0.85f) else Outline.copy(alpha = 0.55f),
-                shape = shape,
+            .background(if (selected) accent.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.06f))
+            .then(
+                if (selected) {
+                    Modifier.gradientBorder(shape, listOf(accent, IndigoLight), width = 1.5.dp)
+                } else {
+                    Modifier.border(1.dp, Outline.copy(alpha = 0.55f), shape)
+                },
             )
-            .clickable { onClick() }
+            .clickable {
+                haptics.selection()
+                onClick()
+            }
             // Bigger icons need a taller pill; 46dp also clears the 44dp
             // minimum touch target on phones.
             .heightIn(min = CheckInIconSize.chipMinHeight)
