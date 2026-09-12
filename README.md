@@ -18,6 +18,26 @@ stejný, takže se nová verze **instaluje přes předchozí** (data zůstanou).
 
 ---
 
+## alpha20 — Přehled a Statistiky na dotek
+
+- **Návrat zpět je okamžitý a vrátí tě tam, kde jsi byl** — i se zaskrolováním.
+  Stav obrazovek se teď drží nad navigací, takže se Přehled při návratu gestem
+  **nenačítá znovu od začátku** a nebliknou šedé kostry; ty se ukážou jen při
+  úplně prvním načtení (nebo když se obnovují data na pozadí, čísla zůstanou).
+- **Tendence u čísel na Přehledu**: u *Času na obrazovce*, *Odemknutí* i *Nálady*
+  je šipka nahoru/dolu s **procentem změny proti předchozímu týdnu** a krátká věta,
+  co číslo znamená (např. kolik minut denně v průměru, kolik odemknutí denně,
+  jaká známka nálady to je a kolik dní ze 7 má záznam).
+- **Klepnutí na den v pruhu nálady** (posledních 7 dní) otevře **celý den** —
+  náladu, vděčnosti, AI reflexi, kvalitu spánku, energii i čas na obrazovce
+  a odemknutí. Funguje i pro dny bez záznamu (řekne, že záznam chybí).
+- **Karty Čas na obrazovce / Odemknutí / Nálada jsou klikatelné** — otevřou
+  okno s rozkladem: den po dni, průměr, nejlepší a nejhorší den.
+- **Statistiky: *Nejlepší den* a *Nejhorší den*** jsou teď karty s datem, dnem
+  v týdnu, náladou a kontextem (čas na obrazovce · odemknutí · aktivity).
+  Klepnutím se otevře **celý záznam toho dne**; dlouhý seznam aktivit se vejde
+  do okna a dá se v něm posouvat.
+
 ## alpha19 — grafy a heatmapa
 
 - **Sloupce v grafech** mají gradient (světlejší nahoře) a **kulaté konce** místo
