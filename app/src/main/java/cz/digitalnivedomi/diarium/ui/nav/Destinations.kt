@@ -50,6 +50,14 @@ object Routes {
      * Framework, so the export needs no permission and no server round-trip.
      */
     const val EXPORT = "export"
+
+    /**
+     * AI reports sub-screen: the newest weekly and monthly summary the backend has
+     * written for this account. It has no tab of its own — it is opened from Nastavení,
+     * read, and left again; generating a new one is a server-side job the screen only
+     * kicks off and then re-reads.
+     */
+    const val REPORTS = "reports"
 }
 
 /** Routes that get a tab in the bottom bar, in display order. */

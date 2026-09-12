@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import cz.digitalnivedomi.diarium.auth.AuthManager
@@ -159,7 +160,9 @@ class AuthGateTest {
         compose.onNodeWithText("Historie").assertExists() // authenticated shell
         compose.onNodeWithText("Nastavení").performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("Odhlásit se").performClick()
+        // The settings column scrolls: entries added above push the account card
+        // below the fold, so scroll to the button before pressing it.
+        compose.onNodeWithText("Odhlásit se").performScrollTo().performClick()
         compose.waitForIdle()
 
         assertEquals(AuthStatus.UNAUTHENTICATED, holder.status.value)

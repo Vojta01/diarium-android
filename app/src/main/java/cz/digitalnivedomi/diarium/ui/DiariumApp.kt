@@ -25,6 +25,9 @@ import cz.digitalnivedomi.diarium.ui.scales.ScalesDeps
 import cz.digitalnivedomi.diarium.ui.scales.ScalesScreen
 import cz.digitalnivedomi.diarium.ui.templates.TemplatesDeps
 import cz.digitalnivedomi.diarium.ui.templates.TemplatesScreen
+import cz.digitalnivedomi.diarium.ui.reports.ReportsDeps
+import cz.digitalnivedomi.diarium.ui.reports.ReportsScreen
+import cz.digitalnivedomi.diarium.ui.reports.ReportsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -290,6 +293,15 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                         ExportScreen(deps = deps)
                     }
                 }
+                composable(Routes.REPORTS) {
+                    val context = LocalContext.current
+                    val deps = remember(context) { ReportsDeps.forContext(context) }
+                    // The chrome carries the title, which comes from the same object the
+                    // screen uses, so the two cannot drift apart.
+                    SubScreenChrome(title = ReportsState.TITLE, onBack = { navController.popBackStack() }) {
+                        ReportsScreen(deps = deps)
+                    }
+                }
             }
         }
     }
@@ -373,6 +385,25 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
                 title = "Notifikace",
                 hint = "Časy připomenutí, reporty a čas na obrazovce",
                 onClick = { onOpen(Routes.NOTIFICATIONS) },
+            )
+        }
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "Přehledy",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            VSpace(4)
+            Text(
+                text = "Týdenní a měsíční souhrn deníku, který pro tebe napíše AI.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+            VSpace(6)
+            SubScreenEntry(
+                emoji = "🤖",
+                title = ReportsState.TITLE,
+                hint = "Co se v deníku objevilo za týden a za měsíc",
+                onClick = { onOpen(Routes.REPORTS) },
             )
         }
         GlassCard(modifier = Modifier.fillMaxWidth()) {

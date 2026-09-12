@@ -45,6 +45,14 @@ class SessionContext(private val sessionStore: SessionStore? = null) {
             ?.takeIf { it.isNotBlank() }
     }
 
+    /**
+     * The signed-in user's access token, refreshed when it has expired (delegates to
+     * [SessionStore.validAccessToken]), or null when there is no session. Data-layer
+     * classes that authenticate a request against our own server — as opposed to
+     * PostgREST, which a [SupabaseClient] already signs — need the token itself.
+     */
+    fun validAccessToken(): String? = sessionStore?.validAccessToken()
+
     companion object {
         /** Decodes the (unverified) `sub` claim — the user id, for RLS-scoped rows. */
         fun jwtSub(token: String): String? = try {
