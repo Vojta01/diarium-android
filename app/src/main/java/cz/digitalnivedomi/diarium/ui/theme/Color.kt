@@ -40,6 +40,18 @@ val ErrorRed = Color(0xFFF87171)
 val SuccessGreen = Color(0xFF34D399)
 val WarningAmber = Color(0xFFFBBF24)
 
+/**
+ * The "something needs attention" colour.
+ *
+ * Same value as [ErrorRed] on purpose — a warning and an error should not be two
+ * different reds. It exists as a name so screens that mean *warning* say so
+ * instead of each keeping its own private copy (three screens used to).
+ */
+val WarnColor = ErrorRed
+
+/** Scrim over content behind a dialog, sheet or blocking spinner (ink at ~80%). */
+val OverlayScrim = Color(0xCC07070B)
+
 // --- Mood scale (1..5) --------------------------------------------------------
 // One palette for check-in, dashboard, calendar and stats, so a mood always
 // looks the same wherever it appears.

@@ -43,7 +43,7 @@ import cz.digitalnivedomi.diarium.notifications.NotificationPrefs
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
-import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
+import cz.digitalnivedomi.diarium.ui.components.ScreenSubtitle
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
@@ -87,10 +87,7 @@ fun NotificationsSettingsScreen(deps: NotificationsSettingsDeps) {
             .padding(top = Spacing.screenTop, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
-        ScreenHeader(
-            title = "Nastavení notifikací",
-            subtitle = "Připomenutí, reporty a čas na obrazovce.",
-        )
+        ScreenSubtitle(text = "Připomenutí, reporty a čas na obrazovce.")
 
         // ── Připomenutí ───────────────────────────────────────────────────────
         GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {

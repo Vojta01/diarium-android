@@ -2,18 +2,20 @@ package cz.digitalnivedomi.diarium.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,19 +25,24 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cz.digitalnivedomi.diarium.ui.theme.Dimens
+import cz.digitalnivedomi.diarium.ui.theme.Gradients
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Ink
@@ -47,18 +54,32 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.Violet
 
 /**
- * Shared "glass" building blocks.
+ * Shared "glass" building blocks — the surface every screen is built from.
  *
- * A glass surface is a translucent white overlay with a light top-to-bottom
- * gradient border, sitting on the ink background. Never use flat grey here —
- * it kills the depth and makes the app look like default Material.
+ * A glass surface is a translucent white overlay on the ink background with a
+ * gradient fill, a hairline highlight along its top edge and a gradient border
+ * that dissolves into the fill. Never use flat grey here — it kills the depth and
+ * makes the app look like default Material.
+ *
+ * Two layers, pick per situation:
+ * - [GlassCard]  — padded, `ColumnScope`: 95% of the app (title, rows, divider…).
+ * - [GlassSurface] — padded by default, `BoxScope`: charts, overlays, badges,
+ *   anything that positions children itself.
+ * For a surface that is not a container at all (a sheet, a dialog, an inner pane),
+ * use `Modifier.glassSurface(shape)` directly.
+ *
+ * Every visual richness knob is **off by default except [sheen]** — `elevated`,
+ * `glow` and `onClick` are opt-in, so existing call sites keep their exact
+ * signature and can be upgraded one at a time.
  */
 
-/** Deep ambient background: vertical ink wash + two soft accent glows. */
+/** Deep ambient background: vertical ink wash + two soft accent glows (+ optional grid). */
 @Composable
 fun DiariumBackground(
     modifier: Modifier = Modifier,
     accent: Color = Indigo,
+    grid: Boolean = false,
+    gridCell: Dp = Dimens.gridCell,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
@@ -87,69 +108,216 @@ fun DiariumBackground(
                     center = Offset(size.width * -0.15f, size.height * 0.92f),
                 )
             },
-        content = content,
-    )
+    ) {
+        if (grid) GridOverlay(cell = gridCell)
+        content()
+    }
 }
 
 /**
  * The one corner radius every glass surface is cut to. Named so the cards cannot
  * drift apart as new ones are added.
  */
-val GlassCornerRadius = 20.dp
+val GlassCornerRadius = Dimens.radiusCard
+
+// -----------------------------------------------------------------------------
+// Modifiers — the glass treatment, reusable outside the two container composables
+// -----------------------------------------------------------------------------
 
 /**
- * Translucent card. [accent] tints the fill and border, which is how the app
- * marks "this card is about X" (mood, screen time, streak…) without introducing
- * a second colour system.
+ * Turns any box into a glass pane: gradient fill, top highlight, glowing accent
+ * wash and a gradient border, clipped to [shape].
  *
- * The fill is a three-stop gradient (brighter at the top-left, deeper into the
- * card) so the surface reads as a raised pane of glass rather than a faint wash;
- * the border uses the same three stops so its bright edge dissolves gradually
- * instead of snapping to nothing after the first pixel.
+ * Use it on a `Box`/`Column` the composables do not cover (a bottom sheet, a
+ * dialog, an inner pane, a chart frame). Prefer [GlassCard]/[GlassSurface] when a
+ * plain container is enough — they apply the standard padding as well.
+ *
+ * @param elevated lifts the first fill stop so this pane sits above its neighbours.
+ * @param sheen    the 1dp highlight along the top edge (default on — it is what
+ *                 makes the surface read as glass).
+ * @param glow     adds an accent radial wash bleeding from the top-left corner.
+ */
+fun Modifier.glassSurface(
+    shape: Shape,
+    accent: Color? = null,
+    elevated: Boolean = false,
+    sheen: Boolean = true,
+    glow: Boolean = false,
+    borderWidth: Dp = Dimens.border,
+): Modifier {
+    var modifier = this
+        .clip(shape)
+        .background(Brush.linearGradient(Gradients.glassFill(accent, elevated)))
+
+    if (glow) {
+        modifier = modifier.accentGlow(
+            accent = accent ?: Color.White,
+            alpha = if (accent == null) 0.10f else 0.22f,
+        )
+    }
+    if (sheen) {
+        modifier = if (accent == null) {
+            modifier.topSheen(accent = Color.White, alpha = 0.10f)
+        } else {
+            modifier.topSheen(accent = accent, alpha = 0.18f)
+        }
+    }
+
+    return modifier.gradientBorder(
+        shape = shape,
+        colors = Gradients.glassBorder(accent, strong = glow),
+        width = borderWidth,
+    )
+}
+
+/**
+ * A 1dp border painted with a colour list (diagonal by default), so the edge is
+ * pale at the top-left and dissolves towards the bottom-right instead of snapping
+ * to nothing after the first pixel.
+ *
+ * Use with `Gradients.glassBorder(accent)` for a standard glass edge, or with any
+ * ramp from `Gradients` for a brand-coloured one.
+ */
+fun Modifier.gradientBorder(
+    shape: Shape,
+    colors: List<Color>,
+    width: Dp = Dimens.border,
+    vertical: Boolean = false,
+): Modifier = border(width = width, brush = Gradients.border(colors, vertical = vertical), shape = shape)
+
+/**
+ * The highlight along the top edge of a pane of glass. Apply **after** `clip(shape)`
+ * so the corners stay clean.
+ *
+ * [accent] tints the highlight; white is the neutral sheen, the surface's accent is
+ * what makes an accent card look lit from above.
+ */
+fun Modifier.topSheen(
+    accent: Color = Color.White,
+    alpha: Float = 0.10f,
+    thickness: Dp = Dimens.border,
+): Modifier = drawBehind {
+    val sheenHeight = thickness.toPx()
+    drawRect(
+        brush = Brush.horizontalGradient(
+            listOf(Color.Transparent, accent.copy(alpha = alpha), Color.Transparent),
+        ),
+        size = Size(size.width, sheenHeight),
+    )
+}
+
+/**
+ * A soft radial wash of [accent] bleeding in from the top-left corner, drawn
+ * inside the surface's own bounds (no API-31 blur, no RenderEffect — it is a plain
+ * radial gradient, so it is safe on every supported device).
+ *
+ * Apply after the fill (`clip` → `background` → `accentGlow`) and before the content.
+ */
+fun Modifier.accentGlow(
+    accent: Color = Indigo,
+    alpha: Float = 0.20f,
+): Modifier = drawBehind {
+    val radius = size.maxDimension * 0.95f
+    drawCircle(
+        brush = Brush.radialGradient(
+            colors = listOf(accent.copy(alpha = alpha), Color.Transparent),
+            center = Offset.Zero,
+            radius = radius,
+        ),
+        radius = radius,
+        center = Offset.Zero,
+    )
+}
+
+// -----------------------------------------------------------------------------
+// Containers
+// -----------------------------------------------------------------------------
+
+/**
+ * Translucent card. [accent] tints the fill, border and top highlight, which is how
+ * the app marks "this card is about X" (mood, screen time, streak…) without
+ * introducing a second colour system.
+ *
+ * Opt-in extras — all defaults keep the previous look and signature:
+ * - [elevated] — brighter fill; for the one card that matters most on a screen.
+ * - [glow]     — accent wash from the top-left + a stronger border.
+ * - [onClick]   — turns the card into a pressable surface: it scales slightly under
+ *   the finger, fires a light haptic and shows no ripple.
  */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(GlassCornerRadius),
     accent: Color? = null,
+    elevated: Boolean = false,
+    sheen: Boolean = true,
+    glow: Boolean = false,
+    onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val fillColors = if (accent == null) {
-        listOf(
-            Color.White.copy(alpha = 0.095f),
-            Color.White.copy(alpha = 0.045f),
-            Color.White.copy(alpha = 0.028f),
-        )
+    val interaction = remember { MutableInteractionSource() }
+    val scale = rememberPressScale(interaction, enabled = onClick != null)
+    val feedback = rememberHaptics()
+    val onCardClick = onClick
+
+    val pressModifier = if (onCardClick == null) {
+        Modifier
     } else {
-        listOf(
-            accent.copy(alpha = 0.26f),
-            accent.copy(alpha = 0.11f),
-            accent.copy(alpha = 0.05f),
-        )
-    }
-    val borderColors = if (accent == null) {
-        listOf(
-            Color.White.copy(alpha = 0.13f),
-            Color.White.copy(alpha = 0.05f),
-            Color.White.copy(alpha = 0.015f),
-        )
-    } else {
-        listOf(
-            accent.copy(alpha = 0.52f),
-            accent.copy(alpha = 0.18f),
-            accent.copy(alpha = 0.06f),
-        )
+        Modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+            ) {
+                feedback.light()
+                onCardClick()
+            }
     }
 
     Column(
         modifier = modifier
-            .clip(shape)
-            .background(Brush.linearGradient(fillColors))
-            .border(width = 1.dp, brush = Brush.linearGradient(borderColors), shape = shape)
+            .then(pressModifier)
+            .glassSurface(shape = shape, accent = accent, elevated = elevated, sheen = sheen, glow = glow)
             .padding(Spacing.cardPadding),
         content = content,
     )
 }
+
+/**
+ * Same glass as [GlassCard] but with `BoxScope` content and a configurable inner
+ * padding, for surfaces that place their children themselves: charts, image tiles,
+ * a badge pinned to a corner, a full-bleed divider.
+ *
+ * The default [contentPadding] matches [GlassCard]'s, so the two are visually
+ * interchangeable; pass `PaddingValues(0.dp)` for edge-to-edge content.
+ */
+@Composable
+fun GlassSurface(
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(GlassCornerRadius),
+    accent: Color? = null,
+    elevated: Boolean = false,
+    sheen: Boolean = true,
+    glow: Boolean = false,
+    contentPadding: PaddingValues = PaddingValues(Spacing.cardPadding),
+    contentAlignment: Alignment = Alignment.TopStart,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .glassSurface(shape = shape, accent = accent, elevated = elevated, sheen = sheen, glow = glow)
+            .padding(contentPadding),
+        contentAlignment = contentAlignment,
+        content = content,
+    )
+}
+
+// -----------------------------------------------------------------------------
+// Small pieces
+// -----------------------------------------------------------------------------
 
 /** Small tinted chip — labels, counts, states. */
 @Composable
@@ -211,22 +379,90 @@ fun GlassDivider(modifier: Modifier = Modifier) {
     )
 }
 
-/** Decorative rounded square used behind icons. */
+/**
+ * Decorative rounded square used behind icons.
+ *
+ * @param gradient fills the badge with a diagonal gradient of [accent] instead of
+ *                 a flat tint — use it for the leading badge of the one card that
+ *                 should draw the eye.
+ */
 @Composable
 fun IconBadge(
     modifier: Modifier = Modifier,
     accent: Color = Indigo,
     size: Int = 40,
+    gradient: Boolean = false,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val shape = RoundedCornerShape((size / 3).dp)
+    val surface = modifier
+        .size(size.dp)
+        .clip(shape)
+
+    Box(
+        modifier = if (gradient) {
+            surface
+                .background(Brush.linearGradient(listOf(accent.copy(alpha = 0.34f), accent.copy(alpha = 0.10f))))
+                .gradientBorder(shape = shape, colors = listOf(accent.copy(alpha = 0.48f), accent.copy(alpha = 0.12f)))
+                .topSheen(accent = Color.White, alpha = 0.14f)
+        } else {
+            surface
+                .background(accent.copy(alpha = 0.18f))
+                .border(Dimens.border, accent.copy(alpha = 0.30f), shape)
+        },
+        contentAlignment = Alignment.Center,
+        content = content,
+    )
+}
+
+/**
+ * A glowing disc behind an emoji or glyph — the app's "here is the subject" anchor
+ * (empty states, mood of the day, an unlocked badge).
+ *
+ * [accent] tints both the radial fill and the hairline ring.
+ */
+@Composable
+fun GlowDisc(
+    modifier: Modifier = Modifier,
+    accent: Color = Indigo,
+    size: Dp = Dimens.glowDisc,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
         modifier = modifier
-            .size(size.dp)
-            .clip(RoundedCornerShape((size / 3).dp))
-            .background(accent.copy(alpha = 0.18f))
-            .border(1.dp, accent.copy(alpha = 0.30f), RoundedCornerShape((size / 3).dp)),
+            .size(size)
+            .clip(CircleShape)
+            .background(
+                Brush.radialGradient(
+                    listOf(accent.copy(alpha = 0.32f), accent.copy(alpha = 0.05f)),
+                ),
+            )
+            .border(Dimens.border, accent.copy(alpha = 0.32f), CircleShape),
         contentAlignment = Alignment.Center,
         content = content,
+    )
+}
+
+/**
+ * The vertical accent bar that marks a screen or section title.
+ *
+ * [colors] is the ramp; the default is the brand indigo. Pass a custom ramp
+ * (e.g. `listOf(IndigoLight, accent)`) to tie a section to its accent colour.
+ */
+@Composable
+fun AccentBar(
+    modifier: Modifier = Modifier,
+    colors: List<Color> = Gradients.brand,
+    width: Dp = Dimens.accentBarWidth,
+    height: Dp = Dimens.accentBarHeight,
+    radius: Dp = 2.dp,
+) {
+    Box(
+        modifier = modifier
+            .width(width)
+            .height(height)
+            .clip(RoundedCornerShape(radius))
+            .background(Brush.verticalGradient(colors)),
     )
 }
 
@@ -247,12 +483,16 @@ fun VSpace(dp: Dp) {
  * anchored by an indigo accent bar and a soft indigo glow bleeding in from the
  * top-left so the header belongs to the brand instead of floating as bare text on
  * the ink. Dashboard, history, stats and settings all use this.
+ *
+ * [accent] tints the glow and the lower stop of the bar — leave it alone unless the
+ * screen itself has a colour (an error screen, a themed sub-flow).
  */
 @Composable
 fun ScreenHeader(
     title: String,
     subtitle: String,
     modifier: Modifier = Modifier,
+    accent: Color = Indigo,
 ) {
     Column(
         modifier = modifier
@@ -262,7 +502,7 @@ fun ScreenHeader(
                 // per layout, and it keeps the title from sitting on flat black.
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(Indigo.copy(alpha = 0.22f), Color.Transparent),
+                        colors = listOf(accent.copy(alpha = 0.22f), Color.Transparent),
                         center = Offset(0f, 0f),
                         radius = size.width * 0.85f,
                     ),
@@ -272,13 +512,7 @@ fun ScreenHeader(
             },
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .height(22.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(Brush.verticalGradient(listOf(IndigoLight, Indigo))),
-            )
+            AccentBar(colors = listOf(IndigoLight, accent))
             Spacer(Modifier.width(10.dp))
             Text(
                 text = title,
@@ -298,9 +532,37 @@ fun ScreenHeader(
 }
 
 /**
- * Friendly, on-brand empty state: a glowing indigo disc with an emoji, a short
- * title, one explanatory line and an optional action. Used instead of bare grey
- * text on the dashboard, history and stats screens.
+ * The context line under a sub-screen's own chrome title. Sub-screens draw their title
+ * (and back arrow) in `SubScreenChrome`, so a second big title here would print the
+ * same words twice — this shows only the accent-barred context line.
+ */
+@Composable
+fun ScreenSubtitle(
+    text: String,
+    modifier: Modifier = Modifier,
+    accent: Color = Indigo,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AccentBar(colors = listOf(IndigoLight, accent))
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
+        )
+    }
+}
+
+/**
+ * Friendly, on-brand empty state: a glowing disc with an emoji, a short title, one
+ * explanatory line and an optional action. Used instead of bare grey text on the
+ * dashboard, history and stats screens.
+ *
+ * [accent] tints the disc — pass `SuccessGreen`/`WarnColor` when the empty state is
+ * really a state (nothing left to do / something failed).
  */
 @Composable
 fun EmptyState(
@@ -308,24 +570,14 @@ fun EmptyState(
     title: String,
     message: String,
     modifier: Modifier = Modifier,
+    accent: Color = Indigo,
     action: (@Composable () -> Unit)? = null,
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
-            modifier = Modifier
-                .size(64.dp)
-                .clip(CircleShape)
-                .background(
-                    Brush.radialGradient(
-                        listOf(Indigo.copy(alpha = 0.32f), Indigo.copy(alpha = 0.05f)),
-                    ),
-                )
-                .border(1.dp, Indigo.copy(alpha = 0.32f), CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
+        GlowDisc(accent = accent, size = Dimens.glowDisc) {
             Text(text = emoji, fontSize = 28.sp)
         }
         VSpace(Spacing.block)

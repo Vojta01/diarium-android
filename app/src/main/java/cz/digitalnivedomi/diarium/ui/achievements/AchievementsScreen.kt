@@ -42,6 +42,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cz.digitalnivedomi.diarium.ui.components.EmptyState
+import cz.digitalnivedomi.diarium.ui.components.GlassCard
+import cz.digitalnivedomi.diarium.ui.components.ScreenSubtitle
+import cz.digitalnivedomi.diarium.ui.components.ShimmerBox
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.Brush
+import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.core.achievements.AchievementCategory
 import cz.digitalnivedomi.diarium.core.achievements.AchievementStatus
 import cz.digitalnivedomi.diarium.core.achievements.AchievementsData
@@ -85,7 +92,7 @@ fun AchievementsScreen(deps: AchievementsDeps, modifier: Modifier = Modifier) {
         }
     }
 
-    Box(modifier = modifier.fillMaxSize().background(BACKGROUND)) {
+    Box(modifier = modifier.fillMaxSize()) {
         when (val current = state) {
             AchievementsUiState.Loading -> LoadingState()
             is AchievementsUiState.Error -> ErrorState(current.message, onRetry = { reload++ })
@@ -118,31 +125,27 @@ private fun ReadyView(data: AchievementsData, onSelect: (AchievementStatus) -> U
 
 @Composable
 private fun Header(data: AchievementsData) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 12.dp),
-    ) {
-        Text(text = "Odznaky", color = TEXT_PRIMARY, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = data.unlockedLabel,
-            color = ACCENT,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
+    ScreenSubtitle(
+        text = data.unlockedLabel,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 10.dp),
+        accent = ACCENT,
+    )
 }
 
 @Composable
 private fun BadgeCard(status: AchievementStatus, onClick: () -> Unit) {
     val unlocked = status.unlocked
-    Card(
+    GlassCard(
         modifier = Modifier
             .fillMaxWidth()
-            .alpha(if (unlocked) 1f else 0.5f)
-            .clickable(onClick = onClick),
+            .alpha(if (unlocked) 1f else 0.55f),
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = CARD_BG),
-        border = BorderStroke(1.dp, if (unlocked) ACCENT.copy(alpha = 0.55f) else CARD_BORDER),
+        accent = if (unlocked) ACCENT else null,
+        elevated = unlocked,
+        glow = unlocked,
+        onClick = onClick,
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp),
@@ -238,7 +241,10 @@ private fun DetailDialog(status: AchievementStatus, onDismiss: () -> Unit) {
 /** A slim rounded bar; drawn with boxes so it needs no experimental progress API. */
 @Composable
 private fun ProgressBar(progress: Float, accent: Color, modifier: Modifier = Modifier) {
-    val fraction = progress.coerceIn(0f, 1f)
+    val fraction by animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        label = "achievementProgress",
+    )
     Box(
         modifier = modifier
             .height(8.dp)
@@ -251,7 +257,7 @@ private fun ProgressBar(progress: Float, accent: Color, modifier: Modifier = Mod
                     .fillMaxWidth(fraction)
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(4.dp))
-                    .background(accent),
+                    .background(Brush.horizontalGradient(listOf(accent, IndigoLight))),
             )
         }
     }
@@ -259,8 +265,20 @@ private fun ProgressBar(progress: Float, accent: Color, modifier: Modifier = Mod
 
 @Composable
 private fun LoadingState() {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator(color = ACCENT)
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp)) {
+        repeat(3) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                repeat(2) {
+                    ShimmerBox(
+                        modifier = Modifier.weight(1f).height(112.dp),
+                        shape = RoundedCornerShape(18.dp),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -270,26 +288,23 @@ private fun ErrorState(message: String, onRetry: () -> Unit) {
         modifier = Modifier.fillMaxSize().padding(32.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(text = "😕", fontSize = 40.sp)
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = message,
-                color = TEXT_PRIMARY,
-                fontSize = 15.sp,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = onRetry,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = ACCENT,
-                    contentColor = Color.White,
-                ),
-            ) {
-                Text("Zkusit znovu")
-            }
-        }
+        EmptyState(
+            emoji = "🏆",
+            title = "Odznaky se nenačetly",
+            message = message,
+            accent = ACCENT,
+            action = {
+                Button(
+                    onClick = onRetry,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ACCENT,
+                        contentColor = Color.White,
+                    ),
+                ) {
+                    Text("Zkusit znovu")
+                }
+            },
+        )
     }
 }
 

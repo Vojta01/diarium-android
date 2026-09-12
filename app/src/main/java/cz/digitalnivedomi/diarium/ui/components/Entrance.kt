@@ -1,5 +1,7 @@
 package cz.digitalnivedomi.diarium.ui.components
 
+import cz.digitalnivedomi.diarium.ui.theme.MotionTokens
+
 /**
  * Timing for the staggered card entrance used by the dashboard, history and stats
  * screens.
@@ -11,11 +13,11 @@ package cz.digitalnivedomi.diarium.ui.components
  * last card starts at most [MAX_MILLIS] after the first, however many there are.
  */
 object Entrance {
-    /** Gap between two consecutive cards. */
-    const val STEP_MILLIS = 55
+    /** Gap between two consecutive cards. Same tempo as every other animation. */
+    const val STEP_MILLIS = MotionTokens.staggerStepMillis
 
     /** Hard ceiling for the whole stagger, so long lists stay snappy. */
-    const val MAX_MILLIS = 330
+    const val MAX_MILLIS = MotionTokens.staggerMaxMillis
 
     /** Milliseconds [index] waits before it starts fading in. Index 0 starts at once. */
     fun delayMillisFor(index: Int): Int {

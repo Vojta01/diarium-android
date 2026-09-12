@@ -35,7 +35,7 @@ import cz.digitalnivedomi.diarium.core.data.AiReport
 import cz.digitalnivedomi.diarium.ui.components.BrandSpinner
 import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
-import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
+import cz.digitalnivedomi.diarium.ui.components.ScreenSubtitle
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
@@ -200,7 +200,7 @@ fun ReportsScreen(deps: ReportsDeps) {
             .padding(top = Spacing.screenTop, bottom = Spacing.screenBottom),
         verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
-        ScreenHeader(title = ReportsState.TITLE, subtitle = ReportsState.SUBTITLE)
+        ScreenSubtitle(text = ReportsState.SUBTITLE)
 
         ReportsState.TYPES.forEach { type ->
             ReportCard(
