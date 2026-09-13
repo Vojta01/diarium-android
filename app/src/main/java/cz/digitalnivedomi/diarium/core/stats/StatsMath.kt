@@ -105,6 +105,24 @@ data class YearMonthGrid(
 data class YearStats(val averageMood: Double?, val trackedDays: Int)
 
 /**
+ * One month of a calendar year as the year's mood chart draws it.
+ *
+ * [averageMood] is null for a month with no answered day: the chart keeps the month's
+ * slot (a year always has twelve, so the time axis never silently loses a month) and
+ * draws it as an empty stub instead. [answeredDays] is the denominator behind
+ * [averageMood] and the number the tap detail reports.
+ */
+data class MonthMood(
+    /** 1 = January … 12 = December. */
+    val month: Int,
+    val averageMood: Double?,
+    val answeredDays: Int,
+) {
+    /** True when the month holds at least one answered day. */
+    val answered: Boolean get() = averageMood != null
+}
+
+/**
  * The statistics screens' arithmetic — pure Kotlin, no Android and no Compose, so
  * every number the screens show is unit tested directly instead of through a fake
  * network (`app/src/test/.../core/stats/`).
@@ -163,6 +181,18 @@ object StatsMath {
     /** `calendar.day_names` / `screenTime.weekdays` from `cs.ts`, Monday first. */
     val WEEKDAY_LABELS: List<String> = listOf("Po", "Út", "St", "Čt", "Pá", "So", "Ne")
 
+    /**
+     * Three-letter month names, January first — the captions under the year chart's
+     * twelve columns. Short on purpose: twelve of them have to fit one phone width.
+     */
+    val MONTH_SHORT_NAMES: List<String> = listOf(
+        "Led", "Úno", "Bře", "Dub", "Kvě", "Čvn",
+        "Čvc", "Srp", "Zář", "Říj", "Lis", "Pro",
+    )
+
+    /** Smoothing applied to the year chart's monthly averages (twelve points, not 365). */
+    const val MONTH_MOVING_AVERAGE_WINDOW = 3
+
     // ── Mood ───────────────────────────────────────────────────────────────────
 
     /**
@@ -213,12 +243,26 @@ object StatsMath {
     fun movingAverage(
         days: List<StatsDay>,
         window: Int = MOVING_AVERAGE_WINDOW,
-    ): List<Double?> {
+    ): List<Double?> = movingAverageOf(
+        values = sorted(days).map { if (it.answered) it.mood.toDouble() else null },
+        window = window,
+    )
+
+    /**
+     * The same smoothing over an arbitrary aligned series of slots: one value per slot,
+     * each the mean of that slot and the [window] − 1 before it, with nulls skipped
+     * rather than averaged in (an unanswered day, or a month nobody wrote in, must not
+     * drag the line towards zero). A slot whose window holds nothing yields null.
+     *
+     * Split out of [movingAverage] so the year chart can run the identical rule over the
+     * twelve monthly averages — with a [MONTH_MOVING_AVERAGE_WINDOW] of its own — instead
+     * of a second implementation of the same arithmetic.
+     */
+    fun movingAverageOf(values: List<Double?>, window: Int): List<Double?> {
         val size = window.coerceAtLeast(1)
-        val moods = sorted(days).map { if (it.answered) it.mood else null }
-        return moods.indices.map { index ->
+        return values.indices.map { index ->
             val from = (index - size + 1).coerceAtLeast(0)
-            val slice = moods.subList(from, index + 1).filterNotNull()
+            val slice = values.subList(from, index + 1).filterNotNull()
             if (slice.isEmpty()) null else slice.sum().toDouble() / slice.size
         }
     }
@@ -576,6 +620,59 @@ object StatsMath {
             trackedDays = answered.size,
         )
     }
+
+    // ── The year's months ──────────────────────────────────────────────────────
+
+    /**
+     * The twelve months of [year] with the mean mood of each one's answered days,
+     * January first — what the year's "Vývoj nálady" chart draws.
+     *
+     * Always twelve entries in calendar order, so the chart's columns line up with the
+     * calendar and an unwritten month keeps its place (with a null average). Days with
+     * mood 0 are dropped, the same rule [averageMood] follows.
+     */
+    fun monthlyMood(days: List<StatsDay>, year: Int): List<MonthMood> {
+        val buckets = (1..12).associateWith { mutableListOf<Int>() }
+        yearDays(days, year).forEach { day ->
+            if (!day.answered) return@forEach
+            val month = parseDate(day.date)?.monthValue ?: return@forEach
+            buckets[month]?.add(day.mood)
+        }
+        return (1..12).map { month ->
+            val moods = buckets.getValue(month)
+            MonthMood(
+                month = month,
+                averageMood = if (moods.isEmpty()) null else moods.sum().toDouble() / moods.size,
+                answeredDays = moods.size,
+            )
+        }
+    }
+
+    /**
+     * The month with the highest average — the *earliest* one on a tie, the same stable
+     * rule [bestDay] follows. Null when no month of the year was answered, so an empty
+     * year can never present a "best month".
+     */
+    fun bestMonth(months: List<MonthMood>): MonthMood? {
+        val answered = months.filter { it.answered }
+        val best = answered.mapNotNull { it.averageMood }.maxOrNull() ?: return null
+        return answered.first { it.averageMood == best }
+    }
+
+    /** The month with the lowest average, earliest on a tie. Null when nothing was answered. */
+    fun worstMonth(months: List<MonthMood>): MonthMood? {
+        val answered = months.filter { it.answered }
+        val worst = answered.mapNotNull { it.averageMood }.minOrNull() ?: return null
+        return answered.first { it.averageMood == worst }
+    }
+
+    /** `1` -> "Led" — the caption under that month's column. */
+    fun monthShortName(month: Int): String =
+        MONTH_SHORT_NAMES.getOrNull(month - 1) ?: month.toString()
+
+    /** `1` -> "Leden" — the name in a month's detail or summary line. */
+    fun monthFullName(month: Int): String =
+        MONTH_NAMES.getOrNull(month - 1) ?: month.toString()
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 

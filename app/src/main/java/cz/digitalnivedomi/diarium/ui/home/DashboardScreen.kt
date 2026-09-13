@@ -570,7 +570,9 @@ private fun HeroValueRow(
 }
 
 /**
- * Entrances to the M5 screens: cíle, škály, šablony poznámek and odznaky.
+ * Entrances to the M5 screens — cíle, škály, šablony poznámek, odznaky — plus the two
+ * that were only reachable from Nastavení and got lost there: AI Přehledy and
+ * Notifikace.
  *
  * Kept on the overview as well as in Nastavení on purpose — Vojta's rule is that a
  * feature has to be visible without hunting for it, and the dashboard is where the
@@ -581,7 +583,7 @@ private fun EntriesCard(onOpen: (String) -> Unit) {
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader("🎯 Cíle a další")
         VSpace(4)
-        SectionHint("Cíle se streakem, vlastní škály, šablony poznámek a odznaky.")
+        SectionHint("Cíle se streakem, vlastní škály, šablony poznámek, odznaky, AI přehledy.")
         VSpace(6)
         SubScreenEntry(
             emoji = "🎯",
@@ -609,6 +611,13 @@ private fun EntriesCard(onOpen: (String) -> Unit) {
             title = "Odznaky",
             hint = "Co už je odemčené a co ještě ne",
             onClick = { onOpen(Routes.ACHIEVEMENTS) },
+        )
+        GlassDivider()
+        SubScreenEntry(
+            emoji = "🤖",
+            title = "AI Přehledy",
+            hint = "Týdenní a měsíční reflexe, denní shrnutí",
+            onClick = { onOpen(Routes.REPORTS) },
         )
         GlassDivider()
         SubScreenEntry(
