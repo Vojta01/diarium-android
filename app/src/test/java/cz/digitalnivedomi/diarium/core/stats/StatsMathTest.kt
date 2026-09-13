@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.core.stats
 
 import cz.digitalnivedomi.diarium.core.data.PhoneTopApp
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -543,6 +544,124 @@ class StatsMathTest {
         val sport = StatsMath.activityStats(days).single()
 
         assertEquals(MoodPoint("2026-09-01", 2), sport.worstDay)
+    }
+
+    // ── The year's months ─────────────────────────────────────────────────────
+
+    @Test
+    fun `monthly mood averages each month's answered days and keeps all twelve`() {
+        val days = listOf(
+            day("2026-01-05", mood = 2),
+            day("2026-01-20", mood = 4),
+            day("2026-03-01", mood = 5),
+            day("2026-12-31", mood = 1),
+        )
+
+        val months = StatsMath.monthlyMood(days, 2026)
+
+        assertEquals(12, months.size)                        // always twelve, calendar order
+        assertEquals((1..12).toList(), months.map { it.month })
+        assertEquals(3.0, months[0].averageMood!!, 1e-9)     // January: (2 + 4) / 2
+        assertEquals(2, months[0].answeredDays)
+        assertEquals(5.0, months[2].averageMood!!, 1e-9)     // March: 5 / 1
+        assertEquals(1.0, months[11].averageMood!!, 1e-9)    // December: 1 / 1
+    }
+
+    @Test
+    fun `a month nobody wrote in keeps its slot with no average`() {
+        val months = StatsMath.monthlyMood(listOf(day("2026-06-10", mood = 3)), 2026)
+
+        assertNull(months[4].averageMood)                    // May: nothing written
+        assertEquals(0, months[4].answeredDays)
+        assertFalse(months[4].answered)
+        assertEquals(3.0, months[5].averageMood!!, 1e-9)     // June: 3 / 1
+        assertEquals(1, months[5].answeredDays)
+    }
+
+    @Test
+    fun `monthly mood drops mood 0 instead of averaging it in as a zero`() {
+        val days = listOf(
+            day("2026-09-01", mood = 0),
+            day("2026-09-02", mood = 4),
+        )
+
+        val september = StatsMath.monthlyMood(days, 2026)[8]
+
+        assertEquals(4.0, september.averageMood!!, 1e-9)     // the 0 is "not answered"
+        assertEquals(1, september.answeredDays)
+    }
+
+    @Test
+    fun `monthly mood reads one year only`() {
+        val days = listOf(
+            day("2025-12-31", mood = 5),
+            day("2026-01-01", mood = 1),
+        )
+
+        val months = StatsMath.monthlyMood(days, 2026)
+
+        assertEquals(1.0, months[0].averageMood!!, 1e-9)     // December 2025 is out of scope
+        assertEquals(1, months[0].answeredDays)
+        assertEquals(1, months.count { it.answered })
+    }
+
+    @Test
+    fun `the best and the worst month are the extremes of the answered months`() {
+        val months = StatsMath.monthlyMood(
+            listOf(
+                day("2026-02-01", mood = 2),
+                day("2026-05-01", mood = 5),
+                day("2026-07-01", mood = 1),
+            ),
+            2026,
+        )
+
+        assertEquals(5, StatsMath.bestMonth(months)?.month)   // May, 5.0
+        assertEquals(7, StatsMath.worstMonth(months)?.month)  // July, 1.0
+    }
+
+    @Test
+    fun `a tie for best month goes to the earliest month, the way bestDay does`() {
+        val months = StatsMath.monthlyMood(
+            listOf(
+                day("2026-02-01", mood = 4),
+                day("2026-08-01", mood = 4),
+                day("2026-11-01", mood = 1),
+            ),
+            2026,
+        )
+
+        assertEquals(2, StatsMath.bestMonth(months)?.month)   // February, first of the 4.0s
+        assertEquals(11, StatsMath.worstMonth(months)?.month) // November, the only 1.0
+    }
+
+    @Test
+    fun `an unanswered year has neither a best nor a worst month`() {
+        val months = StatsMath.monthlyMood(listOf(day("2026-02-01", mood = 0)), 2026)
+
+        assertNull(StatsMath.bestMonth(months))
+        assertNull(StatsMath.worstMonth(months))
+    }
+
+    @Test
+    fun `month names are the Czech calendar, short under the axis and long in the detail`() {
+        assertEquals("Led", StatsMath.monthShortName(1))
+        assertEquals("Leden", StatsMath.monthFullName(1))
+        assertEquals("Pro", StatsMath.monthShortName(12))
+        assertEquals("Prosinec", StatsMath.monthFullName(12))
+    }
+
+    @Test
+    fun `the monthly moving average smooths three months and skips the unwritten ones`() {
+        val values = listOf<Double?>(null, 2.0, 4.0, 3.0, null)
+
+        val series = StatsMath.movingAverageOf(values, StatsMath.MONTH_MOVING_AVERAGE_WINDOW)
+
+        assertNull(series[0])                                // nothing written yet
+        assertEquals(2.0, series[1]!!, 1e-9)                 // [2]        → 2 / 1
+        assertEquals(3.0, series[2]!!, 1e-9)                 // [2, 4]     → 6 / 2
+        assertEquals(3.0, series[3]!!, 1e-9)                 // [2, 4, 3]  → 9 / 3
+        assertEquals(3.5, series[4]!!, 1e-9)                 // [4, 3]     → null skipped → 7 / 2
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -25,11 +25,14 @@ you can actually see what makes your days better.
   you choose (default: evening snapshot of today + morning backfill of yesterday)
 
 ### 📈 Insights
-- Mood trends with a 7-day moving average
+- Mood trends — one bar per day with a 7-day moving average, and for the year a monthly
+  breakdown (twelve columns, the mean of each month's answered days) with a 3-month
+  moving average and the strongest/weakest month called out under the chart
 - Activity and habit correlations (what actually improves your mood)
 - Screen-time analysis, unlock patterns, yearly pixel calendar
 - **AI reflections**: a short weekly and monthly summary written by AI from your data —
-  patterns you might not notice yourself
+  patterns you might not notice yourself, one tap away on the dashboard (AI Přehledy)
+  as well as in Settings → Přehledy
 
 ### 🔔 Reminders & automation — everything runs on your phone
 No server-side crons are involved. The app schedules everything locally and lets you
@@ -98,11 +101,13 @@ attaches it to tagged releases.
 
 ## Tech notes (for contributors)
 
-The app is a Kotlin/Android project: the UI is delivered as a web app inside a WebView
-(same codebase as Diarium's web version), with a native bridge (`window.AndroidBridge`)
-for usage statistics, OAuth via Chrome Custom Tabs, AlarmManager + WorkManager-based
-scheduling (all times user-configurable — no server crons), and local notifications.
-See `app/build.gradle.kts` for configurable values (API endpoints, auth scheme,
+The app is a Kotlin/Android project with a **native Jetpack Compose UI** (the WebView
+wrapper of the early milestones is gone — only the plumbing it carried remains):
+Supabase auth via Chrome Custom Tabs, usage statistics read on-device through
+`UsageStatsManager`, AlarmManager + WorkManager-based scheduling (all times
+user-configurable — no server crons), and local notifications. The statistics maths lives
+in `core/stats/StatsMath.kt`, separate from the screens that draw it. See
+`app/build.gradle.kts` for configurable values (API endpoints, auth scheme,
 Supabase project ref).
 
 ### Known limitations
