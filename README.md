@@ -18,6 +18,22 @@ stejný, takže se nová verze **instaluje přes předchozí** (data zůstanou).
 
 ---
 
+## alpha21 — roční statistiky k přečtení + AI Přehledy na Přehledu
+
+- **„Vývoj nálady" v ročním zobrazení konečně něco říká.** Místo 254 tenkých
+  sloupců (jeden na den) kreslí **dvanáct měsíčních sloupců** — výšku má průměrná
+  nálada toho měsíce ze zapsaných dní — s popisky **Led–Pro** pod osou, takže je
+  vidět, které období roku bylo silné a které slabé. Pod grafem je řádek
+  s **nejsilnějším a nejslabším měsícem** (např. „Nejlepší: Srpen 4,2 / 5 ·
+  nejslabší: Únor 2,9 / 5").
+- **Indigo čára nad sloupci** je v ročním zobrazení **tříměsíční klouzavý průměr**
+  (u 7- a 30denního okna zůstává sedmidenní); měsíce bez záznamu drží v ose místo
+  jako šedý sloupec a do průměru nevstupují.
+- **Klepnutí na měsíc** otevře detail: průměrnou náladu, počet zapsaných dní
+  a tříměsíční průměr.
+- **AI Přehledy (týdenní a měsíční reflexe) mají vlastní vstup na Přehledu** —
+  karta „Cíle a další" → 🤖 **AI Přehledy**. Dosud se daly najít jen v Nastavení.
+
 ## alpha20 — Přehled a Statistiky na dotek
 
 - **Návrat zpět je okamžitý a vrátí tě tam, kde jsi byl** — i se zaskrolováním.
