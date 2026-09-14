@@ -79,6 +79,7 @@ import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsScreen
 import cz.digitalnivedomi.diarium.ui.stats.StatsRoute
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
+import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 
 /**
@@ -368,6 +369,7 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
             Text(
                 text = "Deník",
                 style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
             )
             VSpace(4)
             Text(
@@ -408,6 +410,7 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
             Text(
                 text = "Notifikace",
                 style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
             )
             VSpace(4)
             Text(
@@ -427,6 +430,7 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
             Text(
                 text = "Přehledy",
                 style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
             )
             VSpace(4)
             Text(
@@ -446,6 +450,7 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
             Text(
                 text = "Data",
                 style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
             )
             VSpace(4)
             Text(
@@ -465,6 +470,7 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
             Text(
                 text = "Účet",
                 style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
             )
             VSpace(6)
             Text(

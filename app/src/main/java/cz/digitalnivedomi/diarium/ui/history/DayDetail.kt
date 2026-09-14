@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
+import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
 import cz.digitalnivedomi.diarium.ui.checkin.MOOD_CHOICES
 import cz.digitalnivedomi.diarium.ui.checkin.SLEEP_CHOICES
@@ -216,9 +217,10 @@ fun DayDetail(
                 VSpace(14)
                 SectionHeader("📱 Screen time")
                 VSpace(6)
-                if (screenTime != null) {
-                    // Stored in seconds (the worker's unit), shown in minutes like the dashboard.
-                    ReadOnlyRow(label = "Čas na obrazovce", value = formatMinutes(screenTime / 60))
+                entry.phoneScreenTimeMinutes?.let { minutes ->
+                    // phoneScreenTime is seconds; the property does the conversion, so this
+                    // row can never drift from the check-in section again.
+                    ReadOnlyRow(label = "Čas na obrazovce", value = formatMinutes(minutes))
                 }
                 if (unlocks != null) {
                     VSpace(4)

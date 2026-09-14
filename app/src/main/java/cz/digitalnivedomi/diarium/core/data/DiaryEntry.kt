@@ -7,6 +7,17 @@ import org.json.JSONObject
 data class PhoneTopApp(val app: String, val minutes: Int)
 
 /**
+ * [DiaryEntry.phoneScreenTime] in whole minutes — the unit every screen shows.
+ *
+ * The sync worker and the `phone_screen_time` column store **seconds**, so read
+ * the value through this property and never hand it straight to `formatMinutes`:
+ * a 3 h 39 min day (13 180 s) then renders as "219 h 40 min" (the alpha21 bug in
+ * the check-in section and the day recap).
+ */
+val DiaryEntry.phoneScreenTimeMinutes: Int?
+    get() = phoneScreenTime?.div(60)
+
+/**
  * One day's check-in — the native twin of the web `CheckInData` / `EMPTY_DATA`
  * shape in `src/components/OnePageCheckIn.tsx`.
  *
