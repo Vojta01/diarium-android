@@ -28,6 +28,7 @@ import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.core.data.Scale
+import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
@@ -261,7 +262,7 @@ private fun DayRecap(
         )
     }
 
-    entry.phoneScreenTime?.let { minutes ->
+    entry.phoneScreenTimeMinutes?.let { minutes ->
         VSpace(12)
         ReadOnlyRow(label = "📱 Čas na obrazovce", value = formatMinutes(minutes))
     }

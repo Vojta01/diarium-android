@@ -34,6 +34,7 @@ import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.core.data.NoteTemplate
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
 import cz.digitalnivedomi.diarium.core.data.Scale
+import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
 import cz.digitalnivedomi.diarium.ui.checkin.components.ActivitiesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.DateNav
 import cz.digitalnivedomi.diarium.ui.checkin.components.ErrorBanner
@@ -399,7 +400,9 @@ fun CheckInScreen(
         )
 
         ScreenTimeSection(
-            screenTimeMinutes = state.entry.phoneScreenTime,
+            // phoneScreenTime is seconds; the property converts to the minutes this
+            // section (and every other screen) shows.
+            screenTimeMinutes = state.entry.phoneScreenTimeMinutes,
             unlocks = state.entry.phoneUnlocks,
             topApps = state.entry.phoneTopApps.map { it.app to it.minutes },
         )

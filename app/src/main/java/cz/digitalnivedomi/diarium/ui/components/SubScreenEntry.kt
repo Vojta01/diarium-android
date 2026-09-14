@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 
 /**
@@ -47,6 +48,9 @@ fun SubScreenEntry(
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleSmall,
+                // Named explicitly: an uncoloured title used to fall through to the
+                // content-colour default and render black on the ink background.
+                color = TextPrimary,
             )
             Text(
                 text = hint,
