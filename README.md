@@ -18,6 +18,12 @@ stejný, takže se nová verze **instaluje přes předchozí** (data zůstanou).
 
 ---
 
+## alpha22 — správná jednotka screen timu + čitelné nadpisy
+
+- **„Dnes" už neukazuje 219 h screen timu.** Sekce Screen time v check-inu a rekapitulace dne zobrazovaly hodnotu z workeru (sekundy) jako minuty, takže se 3 h 39 min četlo jako 219 h 40 min. Teď obojí — i řádek v detailu dne v Historii — jede přes jednu konverzi, takže se s číslem ze Statistik shoduje do minuty.
+- **Nadpisy karet v Nastavení (Deník, Notifikace, Přehledy, Data, Účet) a titulky řádků seznamů jsou zase vidět.** Texty bez vlastní barvy dědily výchozí barvu obsahu (černou) a na tmavém pozadí mizely; teď mají barvu předepsanou a téma navíc dodává správnou výchozí barvu pro celou aplikaci.
+- Ověřeno: 624 unit testů, 0 selhání.
+
 ## alpha21 — roční statistiky k přečtení + AI Přehledy na Přehledu
 
 - **„Vývoj nálady" v ročním zobrazení konečně něco říká.** Místo 254 tenkých
