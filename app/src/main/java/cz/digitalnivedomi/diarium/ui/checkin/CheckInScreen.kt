@@ -1,6 +1,7 @@
 package cz.digitalnivedomi.diarium.ui.checkin
 
 import android.net.Uri
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,8 +41,10 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.DateNav
 import cz.digitalnivedomi.diarium.ui.checkin.components.ErrorBanner
 import cz.digitalnivedomi.diarium.ui.checkin.components.GoalsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.GratitudeSection
+import cz.digitalnivedomi.diarium.ui.checkin.components.HabitEditorDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.HabitsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.MoodSection
+import cz.digitalnivedomi.diarium.ui.checkin.components.MoveDateDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.NoteSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.PhotoSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.PrimaryButton
@@ -49,11 +52,13 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.ReflectionDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.ReflectionSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.ScalesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.ScreenTimeSection
+import cz.digitalnivedomi.diarium.ui.checkin.components.SecondaryButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.SleepSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.StressSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.WeatherSection
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
+import cz.digitalnivedomi.diarium.ui.history.DayDetail
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -80,6 +85,12 @@ fun CheckInScreen(
     deps: CheckInDeps = remember { CheckInDeps.offline() },
     requestedDate: String? = null,
     onRequestedDateConsumed: () -> Unit = {},
+    /**
+     * The check-in is finished: it was saved and the reflection window that save opened
+     * has been closed. The host switches back to the overview — a check-in ends on the
+     * dashboard, not on the form — and this screen only reports the moment.
+     */
+    onFinished: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -110,6 +121,17 @@ fun CheckInScreen(
     var goals by remember { mutableStateOf(GoalsStoreDefaults.DEFAULT) }
     var uploadingPhoto by remember { mutableStateOf(false) }
 
+    // ── The 2026-09 additions ──
+    // One-shot guard for the after-midnight step back to yesterday (see the load effect).
+    var lateNightChecked by remember { mutableStateOf(false) }
+    // The habit whose icon/label is being edited, and whether that write is in flight.
+    var habitEditor by remember { mutableStateOf<HabitDef?>(null) }
+    var habitSaving by remember { mutableStateOf(false) }
+    // The "Změnit datum" flow: the picker, the day it came back with, and whether that
+    // day already holds an entry (which turns the dialog into its overwrite step).
+    var moveDialogOpen by remember { mutableStateOf(false) }
+    var moveTarget by remember { mutableStateOf<String?>(null) }
+
     // Pickers + goals once per screen (they do not depend on the selected day).
     LaunchedEffect(deps) {
         if (pickersRepo != null) {
@@ -124,12 +146,29 @@ fun CheckInScreen(
         }
     }
 
-    // Entry for the selected day: DB first, then draft, then empty (web rules).
+    // Entry for the selected day: DB first, then draft, then empty (web rules). A day
+    // that came from the database is *stored*, which is what makes the screen show the
+    // passive day view instead of the form.
     LaunchedEffect(state.date) {
         holder.setLoading(true)
         val fromDb = entriesRepo?.loadEntry(state.date)
         val restored = fromDb ?: drafts?.load(state.date) ?: DiaryEntry.EMPTY
-        holder.load(restored)
+        holder.load(restored, stored = fromDb != null)
+
+        // Just after midnight the day being written up is still the one that ended, and
+        // the app used to file that whole check-in under the new date. Step back once,
+        // and only while today is untouched — a day with any content is never moved.
+        if (!lateNightChecked && fromDb == null && !restored.hasContent() &&
+            state.date == CheckInDates.today() && CheckInDates.isAfterMidnight()
+        ) {
+            lateNightChecked = true
+            holder.startLateNight()
+        }
+    }
+
+    // The check-in is done (saved, reflection window closed): back to the overview.
+    LaunchedEffect(state.finished) {
+        if (state.finished && holder.consumeFinished()) onFinished()
     }
 
     // Debounced draft autosave (the web's localStorage `diarium_draft_{date}`).
@@ -170,6 +209,55 @@ fun CheckInScreen(
             persistEntry()
                 .onSuccess { holder.markSaved() }
                 .onFailure { holder.markError(it.message ?: "Uložení se nezdařilo.") }
+        }
+    }
+
+    /**
+     * The move itself: the entry is written to the target day first, the old row is
+     * deleted after — a failed write can then never cost the owner his check-in. A
+     * failed delete is said out loud instead of being swallowed: the entry has moved,
+     * but a stale copy would silently duplicate the day.
+     */
+    fun performMove(target: String) {
+        val repo = entriesRepo ?: return
+        val entry = holder.entry
+        val from = holder.date
+        scope.launch {
+            holder.markSaving()
+            val written = repo.save(entry, target)
+            if (written.isFailure) {
+                holder.markError(written.exceptionOrNull()?.message ?: "Přesun se nezdařil.")
+                return@launch
+            }
+            if (repo.delete(from).isFailure) {
+                holder.markError("Zápis je přesunutý, ale původní den se nepodařilo smazat.")
+            }
+            drafts?.clear(from)
+            moveDialogOpen = false
+            moveTarget = null
+            // Landing on the target day re-reads it, so the screen shows the moved entry
+            // as the stored day it now is.
+            holder.setDate(target)
+        }
+    }
+
+    /**
+     * "Změnit datum": the picker came back with a day. A target that already holds an
+     * entry turns the dialog into its overwrite step rather than silently replacing it.
+     */
+    fun requestMove(target: String) {
+        if (target == holder.date) {
+            moveDialogOpen = false
+            return
+        }
+        val repo = entriesRepo
+        if (repo == null) {
+            holder.markError("Přesun vyžaduje přihlášení.")
+            return
+        }
+        scope.launch {
+            val occupied = repo.loadEntry(target)?.hasContent() == true
+            if (occupied) moveTarget = target else performMove(target)
         }
     }
 
@@ -302,7 +390,31 @@ fun CheckInScreen(
         }
 
         DateNav(date = state.date, onDateChange = { holder.setDate(it) })
+
+        if (state.lateNightHint) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "🌙 Je po půlnoci — otevírám včerejší zápis. Datum se dá změnit v hlavičce.",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
         Spacer(Modifier.height(16.dp))
+
+        // A stored day reads passively: the check-in tab is where the day is *seen* until
+        // the owner asks to change it. An unwritten day opens straight into the form.
+        if (state.showsPassiveDay) {
+            StoredDayView(
+                date = state.date,
+                entry = state.entry,
+                scales = scales,
+                onEdit = { holder.startEditing() },
+                onMoveDate = { moveDialogOpen = true },
+            )
+            Spacer(Modifier.height(48.dp))
+            return@Column
+        }
 
         MoodSection(
             selected = state.entry.mood,
@@ -349,6 +461,7 @@ fun CheckInScreen(
             habits = habits,
             values = state.entry.habits,
             onToggle = { holder.toggleHabit(it) },
+            onEdit = { habit -> habitEditor = habit },
         )
 
         GratitudeSection(
@@ -385,12 +498,18 @@ fun CheckInScreen(
             goals = goals,
             date = state.date,
             onToggle = { toggleGoal(it) },
-            onAdd = { name ->
+            onAdd = { name, emoji ->
                 goals = goals + DailyGoal(
                     id = "goal-${System.currentTimeMillis()}",
-                    emoji = "🎯",
+                    emoji = emoji,
                     name = name,
                 )
+                persistGoals()
+            },
+            onEdit = { id, name, emoji ->
+                goals = goals.map { goal ->
+                    if (goal.id == id) goal.copy(name = name, emoji = emoji) else goal
+                }
                 persistGoals()
             },
             onRemove = { id ->
@@ -459,6 +578,90 @@ fun CheckInScreen(
             onRetry = { generateReflection() },
             onDismiss = { holder.dismissReflectionDialog() },
         )
+    }
+
+    // ── "Změnit datum": move a stored entry to another day ──
+    if (moveDialogOpen) {
+        MoveDateDialog(
+            currentDate = state.date,
+            conflictDate = moveTarget,
+            onDismiss = {
+                moveDialogOpen = false
+                moveTarget = null
+            },
+            onPickDate = { target -> requestMove(target) },
+            onConfirmOverwrite = { moveTarget?.let { performMove(it) } },
+        )
+    }
+
+    // ── Habit editor: the icon and label of one habit ──
+    habitEditor?.let { habit ->
+        HabitEditorDialog(
+            habit = habit,
+            saving = habitSaving,
+            onDismiss = { habitEditor = null },
+            onSave = { label, icon, isNegative ->
+                habitSaving = true
+                scope.launch {
+                    val saved = pickersRepo?.updateHabit(habit.key, label, icon, isNegative) == true
+                    habitSaving = false
+                    if (saved) {
+                        // The grid reads the local list, so the edited row changes at once;
+                        // the write is what makes it survive the next read.
+                        habits = habits.map { item ->
+                            if (item.key == habit.key) {
+                                item.copy(label = label, icon = icon, isNegative = isNegative)
+                            } else {
+                                item
+                            }
+                        }
+                        habitEditor = null
+                    } else {
+                        holder.markError("Návyk se nepodařilo uložit.")
+                    }
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The day the "Dnes" tab shows when it is already stored: the same read-only card the
+ * history tab opens ([DayDetail]) plus the two actions a stored day needs — "Upravit"
+ * (hands the day back to the form) and "Změnit datum" (moves the entry to another day).
+ *
+ * Both are up-callbacks, so this stays a pure render of one day and the screen keeps
+ * owning the repositories.
+ */
+@Composable
+private fun StoredDayView(
+    date: String,
+    entry: DiaryEntry,
+    scales: List<Scale>,
+    onEdit: () -> Unit,
+    onMoveDate: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        DayDetail(
+            date = date,
+            entry = entry,
+            scaleNames = scales.associate { it.id to it.name },
+            scaleMax = scales.associate { it.id to it.maxValue },
+            onOpenCheckIn = { onEdit() },
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PrimaryButton(
+                text = "✏️ Upravit",
+                modifier = Modifier.weight(1f),
+                testTag = "checkin_edit",
+            ) { onEdit() }
+            SecondaryButton(text = "🗓 Změnit datum", testTag = "checkin_move") { onMoveDate() }
+        }
     }
 }
 

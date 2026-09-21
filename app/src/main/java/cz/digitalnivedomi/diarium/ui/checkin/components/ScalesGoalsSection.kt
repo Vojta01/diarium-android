@@ -36,9 +36,13 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import cz.digitalnivedomi.diarium.core.data.DailyGoal
 import cz.digitalnivedomi.diarium.core.data.Scale
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
+import cz.digitalnivedomi.diarium.ui.components.EmojiPickerDialog
+import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
@@ -258,11 +262,19 @@ fun GoalsSection(
     goals: List<DailyGoal>,
     date: String,
     onToggle: (String) -> Unit,
-    onAdd: (String) -> Unit,
+    onAdd: (name: String, emoji: String) -> Unit,
+    onEdit: (id: String, name: String, emoji: String) -> Unit,
     onRemove: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var newGoal by rememberSaveable { mutableStateOf("") }
+    // The icon of the goal being typed: whatever the picker returned, 🎯 until then —
+    // the emoji the add row used to hardcode when there was no way to choose.
+    var newGoalEmoji by rememberSaveable { mutableStateOf(DEFAULT_GOAL_EMOJI) }
+    var pickingEmoji by rememberSaveable { mutableStateOf(false) }
+    // The goal whose name/icon is being edited, held by id so a recomposition can never
+    // edit a stale copy of it.
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     val done = goals.count { date in it.completedDates }
 
     CheckInSection(title = "Cíle $done/${goals.size}", modifier = modifier) {
@@ -299,6 +311,16 @@ fun GoalsSection(
                     color = TextPrimary,
                     modifier = Modifier.weight(1f),
                 )
+                Text(
+                    text = "✏️",
+                    fontSize = 13.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { editingId = goal.id }
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .testTagOrEmpty("goal_edit_${goal.id}"),
+                )
+                Spacer(Modifier.width(6.dp))
                 SecondaryButton(text = "🗑", testTag = "goal_remove_${goal.id}") { onRemove(goal.id) }
                 Spacer(Modifier.height(0.dp))
                 TogglePill(
@@ -308,19 +330,143 @@ fun GoalsSection(
             }
         }
         Spacer(Modifier.height(6.dp))
-        GlassTextField(
-            value = newGoal,
-            onValueChange = { newGoal = it },
-            placeholder = "Nový cíl",
-            testTag = "goal_new",
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // The icon of the new goal, chosen before the goal exists: a goal no longer
+            // has to live with the 🎯 this row used to hardcode.
+            GoalEmojiChip(emoji = newGoalEmoji, testTag = "goal_new_emoji") { pickingEmoji = true }
+            Spacer(Modifier.width(8.dp))
+            GlassTextField(
+                value = newGoal,
+                onValueChange = { newGoal = it },
+                placeholder = "Nový cíl",
+                modifier = Modifier.weight(1f),
+                testTag = "goal_new",
+            )
+        }
         Spacer(Modifier.height(8.dp))
         SecondaryButton(text = "Přidat cíl", testTag = "goal_add") {
             val name = newGoal.trim()
             if (name.isNotEmpty()) {
-                onAdd(name)
+                onAdd(name, newGoalEmoji)
                 newGoal = ""
             }
+        }
+    }
+
+    if (pickingEmoji) {
+        EmojiPickerDialog(
+            title = "Ikona cíle",
+            selected = newGoalEmoji,
+            onDismiss = { pickingEmoji = false },
+            onPick = { picked ->
+                newGoalEmoji = picked
+                pickingEmoji = false
+            },
+        )
+    }
+
+    editingId?.let { id ->
+        goals.firstOrNull { it.id == id }?.let { goal ->
+            GoalEditorDialog(
+                goal = goal,
+                onDismiss = { editingId = null },
+                onSave = { name, emoji ->
+                    onEdit(goal.id, name, emoji)
+                    editingId = null
+                },
+            )
+        }
+    }
+}
+
+/** The icon a goal starts with when no other one is picked — the old hardcoded 🎯. */
+const val DEFAULT_GOAL_EMOJI = "🎯"
+
+/**
+ * The tap target the goal icon picker opens from: the goal's current icon in a 44 dp
+ * glass square, so the icon is always visible before it is changed.
+ */
+@Composable
+private fun GoalEmojiChip(emoji: String, testTag: String, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(shape)
+            .background(Color.White.copy(alpha = 0.05f))
+            .border(1.dp, Outline.copy(alpha = 0.6f), shape)
+            .clickable { onClick() }
+            .testTagOrEmpty(testTag),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text = emoji.ifBlank { DEFAULT_GOAL_EMOJI }, fontSize = 22.sp)
+    }
+}
+
+/**
+ * "Upravit cíl" — the name and the icon of one goal.
+ *
+ * Both live in this window because together they are the whole of what the check-in row
+ * shows, and the icon gets a picker of its own ([EmojiPickerDialog]) instead of the
+ * `window.prompt` the web version had to abandon on mobile.
+ */
+@Composable
+private fun GoalEditorDialog(
+    goal: DailyGoal,
+    onDismiss: () -> Unit,
+    onSave: (name: String, emoji: String) -> Unit,
+) {
+    var name by rememberSaveable(goal.id) { mutableStateOf(goal.name) }
+    var emoji by rememberSaveable(goal.id) { mutableStateOf(goal.emoji) }
+    var pickingIcon by rememberSaveable { mutableStateOf(false) }
+
+    if (pickingIcon) {
+        EmojiPickerDialog(
+            title = "Ikona cíle",
+            selected = emoji,
+            onDismiss = { pickingIcon = false },
+            onPick = { picked ->
+                emoji = picked
+                pickingIcon = false
+            },
+        )
+        return
+    }
+
+    val clean = name.trim()
+    Dialog(onDismissRequest = onDismiss) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+            Text(
+                text = "✏️ Upravit cíl",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(6.dp))
+            SectionHint("Ikona i název se ukládají k účtu, takže je uvidíš i na webu.")
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                GoalEmojiChip(emoji = emoji, testTag = "goal_edit_icon") { pickingIcon = true }
+                Spacer(Modifier.width(10.dp))
+                GlassTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    placeholder = "Název cíle",
+                    modifier = Modifier.weight(1f),
+                    testTag = "goal_edit_name",
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            PrimaryButton(
+                text = "Uložit cíl",
+                enabled = clean.isNotEmpty(),
+                testTag = "goal_edit_save",
+            ) { onSave(clean, emoji) }
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton(text = "Zrušit", testTag = "goal_edit_cancel") { onDismiss() }
         }
     }
 }

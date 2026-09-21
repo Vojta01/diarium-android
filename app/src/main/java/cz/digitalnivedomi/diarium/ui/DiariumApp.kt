@@ -236,6 +236,11 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                         CheckInRoute(
                             requestedDate = requestedDate,
                             onRequestedDateConsumed = { requestedDate = null },
+                            // A finished check-in ends on the overview, not on the form
+                            // (the owner's 2026-09 rule). Switching tabs rather than
+                            // pushing keeps the bottom bar's state — the same navigation
+                            // the bar itself performs.
+                            onFinished = { switchTab(Routes.HOME) },
                         )
                     }
                     composable(Routes.HISTORY) {

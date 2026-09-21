@@ -112,13 +112,34 @@ class PickersRepository(
             )
         }
 
-        // Web parity: defaults always show; a user row only shows when it is active
-        // and is not one of the defaults, so a stale/duplicate row can never
-        // replace a catalogue default.
+        // Web parity: defaults always show, and a user row shows when it is active and
+        // brings a key of its own. An active row on a *default's* key is how the icon
+        // editor stores its override, so it replaces that default's label/icon/negative
+        // flag instead of being thrown away as a stale duplicate — without this, renaming
+        // or re-iconing a catalogue habit would silently revert on the next read. An
+        // inactive row stays a hide-override and never shows.
+        //
+        // Only the fields the editor writes come from the override: the catalogue keeps
+        // its own category and colour.
         val defaultKeys = defaults.map { it.key }.toSet()
+        val overrides = userHabits
+            .filter { it.isActive && it.key in defaultKeys }
+            .associateBy { it.key }
+        val mergedDefaults = defaults.map { row ->
+            val override = overrides[row.key]
+            if (override == null) {
+                row
+            } else {
+                row.copy(
+                    label = override.label.ifBlank { row.label },
+                    icon = override.icon.ifBlank { row.icon },
+                    isNegative = override.isNegative,
+                )
+            }
+        }
         val customs = userHabits.filter { it.isActive && it.key !in defaultKeys }
 
-        val visible = dedupeHabits(defaults + customs)
+        val visible = dedupeHabits(mergedDefaults + customs)
         if (visible.isEmpty()) dedupeHabits(PickerDefaults.HABIT_FALLBACK) else visible
     }
 
@@ -208,6 +229,53 @@ class PickersRepository(
             "user_activities",
             JSONObject().put("is_active", true),
             mapOf("user_id" to "eq.$userId", "key" to "eq.$key"),
+        ).isSuccessful
+    }
+
+    // ── Habit overrides (rename / re-icon) ──────────────────────────────────
+
+    /**
+     * Renames / re-icons a habit. Writes a `user_habits` row that overrides the
+     * catalogue default.
+     *
+     * `key` is the join key the day's entries are stored under, so it is written
+     * through unchanged — never re-slugged. The row is upserted on
+     * `(user_id, key)` — the web's `onConflict("user_id,key")` — so a second call
+     * for the same habit updates the row in place instead of failing with a
+     * duplicate-key error. Only the label is trimmed; a blank one is refused, the
+     * same way [addActivity] refuses an empty custom activity.
+     */
+    suspend fun updateHabit(
+        key: String,
+        label: String,
+        icon: String,
+        isNegative: Boolean,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val userId = session.userId() ?: return@withContext false
+        val clean = label.trim()
+        if (clean.isBlank()) return@withContext false
+        // An existing row keeps its colour and category: this call edits the icon, the
+        // name and the negative flag, and a custom habit's colour must survive an edit
+        // that never mentioned it. Only a row that is being created takes the defaults.
+        val existing = read("user_habits", mapOf("user_id" to "eq.$userId", "key" to "eq.$key"))
+            .firstOrNull()
+        val color = existing?.plainString("color")?.takeIf { it.isNotBlank() } ?: DEFAULT_COLOR
+        val category = existing?.plainString("category")?.takeIf { it.isNotBlank() } ?: "obecné"
+        val body = JSONObject().apply {
+            put("user_id", userId)
+            put("key", key)
+            put("label", clean)
+            put("icon", icon)
+            put("category", category)
+            put("color", color)
+            put("is_negative", isNegative)
+            put("is_active", true)
+        }
+        client.post(
+            "user_habits",
+            body,
+            query = mapOf("on_conflict" to "user_id,key"),
+            extraHeaders = mapOf("Prefer" to "resolution=merge-duplicates"),
         ).isSuccessful
     }
 
