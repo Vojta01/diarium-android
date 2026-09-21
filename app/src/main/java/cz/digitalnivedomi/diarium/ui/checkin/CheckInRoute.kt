@@ -15,6 +15,11 @@ import androidx.compose.ui.platform.LocalContext
 fun CheckInRoute(
     requestedDate: String? = null,
     onRequestedDateConsumed: () -> Unit = {},
+    /**
+     * The check-in is finished (saved, reflection window closed): the shell takes the
+     * owner back to the overview.
+     */
+    onFinished: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val deps = remember(context) { CheckInDeps.forContext(context) }
@@ -22,5 +27,6 @@ fun CheckInRoute(
         deps = deps,
         requestedDate = requestedDate,
         onRequestedDateConsumed = onRequestedDateConsumed,
+        onFinished = onFinished,
     )
 }

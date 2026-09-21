@@ -146,6 +146,32 @@ class EntriesRepository(
         }
 
     /**
+     * Deletes the day's row — the second half of moving a stored check-in to another
+     * date (see [save]). The owner's RLS policy (`entries_own`) covers DELETE, so the
+     * app needs no server-side RPC for this.
+     *
+     * A failure is reported, not swallowed: the caller has usually already written the
+     * entry to its new day, and a stale copy left behind must reach the screen as a
+     * sentence instead of silently duplicating the day.
+     */
+    suspend fun delete(date: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val userId = session.userId()
+            ?: return@withContext Result.failure(IllegalStateException(SIGNED_OUT))
+        val resp = client.delete(
+            "entries",
+            mapOf("user_id" to "eq.$userId", "date" to "eq.$date"),
+        )
+        if (!resp.isSuccessful) {
+            return@withContext Result.failure(
+                IllegalStateException(
+                    resp.errorMessage ?: "Původní den se nepodařilo smazat (${resp.code}).",
+                ),
+            )
+        }
+        Result.success(Unit)
+    }
+
+    /**
      * Uploads the day's photo to the public `diary-photos` bucket at
      * `{uid}/{date}.jpg` (upsert) and returns its public URL, or null on failure.
      */

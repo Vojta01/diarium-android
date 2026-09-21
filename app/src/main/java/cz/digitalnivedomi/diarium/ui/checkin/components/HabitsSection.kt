@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Outline
@@ -58,6 +60,11 @@ fun HabitsSection(
     values: Map<String, Boolean>,
     onToggle: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Opens the editor for one habit's icon/label. Left null by callers that only read
+     * habits, so the pencil only appears where editing is actually wired.
+     */
+    onEdit: ((HabitDef) -> Unit)? = null,
 ) {
     val negativeColor = Color(0xFFEF4444)
     CheckInSection("Návyky", modifier = modifier) {
@@ -130,6 +137,21 @@ fun HabitsSection(
                                 )
                                 else -> Unit
                             }
+                        }
+                        if (onEdit != null) {
+                            // A separate tap target inside the pill's own clickable row:
+                            // the inner one consumes the tap, so editing never ticks the
+                            // habit by accident.
+                            Text(
+                                text = "✏️",
+                                fontSize = 13.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { onEdit(habit) }
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                                    .testTagOrEmpty("habit_edit_${habit.key}"),
+                            )
+                            Spacer(Modifier.width(6.dp))
                         }
                         TogglePill(
                             checked = checked,

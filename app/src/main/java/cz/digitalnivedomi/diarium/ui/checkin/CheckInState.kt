@@ -24,6 +24,29 @@ data class CheckInUiState(
     val saving: Boolean = false,
     val saved: Boolean = false,
     val errorMessage: String? = null,
+    /**
+     * True when the open day came from the database — the day already has an entry —
+     * and false for a day that only exists as a draft or not at all. A stored day opens
+     * as the passive view; a day nobody has written yet opens as the form.
+     */
+    val storedEntry: Boolean = false,
+    /**
+     * True while the form is open for editing. Entering a stored day does not edit it;
+     * the passive view's "Upravit" flips this on, and a day switch flips it back off.
+     */
+    val editing: Boolean = false,
+    /**
+     * True once the check-in is finished: the save landed and the reflection window
+     * that save opened has been closed. The host navigates home on it — a check-in ends
+     * on the overview, not on the form — and clears it through [CheckInStateHolder.consumeFinished].
+     */
+    val finished: Boolean = false,
+    /**
+     * True when the form stepped back to yesterday on its own (the owner writes the day
+     * up after midnight). The screen says so, because a silent date change would look
+     * like a bug.
+     */
+    val lateNightHint: Boolean = false,
     val reflection: String? = null,
     val reflectionLoading: Boolean = false,
     val reflectionError: String? = null,
@@ -36,6 +59,13 @@ data class CheckInUiState(
     val showReflectionDialog: Boolean = false,
 ) {
     val hasContent: Boolean get() = entry.hasContent()
+
+    /**
+     * True when the day must be shown passively: it is stored and the user has not
+     * asked to edit it. The check-in tab then reads like the history tab's day card
+     * with an "Upravit" action instead of an editable form.
+     */
+    val showsPassiveDay: Boolean get() = storedEntry && !editing
 
     /**
      * True when the open window still has to ask the server: no text seeded from
@@ -67,8 +97,15 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         state = state.copy(
             date = date,
             entry = DiaryEntry.EMPTY,
+            saving = false,
             saved = false,
             errorMessage = null,
+            // A day is opened passively (or as a fresh form) whichever day it is; the
+            // "Upravit" flag and the finished/hint flags never survive a day switch.
+            storedEntry = false,
+            editing = false,
+            finished = false,
+            lateNightHint = false,
             reflection = null,
             reflectionLoading = false,
             reflectionError = null,
@@ -76,11 +113,38 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         )
     }
 
-    fun load(entry: DiaryEntry) {
+    /**
+     * Steps back to yesterday, right after midnight: the day the owner is still writing
+     * up is the one that just ended, and the app used to file the whole check-in under
+     * the new date. Called only when today's form is untouched, and only once per visit.
+     */
+    fun startLateNight() {
+        setDate(LocalDate.now().minusDays(1).toString())
+        state = state.copy(lateNightHint = true)
+    }
+
+    /** Opens the form on the day being shown ("Upravit" on the passive view). */
+    fun startEditing() {
+        state = state.copy(editing = true, saved = false)
+    }
+
+    /**
+     * True exactly once per finished check-in: the host reads it, navigates home and
+     * clears it here, so a recomposition or a later return cannot navigate again.
+     */
+    fun consumeFinished(): Boolean {
+        if (!state.finished) return false
+        state = state.copy(finished = false)
+        return true
+    }
+
+    fun load(entry: DiaryEntry, stored: Boolean = false) {
         state = state.copy(
             entry = entry,
             loading = false,
             saved = false,
+            storedEntry = stored,
+            editing = false,
             // The day already has a reflection when the row carried one — showing
             // it straight away is what the web does on load.
             reflection = entry.aiReflection,
@@ -173,7 +237,9 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
 
     /** The user closed the reflection window; another save is what brings it back. */
     fun dismissReflectionDialog() {
-        state = state.copy(showReflectionDialog = false)
+        // The window only ever opens on a save (see [markSaved]), so closing it means
+        // the check-in is done: the host takes the owner back to the overview.
+        state = state.copy(showReflectionDialog = false, finished = true)
     }
 
     /**

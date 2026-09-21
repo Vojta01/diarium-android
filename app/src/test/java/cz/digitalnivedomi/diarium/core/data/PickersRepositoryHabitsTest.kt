@@ -114,21 +114,47 @@ class PickersRepositoryHabitsTest {
     }
 
     @Test
-    fun `inactive and default-colliding user rows stay out of the list`() = runTest {
+    fun `an active user row overrides a default and an inactive one stays hidden`() = runTest {
         catalog = habitCatalog()
         userRows = JSONArray()
             .put(userRow("u1", "porno", "Porno", active = true))
             // Inactive rows are hide-overrides, not visible habits.
             .put(userRow("u2", "test_cviceni", "Test cvičení", active = false))
-            // A user row that collides with a default must not shadow it.
-            .put(userRow("u3", "alkohol", "Alkohol override", active = true))
+            // The icon editor's row on a default's key: the catalogue keeps the slot, the
+            // owner's name/icon/flag win — otherwise an edit would revert on every read.
+            .put(
+                userRow("u3", "alkohol", "Alkohol override", active = true)
+                    .put("icon", "🍷")
+                    .put("is_negative", false),
+            )
             .toString()
 
         val habits = repository().habits()
 
         assertEquals(listOf("alkohol", "porno"), habits.map { it.key })
-        assertEquals("Alkohol", habits.first { it.key == "alkohol" }.label)
+        val alkohol = habits.first { it.key == "alkohol" }
+        assertEquals("Alkohol override", alkohol.label)
+        assertEquals("🍷", alkohol.icon)
+        assertFalse("the override's negative flag wins too", alkohol.isNegative)
+        // What the editor never touched stays the catalogue's.
+        assertEquals("zdraví", alkohol.category)
+        assertEquals("#ef4444", alkohol.color)
+        assertEquals("default", alkohol.source)
         assertFalse(habits.any { it.key == "test_cviceni" })
+    }
+
+    @Test
+    fun `an override with no icon of its own keeps the catalogue icon`() = runTest {
+        catalog = habitCatalog()
+        userRows = JSONArray()
+            .put(userRow("u1", "alkohol", "Alkohol (nově)", active = true))
+            .toString()
+
+        val alkohol = repository().habits().first { it.key == "alkohol" }
+
+        assertEquals("Alkohol (nově)", alkohol.label)
+        // A row that only renamed the habit must not blank its icon.
+        assertEquals("🍺", alkohol.icon)
     }
 
     @Test
@@ -163,6 +189,39 @@ class PickersRepositoryHabitsTest {
         val flat = sent.joinToString(" ") { "${it.url} ${it.headers} ${it.body}" }.lowercase()
         assertFalse(flat.contains("service_role"))
         assertFalse(flat.contains("sb_secret"))
+    }
+
+    // ── rename / re-icon (upsert) ───────────────────────────────────────────
+
+    @Test
+    fun `updateHabit upserts the renamed habit into user_habits`() = runTest {
+        val saved = repository().updateHabit(
+            key = "alkohol",
+            label = "  Alkohol (nově)  ",
+            icon = "🍷",
+            isNegative = true,
+        )
+
+        assertTrue(saved)
+        // The call reads the row first (so a custom habit's colour survives an edit) and
+        // then writes the upsert — the write is what this test is about.
+        val request = sent.single { it.method == "POST" }
+        val read = decoded(sent.single { it.method == "GET" })
+        assertTrue("the read targets the edited row", read.contains("key=eq.alkohol"))
+        assertEquals("POST", request.method)
+        assertTrue(request.url.startsWith("$BASE_URL/user_habits?"))
+        // The conflict target that makes a second call an UPDATE, not a 409.
+        assertEquals("on_conflict=user_id,key", decoded(request))
+        assertEquals("resolution=merge-duplicates", request.headers["Prefer"])
+        val body = JSONObject(request.body!!)
+        assertEquals(USER_ID, body.getString("user_id"))
+        // The key is written through as given — it joins the day's entries.
+        assertEquals("alkohol", body.getString("key"))
+        assertEquals("Alkohol (nově)", body.getString("label"))
+        assertEquals("🍷", body.getString("icon"))
+        assertEquals("#6366F1", body.getString("color"))
+        assertTrue(body.getBoolean("is_negative"))
+        assertTrue(body.getBoolean("is_active"))
     }
 
     private fun decoded(request: HttpRequest): String =
