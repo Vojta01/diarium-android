@@ -35,6 +35,7 @@ import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.core.data.NoteTemplate
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
 import cz.digitalnivedomi.diarium.core.data.Scale
+import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
 import cz.digitalnivedomi.diarium.ui.checkin.components.ActivitiesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.DateNav
@@ -153,12 +154,15 @@ fun CheckInScreen(
         holder.setLoading(true)
         val fromDb = entriesRepo?.loadEntry(state.date)
         val restored = fromDb ?: drafts?.load(state.date) ?: DiaryEntry.EMPTY
-        holder.load(restored, stored = fromDb != null)
+        // A day reads passively only when it is a *record* — mood filled in (the owner's
+        // rule, see isRecordedDay). A row that only carries the phone's synced screen
+        // time is a day nobody journaled yet, so it opens as the form.
+        holder.load(restored, stored = isRecordedDay(fromDb?.mood))
 
         // Just after midnight the day being written up is still the one that ended, and
         // the app used to file that whole check-in under the new date. Step back once,
         // and only while today is untouched — a day with any content is never moved.
-        if (!lateNightChecked && fromDb == null && !restored.hasContent() &&
+        if (!lateNightChecked && !isRecordedDay(fromDb?.mood) && !restored.hasContent() &&
             state.date == CheckInDates.today() && CheckInDates.isAfterMidnight()
         ) {
             lateNightChecked = true
