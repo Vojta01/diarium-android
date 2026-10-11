@@ -279,6 +279,103 @@ class PickersRepository(
         ).isSuccessful
     }
 
+    // ── Habit management (add / remove) ─────────────────────────────────────
+
+    /**
+     * Adds a custom habit — the native port of the web's `manage-habits` "add":
+     * category `vlastní`, colour [DEFAULT_COLOR] and a `✅` icon when none is given.
+     *
+     * The key is the trimmed label's [slug], and it joins the day's entries, so the
+     * keys that are currently in use ([habits]) are checked first: a slug that is
+     * already taken gets a `_2`, `_3`, … suffix instead of silently upserting over
+     * another habit's row. The write itself is the same upsert as [updateHabit] —
+     * `on_conflict=user_id,key` with `resolution=merge-duplicates` — so a retry
+     * after a lost response cannot create a duplicate.
+     *
+     * Returns the row as written (so the caller can show it at once), or null for a
+     * blank label, no signed-in user or a failed request.
+     */
+    suspend fun addHabit(label: String, icon: String): HabitDef? = withContext(Dispatchers.IO) {
+        val userId = session.userId() ?: return@withContext null
+        val clean = label.trim()
+        if (clean.isBlank()) return@withContext null
+        val cleanIcon = icon.ifBlank { "✅" }
+        // Uniqueness against what the picker would show: an existing key keeps its
+        // rows, so the newcomer is suffixed rather than allowed to merge onto it.
+        val taken = habits().map { it.key }.toSet()
+        val base = slug(clean)
+        var key = base
+        var suffix = 2
+        while (key in taken) {
+            key = "${base}_$suffix"
+            suffix++
+        }
+        val body = JSONObject().apply {
+            put("user_id", userId)
+            put("key", key)
+            put("label", clean)
+            put("icon", cleanIcon)
+            put("category", "vlastní")
+            put("color", DEFAULT_COLOR)
+            put("is_negative", false)
+            put("is_active", true)
+        }
+        val created = client.post(
+            "user_habits",
+            body,
+            query = mapOf("on_conflict" to "user_id,key"),
+            extraHeaders = mapOf("Prefer" to "resolution=merge-duplicates"),
+        ).isSuccessful
+        if (!created) return@withContext null
+        HabitDef(
+            key = key,
+            label = clean,
+            icon = cleanIcon,
+            category = "vlastní",
+            color = DEFAULT_COLOR,
+            isNegative = false,
+            source = "user",
+            isActive = true,
+        )
+    }
+
+    /**
+     * Removes a habit the way the web does: an upsert with `is_active=false`, never
+     * a DELETE — the ticks past days stored under its key stay (a soft delete). On a
+     * catalogue default's key that inactive row becomes the hide-override [habits]
+     * already renders as "not shown"; on a custom key the habit simply disappears.
+     *
+     * The label, icon, category, colour and negative flag are written as they read
+     * now, so the hidden habit keeps its identity. Same read-then-upsert as
+     * [updateHabit]: an existing row keeps its own colour and category when it has
+     * them, the passed def's when it does not.
+     */
+    suspend fun removeHabit(habit: HabitDef): Boolean = withContext(Dispatchers.IO) {
+        val userId = session.userId() ?: return@withContext false
+        val existing = read(
+            "user_habits",
+            mapOf("user_id" to "eq.$userId", "key" to "eq.${habit.key}"),
+        ).firstOrNull()
+        val color = existing?.plainString("color")?.takeIf { it.isNotBlank() } ?: habit.color
+        val category = existing?.plainString("category")?.takeIf { it.isNotBlank() } ?: habit.category
+        val body = JSONObject().apply {
+            put("user_id", userId)
+            put("key", habit.key)
+            put("label", habit.label)
+            put("icon", habit.icon)
+            put("category", category)
+            put("color", color)
+            put("is_negative", habit.isNegative)
+            put("is_active", false)
+        }
+        client.post(
+            "user_habits",
+            body,
+            query = mapOf("on_conflict" to "user_id,key"),
+            extraHeaders = mapOf("Prefer" to "resolution=merge-duplicates"),
+        ).isSuccessful
+    }
+
     // ── internals ───────────────────────────────────────────────────────────
 
     private fun readUserActivities(): List<ActivityDef> {

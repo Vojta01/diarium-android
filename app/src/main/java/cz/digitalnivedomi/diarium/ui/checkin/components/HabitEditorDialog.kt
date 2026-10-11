@@ -3,6 +3,7 @@ package cz.digitalnivedomi.diarium.ui.checkin.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,13 +31,14 @@ import androidx.compose.ui.window.Dialog
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.ui.components.EmojiPickerDialog
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
+import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 
 /**
- * "Upravit návyk" — the icon and the label of one habit.
+ * "Upravit návyk" / "Nový návyk" — the icon and the label of one habit.
  *
  * Until now a habit's icon was whatever the catalogue row shipped with and there was no
  * way to change it; the same emoji picker the goals use now edits it here. The label is
@@ -44,25 +46,35 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
  * what I meant", and both are written together by
  * [cz.digitalnivedomi.diarium.core.data.PickersRepository.updateHabit].
  *
+ * With no [habit] the window is the create step instead — "Nový návyk", the icon well
+ * already holding the `✅` the repository would default to anyway — and save hands the
+ * values to the screen's [cz.digitalnivedomi.diarium.core.data.PickersRepository.addHabit].
+ * An existing habit additionally offers "✕ Odebrat návyk", which swaps this window into
+ * an inline confirm (no second dialog) and reports through [onRemove]; the wording there
+ * says what survives, because removal is a hide, not a delete.
+ *
  * The `key` is deliberately *not* editable: it is the join key the day's entries store
  * their ticks under, so renaming it would orphan them.
  *
- * Nothing is written here — [onSave] hands the three edited values back to the screen,
+ * Nothing is written here — [onSave] and [onRemove] hand the values back to the screen,
  * which owns the repository and reports failures on its own banner.
  */
 @Composable
 fun HabitEditorDialog(
-    habit: HabitDef,
+    habit: HabitDef? = null,
     saving: Boolean,
     onDismiss: () -> Unit,
     onSave: (label: String, icon: String, isNegative: Boolean) -> Unit,
+    onRemove: (() -> Unit)? = null,
 ) {
     // Seeded per habit, so opening the editor on another row never shows the previous
-    // row's values.
-    var label by rememberSaveable(habit.key) { mutableStateOf(habit.label) }
-    var icon by rememberSaveable(habit.key) { mutableStateOf(habit.icon) }
-    var isNegative by rememberSaveable(habit.key) { mutableStateOf(habit.isNegative) }
+    // row's values; in create mode the icon starts at the ✅ the repository defaults to.
+    var label by rememberSaveable(habit?.key) { mutableStateOf(habit?.label.orEmpty()) }
+    var icon by rememberSaveable(habit?.key) { mutableStateOf(habit?.icon ?: "✅") }
+    var isNegative by rememberSaveable(habit?.key) { mutableStateOf(habit?.isNegative ?: false) }
     var pickingIcon by rememberSaveable { mutableStateOf(false) }
+    // "✕ Odebrat návyk" was tapped: the window itself turns into the confirmation.
+    var confirmingRemove by rememberSaveable(habit?.key) { mutableStateOf(false) }
 
     if (pickingIcon) {
         EmojiPickerDialog(
@@ -79,9 +91,37 @@ fun HabitEditorDialog(
 
     val clean = label.trim()
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            accent = if (confirmingRemove) ErrorRed else Indigo,
+        ) {
+            if (confirmingRemove) {
+                // Removal is destructive but never loses data — the past days keep
+                // their ticks — so it is confirmed in words before anything is
+                // written, in this same window (see MoveDateDialog's overwrite step).
+                Text(
+                    text = "Odebrat návyk?",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary,
+                )
+                Spacer(Modifier.height(6.dp))
+                SectionHint("Historie zůstane.")
+                Spacer(Modifier.height(14.dp))
+                DestructiveButton(
+                    text = "Odebrat",
+                    enabled = !saving,
+                    testTag = "habit_remove_confirm",
+                ) { onRemove?.invoke() }
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(text = "Zpět", testTag = "habit_remove_back") {
+                    confirmingRemove = false
+                }
+                return@GlassCard
+            }
+
             Text(
-                text = "✏️ Upravit návyk",
+                text = if (habit == null) "Nový návyk" else "✏️ Upravit návyk",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary,
@@ -132,12 +172,22 @@ fun HabitEditorDialog(
 
             Spacer(Modifier.height(16.dp))
             PrimaryButton(
-                text = if (saving) "Ukládám…" else "Uložit návyk",
+                text = when {
+                    saving -> "Ukládám…"
+                    habit == null -> "Přidat"
+                    else -> "Uložit návyk"
+                },
                 enabled = clean.isNotEmpty() && !saving,
                 testTag = "habit_save",
             ) { onSave(clean, icon, isNegative) }
             Spacer(Modifier.height(8.dp))
             SecondaryButton(text = "Zrušit", testTag = "habit_cancel") { onDismiss() }
+            if (habit != null && onRemove != null) {
+                Spacer(Modifier.height(8.dp))
+                DestructiveButton(text = "✕ Odebrat návyk", testTag = "habit_remove") {
+                    confirmingRemove = true
+                }
+            }
         }
     }
 }
@@ -164,5 +214,38 @@ private fun IconButtonBox(
         contentAlignment = Alignment.Center,
     ) {
         Text(text = emoji.ifBlank { "🎯" }, fontSize = 22.sp)
+    }
+}
+
+/**
+ * The destructive twin of [SecondaryButton]: the same full-width glass shape in the
+ * theme's error colour instead of the neutral fill. Used for "✕ Odebrat návyk" and its
+ * confirm step, which are the only actions here that can make something disappear.
+ */
+@Composable
+private fun DestructiveButton(
+    text: String,
+    testTag: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(12.dp)
+    val color = MaterialTheme.colorScheme.error
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTagOrEmpty(testTag)
+            .clip(shape)
+            .background(color.copy(alpha = if (enabled) 0.14f else 0.06f))
+            .border(1.dp, color.copy(alpha = if (enabled) 0.45f else 0.2f), shape)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (enabled) color else TextSecondary,
+        )
     }
 }

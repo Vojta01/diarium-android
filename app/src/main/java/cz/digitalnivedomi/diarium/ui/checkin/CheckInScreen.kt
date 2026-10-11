@@ -148,8 +148,10 @@ fun CheckInScreen(
     // ── The 2026-09 additions ──
     // One-shot guard for the after-midnight step back to yesterday (see the load effect).
     var lateNightChecked by remember { mutableStateOf(false) }
-    // The habit whose icon/label is being edited, and whether that write is in flight.
+    // The habit editor window: the habit being edited (null = a new one is being
+    // created), whether the window is open, and whether that write is in flight.
     var habitEditor by remember { mutableStateOf<HabitDef?>(null) }
+    var habitEditorOpen by remember { mutableStateOf(false) }
     var habitSaving by remember { mutableStateOf(false) }
     // The "Změnit datum" flow: the picker, the day it came back with, and whether that
     // day already holds an entry (which turns the dialog into its overwrite step).
@@ -495,7 +497,14 @@ fun CheckInScreen(
             habits = habits,
             values = state.entry.habits,
             onToggle = { holder.toggleHabit(it) },
-            onEdit = { habit -> habitEditor = habit },
+            onEdit = { habit ->
+                habitEditor = habit
+                habitEditorOpen = true
+            },
+            onAddHabit = {
+                habitEditor = null
+                habitEditorOpen = true
+            },
         )
 
         GratitudeSection(
@@ -628,30 +637,69 @@ fun CheckInScreen(
         )
     }
 
-    // ── Habit editor: the icon and label of one habit ──
-    habitEditor?.let { habit ->
+    // ── Habit editor: the icon and label of one habit, or a brand-new one ──
+    if (habitEditorOpen) {
         HabitEditorDialog(
-            habit = habit,
+            habit = habitEditor,
             saving = habitSaving,
-            onDismiss = { habitEditor = null },
+            onDismiss = {
+                habitEditorOpen = false
+                habitEditor = null
+            },
             onSave = { label, icon, isNegative ->
+                val editing = habitEditor
                 habitSaving = true
                 scope.launch {
-                    val saved = pickersRepo?.updateHabit(habit.key, label, icon, isNegative) == true
-                    habitSaving = false
-                    if (saved) {
-                        // The grid reads the local list, so the edited row changes at once;
-                        // the write is what makes it survive the next read.
-                        habits = habits.map { item ->
-                            if (item.key == habit.key) {
-                                item.copy(label = label, icon = icon, isNegative = isNegative)
-                            } else {
-                                item
-                            }
+                    if (editing == null) {
+                        // Create mode: the repository slugs the label, uniquifies the key
+                        // and defaults the icon; the returned row is appended to the local
+                        // list — the same refresh-local way the edit below works.
+                        val created = pickersRepo?.addHabit(label, icon)
+                        habitSaving = false
+                        if (created != null) {
+                            habits = habits + created
+                            habitEditorOpen = false
+                            habitEditor = null
+                        } else {
+                            holder.markError("Návyk se nepodařilo přidat.")
                         }
-                        habitEditor = null
                     } else {
-                        holder.markError("Návyk se nepodařilo uložit.")
+                        val saved = pickersRepo?.updateHabit(editing.key, label, icon, isNegative) == true
+                        habitSaving = false
+                        if (saved) {
+                            // The grid reads the local list, so the edited row changes at
+                            // once; the write is what makes it survive the next read.
+                            habits = habits.map { item ->
+                                if (item.key == editing.key) {
+                                    item.copy(label = label, icon = icon, isNegative = isNegative)
+                                } else {
+                                    item
+                                }
+                            }
+                            habitEditorOpen = false
+                            habitEditor = null
+                        } else {
+                            holder.markError("Návyk se nepodařilo uložit.")
+                        }
+                    }
+                }
+            },
+            onRemove = {
+                val removing = habitEditor
+                if (removing != null) {
+                    habitSaving = true
+                    scope.launch {
+                        val removed = pickersRepo?.removeHabit(removing) == true
+                        habitSaving = false
+                        if (removed) {
+                            // Removal is the web's soft delete: the row leaves the grid,
+                            // but the ticks past days stored under its key stay.
+                            habits = habits.filterNot { it.key == removing.key }
+                            habitEditorOpen = false
+                            habitEditor = null
+                        } else {
+                            holder.markError("Návyk se nepodařilo odebrat.")
+                        }
                     }
                 }
             },

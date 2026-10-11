@@ -9,6 +9,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -222,6 +223,104 @@ class PickersRepositoryHabitsTest {
         assertEquals("#6366F1", body.getString("color"))
         assertTrue(body.getBoolean("is_negative"))
         assertTrue(body.getBoolean("is_active"))
+    }
+
+    // ── add / remove (management) ───────────────────────────────────────────
+
+    @Test
+    fun `addHabit upserts a new custom habit with the slugged key`() = runTest {
+        val habit = requireNotNull(
+            repository().addHabit(label = "  Jít běhat!  ", icon = ""),
+        ) { "addHabit must return the new habit" }
+
+        // The returned def is the row as written, ready to append to the grid.
+        assertEquals("jit_behat", habit.key)
+        assertEquals("Jít běhat!", habit.label)
+        assertEquals("✅", habit.icon)
+        assertEquals("vlastní", habit.category)
+        assertEquals("#6366F1", habit.color)
+        assertFalse(habit.isNegative)
+        assertEquals("user", habit.source)
+        assertTrue(habit.isActive)
+
+        val request = sent.single { it.method == "POST" }
+        assertTrue(request.url.startsWith("$BASE_URL/user_habits?"))
+        // The same conflict target every habit write uses: a retry cannot duplicate.
+        assertEquals("on_conflict=user_id,key", decoded(request))
+        assertEquals("resolution=merge-duplicates", request.headers["Prefer"])
+        val body = JSONObject(request.body!!)
+        assertEquals(USER_ID, body.getString("user_id"))
+        // The label keeps its punctuation, only the key is a slug.
+        assertEquals("jit_behat", body.getString("key"))
+        assertEquals("Jít běhat!", body.getString("label"))
+        // A blank icon becomes the web's default rather than an empty string.
+        assertEquals("✅", body.getString("icon"))
+        assertEquals("vlastní", body.getString("category"))
+        assertEquals("#6366F1", body.getString("color"))
+        assertFalse(body.getBoolean("is_negative"))
+        assertTrue(body.getBoolean("is_active"))
+    }
+
+    @Test
+    fun `addHabit suffixes a slug that is already taken`() = runTest {
+        userRows = JSONArray()
+            .put(userRow("u1", "jit_behat", "Jít běhat", active = true))
+            .toString()
+
+        val habit = requireNotNull(repository().addHabit(label = "Jít běhat", icon = "🏃")) {
+            "addHabit must return the new habit"
+        }
+
+        // The existing row keeps its key; the newcomer moves to the next free suffix.
+        assertEquals("jit_behat_2", habit.key)
+        val body = JSONObject(sent.single { it.method == "POST" }.body!!)
+        assertEquals("jit_behat_2", body.getString("key"))
+    }
+
+    @Test
+    fun `addHabit refuses a blank label before any write`() = runTest {
+        val added = repository().addHabit(label = "   ", icon = "🏃")
+
+        assertNull(added)
+        // Nothing may reach the database on behalf of an unnamed habit.
+        assertFalse("no POST may be sent", sent.any { it.method == "POST" })
+    }
+
+    @Test
+    fun `removeHabit hides the habit with an is_active false upsert`() = runTest {
+        val saved = repository().removeHabit(
+            HabitDef(
+                key = "alkohol",
+                label = "Alkohol",
+                icon = "🍺",
+                category = "zdraví",
+                color = "#ef4444",
+                isNegative = true,
+                source = "default",
+            ),
+        )
+
+        assertTrue(saved)
+        // Same shape as updateHabit: the current row is read first, then upserted.
+        val request = sent.single { it.method == "POST" }
+        val read = decoded(sent.single { it.method == "GET" })
+        assertTrue("the read targets the removed row", read.contains("key=eq.alkohol"))
+        assertTrue(request.url.startsWith("$BASE_URL/user_habits?"))
+        assertEquals("on_conflict=user_id,key", decoded(request))
+        assertEquals("resolution=merge-duplicates", request.headers["Prefer"])
+        val body = JSONObject(request.body!!)
+        assertEquals(USER_ID, body.getString("user_id"))
+        assertEquals("alkohol", body.getString("key"))
+        // The habit is hidden as itself: label, icon and flag survive the removal.
+        assertEquals("Alkohol", body.getString("label"))
+        assertEquals("🍺", body.getString("icon"))
+        assertEquals("zdraví", body.getString("category"))
+        assertEquals("#ef4444", body.getString("color"))
+        assertTrue(body.getBoolean("is_negative"))
+        // "Removal" is a hide, so past days keep their ticks and the row is never
+        // deleted.
+        assertFalse(body.getBoolean("is_active"))
+        assertFalse(sent.any { it.method == "DELETE" })
     }
 
     private fun decoded(request: HttpRequest): String =
