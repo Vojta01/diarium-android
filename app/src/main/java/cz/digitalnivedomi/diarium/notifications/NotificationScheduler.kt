@@ -17,6 +17,10 @@ import java.time.ZoneId
  * morning "yesterday not filled" check, weekly Sunday 20:00, monthly 1st).
  * Rescheduled on boot and on prefs change.
  *
+ * The report jobs additionally get a battery-friendly periodic safety net
+ * ([ReportSafetyNetWorker]) so a missed exact alarm (doze, reboot, OEM battery
+ * saver) cannot silently skip a report — all timing still lives in the app.
+ *
  * All wall-clock math lives in the pure [NotificationSchedulerLogic]; this object
  * is only the Android/AlarmManager glue.
  */
@@ -47,6 +51,11 @@ object NotificationScheduler {
         else cancel(context, REQ_WEEKLY)
         if (prefs.monthlyEnabled) scheduleMonthly(context, prefs)
         else cancel(context, REQ_MONTHLY)
+
+        // The reports are driven by the exact alarms above; the periodic check
+        // only rescues a missed alarm, so it is always armed (the worker itself
+        // respects the per-type switches).
+        ReportSafetyNetWorker.schedule(context)
     }
 
     /**

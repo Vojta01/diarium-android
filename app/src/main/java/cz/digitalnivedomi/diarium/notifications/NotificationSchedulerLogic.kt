@@ -2,9 +2,12 @@ package cz.digitalnivedomi.diarium.notifications
 
 import java.time.Instant
 import java.time.LocalDate
+import java.time.OffsetDateTime
 import java.time.YearMonth
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.time.format.DateTimeParseException
+import java.time.temporal.ChronoUnit
 
 /**
  * Pure JVM scheduling logic for the notification jobs. Deliberately free
@@ -152,5 +155,75 @@ object MorningReminder {
         // staying silent. Unlike the evening reminder, which fires on unknown.
         if (hasYesterdayMood == null) return false
         return !hasYesterdayMood
+    }
+}
+
+/**
+ * Decides whether an already generated report is recent enough to notify about
+ * without asking the server for a fresh one. Reports are app-driven: the exact
+ * alarm asks the server to generate shortly before the user's chosen time, and
+ * a row created within the freshness window is "this run's" report — the worker
+ * must not trigger a second generation.
+ */
+object ReportFreshness {
+
+    /**
+     * @param createdAtIso `created_at` from `ai_reports`, e.g.
+     *   `2026-10-11T20:57:34.740885+00:00`
+     * @param now the caller's clock
+     * @param windowHours how far back a report still counts as fresh
+     * @return true only for a parseable timestamp newer than `now - windowHours`;
+     *   an unparseable timestamp is treated as NOT fresh (the caller then asks
+     *   the server to generate instead of silently notifying about something old).
+     */
+    fun isFresh(createdAtIso: String, now: Instant, windowHours: Long): Boolean {
+        val created = try {
+            OffsetDateTime.parse(createdAtIso).toInstant()
+        } catch (_: DateTimeParseException) {
+            return false
+        }
+        return created.isAfter(now.minus(windowHours, ChronoUnit.HOURS))
+    }
+}
+
+/**
+ * When the periodic safety net ([ReportSafetyNetWorker]) should act. The exact
+ * alarm at the user's chosen time is the primary trigger; the safety window
+ * opens only AFTER that time has passed (so the net never preempts the alarm)
+ * and stays quiet at night — a rescued report then notifies the next morning
+ * instead of at 03:00. All checks are pure local wall-clock math.
+ */
+object ReportSafetyWindow {
+
+    /** The same-day window ends before this hour; a rescue never notifies at night. */
+    private const val QUIET_FROM_HOUR = 23
+
+    /** The next-day window covers daytime hours only. */
+    private const val DAY_START_HOUR = 8
+    private const val DAY_END_HOUR = 20
+
+    /**
+     * @param weeklyDay the user's chosen day (1=Mo…7=Su)
+     * @param weeklyTimeMinutes the user's chosen time (minutes past midnight)
+     */
+    fun isWeeklyWindow(now: ZonedDateTime, weeklyDay: Int, weeklyTimeMinutes: Int): Boolean {
+        val day = now.dayOfWeek.value // 1=Mo…7=Su
+        val minutes = now.hour * 60 + now.minute
+        val nextDay = if (weeklyDay == 7) 1 else weeklyDay + 1
+        return when (day) {
+            weeklyDay -> minutes >= weeklyTimeMinutes + 30 && now.hour < QUIET_FROM_HOUR
+            nextDay -> now.hour in DAY_START_HOUR until DAY_END_HOUR
+            else -> false
+        }
+    }
+
+    /** The monthly alarm always fires on the 1st; the rescue covers the 1st (late) and the 2nd (daytime). */
+    fun isMonthlyWindow(now: ZonedDateTime, monthlyTimeMinutes: Int): Boolean {
+        val minutes = now.hour * 60 + now.minute
+        return when (now.dayOfMonth) {
+            1 -> minutes >= monthlyTimeMinutes + 30 && now.hour < QUIET_FROM_HOUR
+            2 -> now.hour in DAY_START_HOUR until DAY_END_HOUR
+            else -> false
+        }
     }
 }

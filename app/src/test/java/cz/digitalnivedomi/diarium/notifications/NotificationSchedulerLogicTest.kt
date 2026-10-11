@@ -8,6 +8,7 @@ import org.junit.Test
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.time.ZonedDateTime
 
 /**
  * Pure JVM tests for the schedulers. No `LocalDate.now()` anywhere — every test
@@ -198,5 +199,76 @@ class NotificationSchedulerLogicTest {
     fun morning_markerFromAnotherDate_notifies() {
         val prefs = NotificationPrefs(lastMorningReminderDate = "2026-09-11")
         assertTrue(MorningReminder.shouldNotify(prefs, morningToday, hasYesterdayMood = false))
+    }
+
+    // ── Report freshness (as it is a fresh row, do not regenerate) ──
+
+    private val nowInstant: Instant = Instant.parse("2026-10-11T18:00:00Z")
+
+    @Test
+    fun freshness_recentReport_isFresh() {
+        // The alarm runs at 20:00 Prague = 18:00 UTC; a row generated right then is fresh.
+        assertTrue(ReportFreshness.isFresh("2026-10-11T17:59:00+00:00", nowInstant, 24))
+    }
+
+    @Test
+    fun freshness_reportOlderThanWindow_isNotFresh() {
+        assertFalse(ReportFreshness.isFresh("2026-10-10T17:00:00+00:00", nowInstant, 24))
+    }
+
+    @Test
+    fun freshness_microsecondPrecision_parses() {
+        // Supabase returns created_at with microsecond precision and a +00:00 offset.
+        assertTrue(ReportFreshness.isFresh("2026-10-11T17:30:12.446936+00:00", nowInstant, 24))
+    }
+
+    @Test
+    fun freshness_futureTimestampWithOffset_isFresh() {
+        // Parsed as an instant — a non-UTC offset must not break the comparison.
+        assertTrue(ReportFreshness.isFresh("2026-10-11T19:30:00+02:00", nowInstant, 24))
+    }
+
+    @Test
+    fun freshness_unparseableTimestamp_isNotFresh() {
+        assertFalse(ReportFreshness.isFresh("", nowInstant, 24))
+        assertFalse(ReportFreshness.isFresh("not-a-date", nowInstant, 24))
+    }
+
+    // ── Report safety window (periodic rescue of a missed alarm) ──
+
+    private fun z(y: Int, m: Int, d: Int, h: Int, min: Int): ZonedDateTime =
+        ZonedDateTime.of(y, m, d, h, min, 0, 0, prague)
+
+    @Test
+    fun safety_weekly_opensAfterTheChosenTime() {
+        // Sunday 20:00 chosen; 20:29 is the alarm's own grace, 20:31 is the safety net's.
+        assertFalse(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 11, 19, 45), 7, 20 * 60))
+        assertTrue(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 11, 20, 31), 7, 20 * 60))
+    }
+
+    @Test
+    fun safety_weekly_staysQuietAtNightAndCoversTheNextDay() {
+        assertFalse(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 11, 23, 30), 7, 20 * 60))
+        assertFalse(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 12, 3, 0), 7, 20 * 60))
+        assertTrue(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 12, 10, 0), 7, 20 * 60))
+        assertFalse(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 12, 21, 0), 7, 20 * 60))
+    }
+
+    @Test
+    fun safety_weekly_followsTheChosenDay() {
+        // Wednesday 21:00 chosen → the window is Wednesday (late) and Thursday (daytime).
+        assertTrue(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 14, 21, 30), 3, 21 * 60))
+        assertFalse(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 14, 21, 30), 7, 20 * 60))
+        assertTrue(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 15, 9, 0), 3, 21 * 60))
+    }
+
+    @Test
+    fun safety_monthly_coversFirstLateAndSecondDaytime() {
+        assertFalse(ReportSafetyWindow.isMonthlyWindow(z(2026, 11, 1, 8, 0), 9 * 60))
+        assertTrue(ReportSafetyWindow.isMonthlyWindow(z(2026, 11, 1, 9, 31), 9 * 60))
+        assertFalse(ReportSafetyWindow.isMonthlyWindow(z(2026, 11, 1, 23, 30), 9 * 60))
+        assertFalse(ReportSafetyWindow.isMonthlyWindow(z(2026, 11, 2, 3, 0), 9 * 60))
+        assertTrue(ReportSafetyWindow.isMonthlyWindow(z(2026, 11, 2, 10, 0), 9 * 60))
+        assertFalse(ReportSafetyWindow.isMonthlyWindow(z(2026, 11, 3, 10, 0), 9 * 60))
     }
 }

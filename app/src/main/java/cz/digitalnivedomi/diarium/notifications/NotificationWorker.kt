@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.concurrent.TimeUnit
@@ -33,18 +34,20 @@ import java.util.concurrent.TimeUnit
  *  - morning: the pure [MorningReminder] fires only when YESTERDAY's mood is
  *    definitively missing (owner request 2026-09-25); unknown (offline) stays
  *    silent, and it does not care whether today is filled.
- *  - weekly/monthly: asks the server to generate the period report, then polls
- *    `ai_reports` for a NEW row (id ≠ last-notified marker) and notifies
- *    "📊 … reflexe je připravená". The tap opens the AI Reports screen
- *    (`Routes.REPORTS`, period in the `open_report_type` extra).
+ *  - weekly/monthly: the app is the only scheduler — the exact alarm (and the
+ *    periodic safety net, [ReportSafetyNetWorker]) triggers this worker, which
+ *    asks the server to generate the period report when nothing fresh exists,
+ *    then polls `ai_reports` briefly and notifies the new row (id ≠ last-notified
+ *    marker). A row that is already fresh is notified without another
+ *    generation. The tap opens the AI Reports screen (`Routes.REPORTS`, period
+ *    in the `open_report_type` extra).
  *
  * Reads and the report download go through [SupabaseClient] with the user JWT
  * (RLS-secured). The one deliberate exception is the report *generation* call:
- * the web has no cron of its own (`vercel.json` ships `"crons": []`) and the
- * DeepSeek key must never live in the APK, so the worker asks
+ * the DeepSeek key must never live in the APK, so the worker asks
  * `GET {DIARIUM_URL}/api/cron/ai-report?type=…` — an endpoint that accepts the
- * user's own JWT and generates only that user's report. No server secret is
- * involved on the phone side.
+ * user's own JWT and generates only that user's report. No server secret and no
+ * server-side schedule is involved anywhere.
  */
 class NotificationWorker(
     appContext: Context,
@@ -137,8 +140,8 @@ class NotificationWorker(
     }
 
     // ── Weekly / monthly reports ───────────────────────────────
-    // App-driven: the report row already lives in `ai_reports`; we poll it and
-    // notify when a new one (id ≠ marker) shows up.
+    // App-driven: a fresh row (asked for moments ago) is only notified;
+    // otherwise we ask the route to generate one and poll `ai_reports`.
 
     private suspend fun handleReport(type: String) {
         val prefs = prefsStore.load()
@@ -147,12 +150,17 @@ class NotificationWorker(
 
         val marker = if (type == "weekly") prefs.lastWeeklyNotifiedId else prefs.lastMonthlyNotifiedId
 
-        // Nothing on the server generates this report on a schedule, so ask for
-        // it first — DeepSeek needs a while, so when the request was accepted we
-        // give the row a few seconds to appear before deciding there is nothing
-        // new (a missed row is picked up by the next run, not lost).
-        val requested = requestReportGeneration(type)
-        val latest = latestReport(type, attempts = if (requested) REPORT_POLL_ATTEMPTS else 1) ?: return
+        // Never ask for a second report when a fresh one already sits on the
+        // server (this run's own request, the safety net, or a manual run).
+        // Otherwise ask the route to generate it and give DeepSeek a moment
+        // (the route retries empty outputs, so up to ~75 s) to produce the row.
+        val existing = latestReportOnce(type)
+        val latest = if (existing != null && isFresh(existing)) {
+            existing
+        } else {
+            val requested = requestReportGeneration(type)
+            latestReport(type, attempts = if (requested) REPORT_POLL_ATTEMPTS else 1)
+        } ?: return
         val id = latest.optString("id")
         if (id.isEmpty() || id == marker) return // nothing new yet
 
@@ -168,6 +176,13 @@ class NotificationWorker(
             sound = prefs.sound,
             reportType = type,
         )
+    }
+
+    /** A recently generated row is "this run's" report — notify it, do not regenerate. */
+    private fun isFresh(report: JSONObject): Boolean {
+        val createdAt = report.optString("created_at")
+        return createdAt.isNotEmpty() &&
+            ReportFreshness.isFresh(createdAt, Instant.now(), FRESH_REPORT_WINDOW_HOURS)
     }
 
     // ── Supabase queries (user JWT, RLS-secured) ────────────────
@@ -304,9 +319,13 @@ class NotificationWorker(
     }
 
     private companion object {
-        /** DeepSeek needs a few seconds; three tries cover it without holding the worker. */
-        const val REPORT_POLL_ATTEMPTS = 3
+        /** The route retries empty generations, so allow up to ~75 s (15 × 5 s) of polling. */
+        const val REPORT_POLL_ATTEMPTS = 15
         const val REPORT_POLL_DELAY_MS = 5_000L
+
+        /** How old a report may be and still count as "this run's" (no regeneration). */
+        const val FRESH_REPORT_WINDOW_HOURS = 24L
+
         const val REQ_REMINDER_PI = 3001
         const val REQ_WEEKLY_PI = 3002
         const val REQ_MONTHLY_PI = 3003
