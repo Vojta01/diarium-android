@@ -97,6 +97,12 @@ fun DiariumApp(
     authState: AuthStateHolder,
     onSignIn: () -> Unit = {},
     onAuthDeepLink: (String) -> Boolean = { false },
+    /** In-app route a tapped notification asked to open; acted on inside the signed-in shell. */
+    notificationRoute: State<String?> = remember { mutableStateOf<String?>(null) },
+    /** "weekly"/"monthly" when the notification was a reflection — which card to reveal. */
+    notificationReportType: State<String?> = remember { mutableStateOf<String?>(null) },
+    /** The route was placed (or cannot be placed) — the host clears it. */
+    onNotificationHandled: () -> Unit = {},
 ) {
     val authStatus by authState.status.collectAsState()
     var signInInProgress by remember { mutableStateOf(false) }
@@ -136,7 +142,12 @@ fun DiariumApp(
                 },
             )
 
-            AuthStatus.AUTHENTICATED -> AuthenticatedScaffold(onSignOut = authState::signOut)
+            AuthStatus.AUTHENTICATED -> AuthenticatedScaffold(
+                onSignOut = authState::signOut,
+                notificationRoute = notificationRoute,
+                notificationReportType = notificationReportType,
+                onNotificationHandled = onNotificationHandled,
+            )
         }
     }
 }
@@ -151,7 +162,12 @@ fun DiariumApp(
  * content, so nothing below this function had to change.
  */
 @Composable
-private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
+private fun AuthenticatedScaffold(
+    onSignOut: () -> Unit,
+    notificationRoute: State<String?>,
+    notificationReportType: State<String?>,
+    onNotificationHandled: () -> Unit,
+) {
     val navController = rememberNavController()
     // The tab screens' state holders live here, above the NavHost, so navigating away
     // and back does not rebuild them: Navigation disposes a destination's composition
@@ -173,6 +189,28 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
             launchSingleTop = true
             restoreState = true
         }
+    }
+
+    /** Which AI-report card the reflection notification asked to reveal. */
+    var reportsFocus by remember { mutableStateOf<String?>(null) }
+
+    // A tapped notification carries a route (`open_route`, plus `open_report_type`
+    // for reflections). It is acted on only here — inside the signed-in shell — so a
+    // route that arrives before login simply waits for the scaffold instead of being
+    // dropped, and it is consumed only once it was placed (2026-10-01 owner request).
+    LaunchedEffect(notificationRoute.value, notificationReportType.value) {
+        val route = notificationRoute.value ?: return@LaunchedEffect
+        when (route) {
+            Routes.REPORTS -> {
+                val type = notificationReportType.value
+                if (type == "weekly" || type == "monthly") reportsFocus = type
+                navController.navigate(Routes.REPORTS) { launchSingleTop = true }
+            }
+            Routes.HOME, Routes.CHECK_IN, Routes.HISTORY, Routes.STATS, Routes.SETTINGS ->
+                switchTab(route)
+            // Anything else is consumed and ignored — the app still opens where it opens.
+        }
+        onNotificationHandled()
     }
 
     DiariumShellBackdrop {
@@ -252,7 +290,17 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                             },
                         )
                     }
-                    composable(Routes.STATS) { StatsRoute(holder = screenStates.stats) }
+                    composable(Routes.STATS) {
+                        StatsRoute(
+                            holder = screenStates.stats,
+                            // Same contract as the dashboard and history entrances: the
+                            // shell owns the navigation to check-in.
+                            onOpenCheckIn = { date ->
+                                requestedDate = date
+                                switchTab(Routes.CHECK_IN)
+                            },
+                        )
+                    }
                     composable(Routes.SETTINGS) {
                         SettingsScreen(
                             onSignOut = onSignOut,
@@ -319,7 +367,11 @@ private fun AuthenticatedScaffold(onSignOut: () -> Unit) {
                         // The chrome carries the title, which comes from the same object the
                         // screen uses, so the two cannot drift apart.
                         SubScreenChrome(title = ReportsState.TITLE, onBack = { navController.popBackStack() }) {
-                            ReportsScreen(deps = deps)
+                            ReportsScreen(
+                                deps = deps,
+                                focusType = reportsFocus,
+                                onFocusConsumed = { reportsFocus = null },
+                            )
                         }
                     }
                 }

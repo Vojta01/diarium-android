@@ -67,6 +67,8 @@ private const val WORST_INDEX = 6
 internal fun BestWorstDayBlock(
     days: List<StatsDay>,
     entryByDate: Map<String, DiaryEntry> = emptyMap(),
+    /** Straight to the check-in form for that day; owned by the app shell. */
+    onOpenCheckIn: (String) -> Unit = {},
 ) {
     val best = StatsMath.bestDay(days) ?: return
     val worst = StatsMath.worstDay(days) ?: best
@@ -117,9 +119,9 @@ internal fun BestWorstDayBlock(
             date = date,
             entry = entryByDate[date],
             onDismiss = { detailDate = null },
-            // The statistics tab reaches the day itself, not the check-in form — the
-            // app shell owns that navigation, so the window only closes.
-            onOpenCheckIn = {},
+            // Straight to the check-in form for that day — the app shell owns the
+            // navigation; the window only closes and hands the date over.
+            onOpenCheckIn = onOpenCheckIn,
         )
     }
 }

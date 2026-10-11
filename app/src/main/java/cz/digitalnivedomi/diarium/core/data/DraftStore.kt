@@ -6,7 +6,11 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
  * Per-date drafts — the native twin of the web's `diarium_draft_{date}`
@@ -22,9 +26,22 @@ import kotlinx.coroutines.flow.first
  */
 class DraftStore(private val dataStore: DataStore<Preferences>) {
 
+    /**
+     * Backs [flush]: a lifecycle callback (ON_STOP / onDispose) cannot suspend, so
+     * the write is launched here and has to outlive the screen that asked for it.
+     * SupervisorJob on purpose — one failed flush must not kill the scope and with
+     * it every later flush.
+     */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     suspend fun save(date: String, entry: DiaryEntry) {
         val key = stringPreferencesKey(key(date))
         dataStore.edit { prefs -> prefs[key] = entry.toJson().toString() }
+    }
+
+    /** Fire-and-forget save for lifecycle flushes — the caller (ON_STOP / onDispose) cannot suspend. */
+    fun flush(date: String, entry: DiaryEntry) {
+        appScope.launch { save(date, entry) }
     }
 
     suspend fun load(date: String): DiaryEntry? {

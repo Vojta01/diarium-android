@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DailyGoal
@@ -98,21 +101,41 @@ fun CheckInScreen(
     val holder = remember { CheckInStateHolder() }
     val state = holder.state
 
-    // A day picked elsewhere (the calendar tab, the dashboard's "Dnes" card): land the
-    // form on it. The host is told the request was used so it can clear it — a later
-    // plain visit to "Dnes" has to start on today again.
-    LaunchedEffect(requestedDate) {
-        if (requestedDate != null) {
-            holder.setDate(requestedDate)
-            onRequestedDateConsumed()
-        }
-    }
-
     val entriesRepo = deps.entries
     val reflectionRepo = deps.reflection
     val pickersRepo = deps.pickers
     val drafts = deps.drafts
     val goalsStore = deps.goals
+
+    /**
+     * Flushes the pending debounced draft — leaving the screen (a tab switch) or the
+     * app stopping must not lose the write the 1.2 s autosave was still holding
+     * (2026-09-25). The guards mirror the autosave: a saved day and a day with no
+     * content never get a draft. [CheckInStateHolder.state] is read here at call time
+     * on purpose — a closure over the composition's `state` value would flush a stale
+     * entry when onDispose fires.
+     */
+    fun flushDraft() {
+        val d = drafts ?: return
+        val s = holder.state
+        if (s.saved || !s.entry.hasContent()) return
+        d.flush(s.date, s.entry)
+    }
+
+    // A day picked elsewhere (the calendar tab, the dashboard's "Dnes" card): land the
+    // form on it. The host is told the request was used so it can clear it — a later
+    // plain visit to "Dnes" has to start on today again.
+    LaunchedEffect(requestedDate) {
+        if (requestedDate != null) {
+            // The day being left gets its pending draft flushed before the switch.
+            flushDraft()
+            holder.setDate(requestedDate)
+            // A day opened from another screen is meant to be edited, not read —
+            // the double tap was the owner's complaint (2026-10-01).
+            holder.requestEdit()
+            onRequestedDateConsumed()
+        }
+    }
 
     var activities by remember { mutableStateOf(PickerDefaults.ACTIVITY_FALLBACK) }
     var hiddenActivities by remember { mutableStateOf<List<ActivityDef>>(emptyList()) }
@@ -182,6 +205,13 @@ fun CheckInScreen(
         delay(1200)
         drafts.save(state.date, state.entry)
     }
+
+    // The pending debounced draft must not die with the process (2026-09-25 fix):
+    // ON_STOP is the last callback the app is guaranteed to get before it can be killed.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { flushDraft() }
+
+    // Leaving the screen inside the app (a tab switch) disposes it — same flush.
+    DisposableEffect(Unit) { onDispose { flushDraft() } }
 
     /**
      * The RPC call itself, shared by [save] and [generateReflection]: the AI

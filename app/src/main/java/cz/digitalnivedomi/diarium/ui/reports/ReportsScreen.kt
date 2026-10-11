@@ -1,5 +1,10 @@
+@file:OptIn(ExperimentalFoundationApi::class)
+
 package cz.digitalnivedomi.diarium.ui.reports
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +59,7 @@ import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Test tags — the Compose tests address the controls by these, never by Czech copy. */
@@ -96,9 +104,17 @@ private enum class ReportPhase {
  * With no repository ([ReportsDeps.offline]) the screen says the reports are unavailable
  * instead of showing the "nothing generated yet" card: a screen that could not reach the
  * server must never look like an empty diary.
+ *
+ * [focusType] is the deep link from the weekly/monthly reflection notification: the
+ * matching card is scrolled into view and briefly glows (see the focus effect below).
+ * That focus is one-shot, so [onFocusConsumed] lets the parent clear it once it is spent.
  */
 @Composable
-fun ReportsScreen(deps: ReportsDeps) {
+fun ReportsScreen(
+    deps: ReportsDeps,
+    focusType: String? = null,
+    onFocusConsumed: () -> Unit = {},
+) {
     val scope = rememberCoroutineScope()
 
     // Maps keyed by report type ("weekly"/"monthly"). A snapshot-backed map keeps the two
@@ -111,6 +127,26 @@ fun ReportsScreen(deps: ReportsDeps) {
     val generating = remember { mutableStateMapOf<String, Boolean>() }
 
     var reloadTick by remember { mutableStateOf(0) }
+
+    // One bring-into-view requester per card, keyed off ReportsState.TYPES, so the
+    // notification deep link can scroll exactly the card it names.
+    val requesters = remember {
+        ReportsState.TYPES.associateWith { BringIntoViewRequester() }
+    }
+    var highlightType by remember { mutableStateOf<String?>(null) }
+
+    // Consumes the reflection notification's one-shot focus: scroll to the matching card,
+    // glow it briefly, then hand the spent focus back to the parent to clear.
+    LaunchedEffect(focusType) {
+        val type = focusType ?: return@LaunchedEffect
+        if (type !in ReportsState.TYPES) { onFocusConsumed(); return@LaunchedEffect }
+        delay(250) // let the first layout settle so bringIntoView has a target
+        requesters[type]?.bringIntoView()
+        highlightType = type
+        delay(2000)
+        highlightType = null
+        onFocusConsumed()
+    }
 
     // The report, its phase and its reason always move together: a card can never end up
     // showing a body it did not load, or an error with nothing to explain it.
@@ -222,6 +258,8 @@ fun ReportsScreen(deps: ReportsDeps) {
                 generating = generating[type] == true,
                 onGenerate = { onGenerate(type) },
                 onRetry = { reloadTick++ },
+                focusRequester = requesters.getValue(type),
+                highlighted = highlightType == type,
             )
         }
     }
@@ -242,10 +280,22 @@ private fun ReportCard(
     generating: Boolean,
     onGenerate: () -> Unit,
     onRetry: () -> Unit,
+    focusRequester: BringIntoViewRequester,
+    highlighted: Boolean,
 ) {
     val haptics = rememberHaptics()
+    // The deep-link glow: invisible at rest (alpha 0, so an unfocused card looks exactly
+    // as before), it fades in while this card is the focus target and out shortly after.
+    val glow by animateFloatAsState(
+        targetValue = if (highlighted) 0.45f else 0f,
+        animationSpec = tween(durationMillis = 450),
+        label = "report-focus-glow",
+    )
     GlassCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .bringIntoViewRequester(focusRequester)
+            .accentGlow(IndigoLight, alpha = glow),
         accent = if (phase == ReportPhase.ERROR) WarnColor else Indigo,
     ) {
         Text(

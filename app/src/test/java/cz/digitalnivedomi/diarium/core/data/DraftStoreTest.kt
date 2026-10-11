@@ -6,7 +6,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -110,6 +112,27 @@ class DraftStoreTest {
 
         assertNull(store.load("2026-09-10"))
         assertNotNull(store.load("2026-09-09"))
+
+        handle.close()
+    }
+
+    @Test
+    fun `flush writes the pending draft without a suspending caller`() = runBlocking {
+        val handle = newStore(tempFile())
+        val store = handle.store
+        val date = "2026-09-11"
+        val entry = DiaryEntry(mood = 2, moodEmoji = "🙁", note = "spěchá")
+
+        // ON_STOP / onDispose call it exactly like this: no scope, no suspend.
+        store.flush(date, entry)
+
+        // The write runs on the store's own scope, so poll for it.
+        withTimeout(5_000) {
+            while (store.load(date) == null) delay(25)
+        }
+
+        assertEquals(entry, store.load(date))
+        assertEquals("spěchá", store.load(date)?.note)
 
         handle.close()
     }

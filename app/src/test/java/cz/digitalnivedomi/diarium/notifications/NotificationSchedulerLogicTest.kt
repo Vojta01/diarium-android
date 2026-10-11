@@ -1,6 +1,7 @@
 package cz.digitalnivedomi.diarium.notifications
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -157,5 +158,45 @@ class NotificationSchedulerLogicTest {
         val z = local(next)
         assertEquals(25, z.dayOfMonth)
         assertEquals(Instant.parse("2026-10-25T00:30:00Z").toEpochMilli(), next)
+    }
+
+    // ── Morning reminder ("včerejšek není vyplněn") ────────────
+
+    private val morningToday = "2026-09-12"
+
+    @Test
+    fun morning_disabled_doesNotNotify() {
+        val prefs = NotificationPrefs(morningReminderEnabled = false)
+        assertFalse(MorningReminder.shouldNotify(prefs, morningToday, hasYesterdayMood = false))
+    }
+
+    @Test
+    fun morning_alreadyRemindedToday_doesNotNotify() {
+        val prefs = NotificationPrefs(lastMorningReminderDate = morningToday)
+        assertFalse(MorningReminder.shouldNotify(prefs, morningToday, hasYesterdayMood = false))
+    }
+
+    @Test
+    fun morning_yesterdayMoodRecorded_doesNotNotify() {
+        val prefs = NotificationPrefs()
+        assertFalse(MorningReminder.shouldNotify(prefs, morningToday, hasYesterdayMood = true))
+    }
+
+    @Test
+    fun morning_yesterdayMoodMissing_notifies() {
+        val prefs = NotificationPrefs()
+        assertTrue(MorningReminder.shouldNotify(prefs, morningToday, hasYesterdayMood = false))
+    }
+
+    @Test
+    fun morning_yesterdayUnknown_staysSilent() {
+        val prefs = NotificationPrefs()
+        assertFalse(MorningReminder.shouldNotify(prefs, morningToday, hasYesterdayMood = null))
+    }
+
+    @Test
+    fun morning_markerFromAnotherDate_notifies() {
+        val prefs = NotificationPrefs(lastMorningReminderDate = "2026-09-11")
+        assertTrue(MorningReminder.shouldNotify(prefs, morningToday, hasYesterdayMood = false))
     }
 }

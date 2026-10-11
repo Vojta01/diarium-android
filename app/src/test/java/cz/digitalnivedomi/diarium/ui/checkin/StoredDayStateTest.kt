@@ -151,6 +151,56 @@ class StoredDayStateTest {
         assertFalse(holder.consumeFinished())
     }
 
+    // ── requestedDate means edit (2026-10-01) ──
+
+    @Test
+    fun `a requested day arrives directly in the form`() {
+        val holder = holder()
+
+        holder.setDate("2026-09-20")
+        holder.requestEdit()
+        holder.load(DiaryEntry(mood = 4, note = "den zapsán"), stored = true)
+
+        assertTrue("one arrival on a stored day means edit — no second tap", holder.state.editing)
+        assertFalse(holder.state.showsPassiveDay)
+    }
+
+    @Test
+    fun `loading a stored day without a request stays passive`() {
+        val holder = holder()
+
+        holder.load(DiaryEntry(mood = 4), stored = true)
+
+        assertFalse("a plain bottom-bar visit must not open the form", holder.state.editing)
+        assertTrue(holder.state.showsPassiveDay)
+    }
+
+    @Test
+    fun `a day switch clears a pending edit request`() {
+        val holder = holder()
+
+        holder.requestEdit()
+        holder.setDate("2026-09-21")
+        holder.load(DiaryEntry(mood = 4), stored = true)
+
+        assertFalse("the request belongs to one arrival only", holder.state.editing)
+        assertTrue(holder.state.showsPassiveDay)
+    }
+
+    @Test
+    fun `the edit request is consumed once`() {
+        val holder = holder()
+
+        holder.requestEdit()
+        holder.load(DiaryEntry(mood = 4), stored = true)
+        assertTrue(holder.state.editing)
+
+        // A return to the tab (or a rotation) re-reads the row; the request is spent.
+        holder.load(DiaryEntry(mood = 4), stored = true)
+        assertFalse(holder.state.editing)
+        assertTrue(holder.state.showsPassiveDay)
+    }
+
     private companion object {
         const val DATE = "2026-09-10"
     }

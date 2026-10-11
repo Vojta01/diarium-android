@@ -97,6 +97,54 @@ class DashboardRepositoryRangeTest {
         assertEquals(7, data.week.size)
     }
 
+    // ── The month window (the dashboard's mood chart) ─────────────────────────
+
+    @Test
+    fun `the month holds one entry per loaded day, ending today, oldest first`() = runTest {
+        response = HttpResponse(200, rows().toString())
+
+        val month = repository().load(TODAY).getOrThrow().month
+
+        assertEquals(DashboardRepository.LOAD_DAYS, month.size)
+        assertEquals("2026-08-12", month.first().date) // today - 29 days
+        assertEquals(TODAY, month.last().date)
+        assertTrue(month.zipWithNext().all { (older, newer) -> older.date < newer.date })
+    }
+
+    @Test
+    fun `the month maps the seeded entries and keeps the rest as placeholders`() = runTest {
+        response = HttpResponse(200, rows().toString())
+
+        val month = repository().load(TODAY).getOrThrow().month
+        val byDate = month.associateBy { it.date }
+
+        val today = byDate.getValue(TODAY)
+        assertEquals(5, today.mood)
+        assertTrue(today.hasEntry)
+        assertEquals(6000, today.screenTimeSeconds)
+        assertEquals(10, today.unlocks)
+
+        val yesterday = byDate.getValue("2026-09-09")
+        assertEquals(3, yesterday.mood)
+        assertTrue(yesterday.hasEntry)
+
+        // A day the read returned nothing for still holds its slot on the axis.
+        val blank = byDate.getValue("2026-08-12")
+        assertEquals(0, blank.mood)
+        assertFalse(blank.hasEntry)
+        assertNull(blank.screenTimeSeconds)
+        assertNull(blank.unlocks)
+    }
+
+    @Test
+    fun `an empty read still yields a full month of placeholders`() = runTest {
+        val month = repository().load(TODAY).getOrThrow().month
+
+        assertEquals(DashboardRepository.LOAD_DAYS, month.size)
+        assertEquals(TODAY, month.last().date)
+        assertTrue(month.all { !it.hasEntry && it.mood == 0 })
+    }
+
     @Test
     fun `a server error renders as a Czech failure, never as a zeroed dashboard`() = runTest {
         response = HttpResponse(503, "")

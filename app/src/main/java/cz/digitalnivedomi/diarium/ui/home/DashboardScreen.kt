@@ -287,9 +287,14 @@ private fun DashboardContent(
         }
         StaggeredItem(1) { StreakCard(data = data) }
         StaggeredItem(2) { WeekCard(data = data, onOpenDay = { date -> detailDate = date }) }
-        StaggeredItem(3) { ScreenTimeCard(data = data, onReload = onReload) }
-        StaggeredItem(4) { UnlocksCard(data = data, onReload = onReload) }
-        StaggeredItem(5) { TopAppsCard(data = data, onReload = onReload) }
+        // The interactive mood chart (owner request 2026-09-24, Variant A): the
+        // statistics screen's own chart, right under the week strip, which stays.
+        StaggeredItem(3) {
+            MoodChartCard(month = data.month, onOpenDay = { date -> detailDate = date })
+        }
+        StaggeredItem(4) { ScreenTimeCard(data = data, onReload = onReload) }
+        StaggeredItem(5) { UnlocksCard(data = data, onReload = onReload) }
+        StaggeredItem(6) { TopAppsCard(data = data, onReload = onReload) }
         // The card keys off the newest *recorded* day (mood filled, see RecordDay):
         // a day the phone only synced is not a record and must not blank the card
         // (2026-09-12). Hidden only when the "Dnes" card already renders that exact
@@ -297,7 +302,7 @@ private fun DashboardContent(
         val anchor = data.newestRecorded ?: data.newestEntry
         val todayShowsIt = !data.todayEntry?.aiReflection.isNullOrBlank()
         if (!todayShowsIt && (anchor != null || data.reflection != null)) {
-            StaggeredItem(6) {
+            StaggeredItem(7) {
                 ReflectionCard(
                     anchor = anchor,
                     latest = data.reflection,
@@ -307,7 +312,7 @@ private fun DashboardContent(
         }
         // The M5 screens have no tab of their own (the bar already carries five),
         // so the overview carries their entrances. Pure navigation, no read.
-        StaggeredItem(6) { EntriesCard(onOpen = onOpen) }
+        StaggeredItem(7) { EntriesCard(onOpen = onOpen) }
     }
 
     // The two windows sit beside the scrolling column, not inside it: opening a day

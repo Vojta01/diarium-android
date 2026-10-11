@@ -75,7 +75,10 @@ fun NotificationsSettingsScreen(deps: NotificationsSettingsDeps) {
     fun apply(updated: NotificationPrefs) {
         prefs = updated
         store?.save(updated)
+        // Both "already reminded" markers reset, so a tuned time can still fire the
+        // same day (the owner tests the morning reminder that way).
         store?.setLastReminderDate(null)
+        store?.setLastMorningReminderDate(null)
         deps.onReschedule(updated)
     }
 
@@ -130,6 +133,24 @@ fun NotificationsSettingsScreen(deps: NotificationsSettingsDeps) {
                 subtitle = "Kanál: ${NotificationSettingsState.channelLabel(prefs.sound)}",
                 checked = prefs.sound,
                 onCheckedChange = { apply(prefs.copy(sound = it)) },
+            )
+        }
+
+        // ── Ranní kontrola včerejška ──────────────────────────────────────────
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+            SettingsSectionTitle("Ranní kontrola")
+            ToggleRow(
+                title = "Ranní kontrola včerejška",
+                subtitle = "Pípne jen když včerejšek nemá náladu",
+                checked = prefs.morningReminderEnabled,
+                onCheckedChange = { apply(prefs.copy(morningReminderEnabled = it)) },
+            )
+            GlassDivider()
+            TimeRow(
+                title = "Čas ranní kontroly",
+                subtitle = "Kdy zkontrolovat včerejšek",
+                minutes = prefs.morningReminderTimeMinutes,
+                onPick = { apply(prefs.copy(morningReminderTimeMinutes = it)) },
             )
         }
 
@@ -204,9 +225,15 @@ fun NotificationsSettingsScreen(deps: NotificationsSettingsDeps) {
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             SettingsSectionTitle("Klepnutí a oprávnění")
             InfoRow(
-                title = "Klepnutí na notifikaci",
-                subtitle = "Vždy otevře Přehled",
+                title = "Připomenutí",
+                subtitle = "Pípnutí otevře Přehled",
                 value = "Přehled",
+            )
+            GlassDivider()
+            InfoRow(
+                title = "Reflexe",
+                subtitle = "Otevře AI Přehledy na své kartě",
+                value = "AI Přehledy",
             )
             GlassDivider()
             StatusRow(

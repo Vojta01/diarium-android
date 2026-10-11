@@ -7,7 +7,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 
 /**
- * Pure JVM scheduling logic for the three notification jobs. Deliberately free
+ * Pure JVM scheduling logic for the notification jobs. Deliberately free
  * of every Android import so it can be unit tested on the JVM with a fixed
  * instant — the Android glue ([NotificationScheduler]) only converts the
  * returned epoch millis into an AlarmManager call.
@@ -121,5 +121,36 @@ object SmartReminder {
         if (prefs.lastReminderDate == todayIso) return false // never twice a day
         if (prefs.smartReminder && hasSavedEntry) return false // already checked in
         return true
+    }
+}
+
+/**
+ * Pure morning-reminder decision — "včerejšek není vyplněn" (owner request
+ * 2026-09-25): fires the morning after a day whose mood was never filled in.
+ *
+ * The day-of-week convention is irrelevant here: unlike the evening reminder
+ * ([NotificationPrefs.reminderDays]), the morning reminder runs **every day**.
+ *
+ * Unlike [SmartReminder], which fires on an unknown answer so the evening
+ * check-in is never silently dropped, this reminder stays silent on unknown
+ * (offline): it asserts a fact about yesterday, and crying wolf when the day
+ * may be filled is worse than staying silent.
+ */
+object MorningReminder {
+
+    /**
+     * @param todayIso today in the device zone, `yyyy-MM-dd`
+     * @param hasYesterdayMood true = mood recorded, false = definitively missing,
+     *   null = unknown (offline / query failure)
+     * @return true when the morning reminder should fire now
+     */
+    fun shouldNotify(prefs: NotificationPrefs, todayIso: String, hasYesterdayMood: Boolean?): Boolean {
+        if (!prefs.morningReminderEnabled) return false
+        if (prefs.lastMorningReminderDate == todayIso) return false // never twice a day
+        // null (offline / unknown) → do NOT notify: the notification asserts a fact
+        // about yesterday, and crying wolf when the day may be filled is worse than
+        // staying silent. Unlike the evening reminder, which fires on unknown.
+        if (hasYesterdayMood == null) return false
+        return !hasYesterdayMood
     }
 }

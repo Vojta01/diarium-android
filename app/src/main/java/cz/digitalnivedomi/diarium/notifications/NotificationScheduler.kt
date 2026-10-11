@@ -12,9 +12,10 @@ import androidx.work.WorkManager
 import java.time.ZoneId
 
 /**
- * Schedules the three notification jobs with AlarmManager at the exact times
+ * Schedules the four notification jobs with AlarmManager at the exact times
  * the user chose. Every fire re-arms the next occurrence (daily reminder,
- * weekly Sunday 20:00, monthly 1st). Rescheduled on boot and on prefs change.
+ * morning "yesterday not filled" check, weekly Sunday 20:00, monthly 1st).
+ * Rescheduled on boot and on prefs change.
  *
  * All wall-clock math lives in the pure [NotificationSchedulerLogic]; this object
  * is only the Android/AlarmManager glue.
@@ -24,12 +25,14 @@ object NotificationScheduler {
     const val ACTION_ALARM = "cz.digitalnivedomi.diarium.ALARM"
     const val EXTRA_TYPE = "alarm_type"
     const val TYPE_REMINDER = "reminder"
+    const val TYPE_MORNING = "morning"
     const val TYPE_WEEKLY = "weekly"
     const val TYPE_MONTHLY = "monthly"
 
     private const val REQ_REMINDER = 2001
     private const val REQ_WEEKLY = 2002
     private const val REQ_MONTHLY = 2003
+    private const val REQ_MORNING = 2004
 
     /** Inexact fallback window used when exact alarms are not permitted. */
     private const val INEXACT_WINDOW_MS = 15 * 60 * 1000L
@@ -38,6 +41,8 @@ object NotificationScheduler {
         val prefs = NotificationPrefsStore(context).load()
         if (prefs.reminderEnabled) scheduleReminder(context, prefs)
         else cancel(context, REQ_REMINDER)
+        if (prefs.morningReminderEnabled) scheduleMorning(context, prefs)
+        else cancel(context, REQ_MORNING)
         if (prefs.weeklyEnabled) scheduleWeekly(context, prefs)
         else cancel(context, REQ_WEEKLY)
         if (prefs.monthlyEnabled) scheduleMonthly(context, prefs)
@@ -45,11 +50,13 @@ object NotificationScheduler {
     }
 
     /**
-     * Call after the user saves settings: clears the "reminded today" marker so a
+     * Call after the user saves settings: clears the "reminded today" markers so a
      * newly chosen time can still fire today, then re-arms every enabled alarm.
      */
     fun onPrefsSaved(context: Context) {
-        NotificationPrefsStore(context).setLastReminderDate(null)
+        val store = NotificationPrefsStore(context)
+        store.setLastReminderDate(null)
+        store.setLastMorningReminderDate(null)
         rescheduleAll(context)
     }
 
@@ -73,6 +80,17 @@ object NotificationScheduler {
             zone = ZoneId.systemDefault(),
         ) ?: return // no day selected → nothing to arm
         setExact(context, REQ_REMINDER, next, alarmIntent(context, TYPE_REMINDER))
+    }
+
+    /** Every day of the week — "yesterday has no mood" can be true any morning. */
+    private fun scheduleMorning(context: Context, prefs: NotificationPrefs) {
+        val next = NotificationSchedulerLogic.nextDailyMillis(
+            now = System.currentTimeMillis(),
+            timeMinutes = prefs.morningReminderTimeMinutes,
+            days = setOf(1, 2, 3, 4, 5, 6, 7),
+            zone = ZoneId.systemDefault(),
+        ) ?: return // all seven days selected → unreachable
+        setExact(context, REQ_MORNING, next, alarmIntent(context, TYPE_MORNING))
     }
 
     private fun scheduleWeekly(context: Context, prefs: NotificationPrefs) {
@@ -108,6 +126,7 @@ object NotificationScheduler {
 
     private fun requestCodeFor(type: String): Int = when (type) {
         TYPE_REMINDER -> REQ_REMINDER
+        TYPE_MORNING -> REQ_MORNING
         TYPE_WEEKLY -> REQ_WEEKLY
         else -> REQ_MONTHLY
     }

@@ -1,10 +1,8 @@
 package cz.digitalnivedomi.diarium.ui.stats
 
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,7 +28,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -38,16 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,14 +58,17 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.testTagOrEmpty
 import cz.digitalnivedomi.diarium.ui.components.AnimatedCounter
 import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
-import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.GlassSurface
+import cz.digitalnivedomi.diarium.ui.components.MoodTrendCaption
+import cz.digitalnivedomi.diarium.ui.components.MoodTrendChart
+import cz.digitalnivedomi.diarium.ui.components.MoodTrendSlot
 import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.components.ShimmerBox
 import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
 import cz.digitalnivedomi.diarium.ui.components.VSpace
+import cz.digitalnivedomi.diarium.ui.components.chartBarBrush
 import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
 import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.components.topSheen
@@ -85,8 +76,6 @@ import cz.digitalnivedomi.diarium.ui.theme.Dimens
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
 import cz.digitalnivedomi.diarium.ui.theme.Gradients
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
-import cz.digitalnivedomi.diarium.ui.theme.IndigoDeep
-import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.MotionTokens
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
@@ -126,6 +115,8 @@ fun StatsScreen(
     // Owned by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
     // switching tabs must not throw away the period that was just read.
     holder: StatsStateHolder = remember { StatsStateHolder() },
+    /** Opens the check-in for a day from the best/worst card — owned by the app shell. */
+    onOpenCheckIn: (String) -> Unit = {},
 ) {
     val state = holder.state
     val data = state.data
@@ -173,6 +164,7 @@ fun StatsScreen(
                 range = state.range,
                 onSelectRange = holder::selectRange,
                 onReload = { reloadTrigger++ },
+                onOpenCheckIn = onOpenCheckIn,
             )
         }
 
@@ -220,14 +212,6 @@ private fun moodLabelOf(mood: Int): String =
 
 /** The web prints `toFixed(1)`, so averages keep a dot rather than a Czech comma. */
 private fun formatAverageMood(value: Double): String = String.format(Locale.US, "%.1f", value)
-
-/**
- * Vertical brand-lit gradient for one column of a chart: the day's own colour at the
- * top, sinking towards the deep indigo at the baseline (same light direction the glass
- * surfaces use).
- */
-private fun chartBarBrush(base: Color): Brush =
-    Gradients.fill(listOf(base, lerp(base, IndigoDeep, 0.62f)), vertical = true)
 
 /**
  * Visible loading: never a zeroed statistics screen while the read is in flight.
@@ -384,6 +368,7 @@ private fun StatsContent(
     range: StatsRange,
     onSelectRange: (StatsRange) -> Unit,
     onReload: () -> Unit,
+    onOpenCheckIn: (String) -> Unit = {},
 ) {
     val days = data.forRange(range)
     Column(
@@ -410,7 +395,7 @@ private fun StatsContent(
             StaggeredItem(5) { ActivityCard(days = days) }
             // The extremes own their own entrance (a header + one card per side), so
             // the stagger lives inside the block, not in a second wrapping animatable.
-            BestWorstDayBlock(days = days, entryByDate = data.entryByDate)
+            BestWorstDayBlock(days = days, entryByDate = data.entryByDate, onOpenCheckIn = onOpenCheckIn)
         }
 
         // Hairline rule between two blocks, instead of whitespace alone.
@@ -612,7 +597,7 @@ private fun MoodDistributionCard(days: List<StatsDay>, rangeLabel: String) {
  * therefore draws **one bar per month**, the mean of that month's answered days, with a
  * 3-month moving average across the twelve points. The drawing, the tap detail and the
  * arithmetic ([StatsMath.movingAverageOf]) are the same code for both — only the buckets
- * differ.
+ * differ; the drawing itself lives in the shared [MoodTrendChart].
  *
  * Unanswered days and unwritten months stay in as a near-flat grey stub so the slot still
  * exists on the time axis, but they are excluded from the line — see
@@ -624,10 +609,10 @@ private fun MoodTrendCard(days: List<StatsDay>, year: Int? = null) {
     val months = if (year != null) StatsMath.monthlyMood(days, year) else emptyList()
     val points = if (monthly) emptyList() else StatsMath.moodTrend(days)
 
-    val slots: List<TrendSlot> = if (monthly) {
+    val slots: List<MoodTrendSlot> = if (monthly) {
         months.map { month ->
             val monthAverage = month.averageMood
-            TrendSlot(
+            MoodTrendSlot(
                 key = "m${month.month}",
                 label = StatsMath.monthShortName(month.month),
                 title = "${StatsMath.monthFullName(month.month)} $year",
@@ -649,7 +634,7 @@ private fun MoodTrendCard(days: List<StatsDay>, year: Int? = null) {
     } else {
         points.map { point ->
             val written = point.mood in StatsMath.MOOD_MIN..StatsMath.MOOD_MAX
-            TrendSlot(
+            MoodTrendSlot(
                 key = point.date,
                 label = shortDateOf(point.date),
                 title = shortDateOf(point.date),
@@ -681,43 +666,6 @@ private fun MoodTrendCard(days: List<StatsDay>, year: Int? = null) {
         "${StatsMath.MOVING_AVERAGE_WINDOW}denní klouzavý průměr"
     }
 
-    var selected by remember(monthly, points.size, months.size) { mutableStateOf<Int?>(null) }
-    val haptics = rememberLightHaptics()
-
-    // One animated fraction per slot, keyed by date (or month number): switching the
-    // window re-grows each column into its new value instead of snapping to it.
-    val barFractions: List<Float> = slots.map { slot ->
-        key(slot.key) {
-            val target = if (slot.written) {
-                (slot.mood / 5f) * 0.92f
-            } else {
-                0.02f
-            }
-            val animated by animateFloatAsState(
-                targetValue = target,
-                animationSpec = tween(
-                    durationMillis = MotionTokens.mediumMillis,
-                    easing = MotionTokens.standardEasing,
-                ),
-                label = "moodTrendBar",
-            )
-            animated
-        }
-    }
-
-    // A one-shot reveal so changing the period replays the chart entrance.
-    val reveal = remember { Animatable(0f) }
-    LaunchedEffect(slots.size, slots.firstOrNull()?.key) {
-        reveal.snapTo(0f)
-        reveal.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(
-                durationMillis = MotionTokens.slowMillis,
-                easing = MotionTokens.standardEasing,
-            ),
-        )
-    }
-
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader(
             "📈 Vývoj nálady",
@@ -746,182 +694,16 @@ private fun MoodTrendCard(days: List<StatsDay>, year: Int? = null) {
         )
         VSpace(14)
 
-        Box(modifier = Modifier.fillMaxWidth().height(TRACK)) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val count = slots.size
-                if (count == 0) return@Canvas
-                val slot = size.width / count
-
-                // Hairline grid, then one solid baseline — instead of heavy rules.
-                listOf(0.25f, 0.5f, 0.75f).forEach { fraction ->
-                    val y = size.height * fraction
-                    drawLine(
-                        color = Color.White.copy(alpha = 0.04f),
-                        start = Offset(0f, y),
-                        end = Offset(size.width, y),
-                        strokeWidth = 1f,
-                    )
-                }
-                drawLine(
-                    color = Outline.copy(alpha = 0.55f),
-                    start = Offset(0f, size.height),
-                    end = Offset(size.width, size.height),
-                    strokeWidth = 1f,
-                )
-
-                // A year's twelve bars can be chunky without touching each other; the
-                // daily bars keep the hairline gap that makes a run of days readable.
-                val barWidth = (slot * if (count <= 12) 0.5f else 0.6f).coerceAtLeast(2f)
-                val barRadius = (barWidth / 2f).coerceAtMost(12f)
-                slots.forEachIndexed { index, column ->
-                    val heightFraction = barFractions.getOrElse(index) { 0f } * reveal.value
-                    val barHeight = size.height * heightFraction
-                    if (barHeight <= 0f) return@forEachIndexed
-                    drawRoundRect(
-                        brush = chartBarBrush(moodColor(column.mood)),
-                        topLeft = Offset(index * slot + (slot - barWidth) / 2f, size.height - barHeight),
-                        size = Size(barWidth, barHeight),
-                        cornerRadius = CornerRadius(barRadius, barRadius),
-                        alpha = if (selected == null || selected == index) 1f else 0.35f,
-                    )
-                }
-
-                val line = Path()
-                var started = false
-                average.forEachIndexed { index, value ->
-                    if (value == null) return@forEachIndexed
-                    val x = index * slot + slot / 2f
-                    val y = size.height - (value.toFloat() / 5f) * size.height * 0.92f * reveal.value
-                    if (started) line.lineTo(x, y) else { line.moveTo(x, y); started = true }
-                }
-                if (started) {
-                    drawPath(
-                        path = line,
-                        brush = Gradients.fill(Gradients.brand),
-                        style = Stroke(width = 3f, cap = StrokeCap.Round, join = StrokeJoin.Round),
-                    )
-                }
-                average.forEachIndexed { index, value ->
-                    if (value == null) return@forEachIndexed
-                    drawCircle(
-                        color = IndigoLight,
-                        radius = 3f,
-                        center = Offset(
-                            index * slot + slot / 2f,
-                            size.height - (value.toFloat() / 5f) * size.height * 0.92f * reveal.value,
-                        ),
-                    )
-                }
-            }
-
-            Row(modifier = Modifier.matchParentSize()) {
-                slots.indices.forEach { index ->
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .testTagOrEmpty("stats_trend_bar")
-                            .clickable {
-                                haptics()
-                                selected = if (selected == index) null else index
-                            },
-                    )
-                }
-            }
-        }
-
-        VSpace(6)
-        if (monthly) {
-            // All twelve months are captioned — that is the whole point of the year view:
-            // the reader can name a column without tapping it. Months the read holds
-            // nothing for stay dim, so the row still lines up with the calendar instead of
-            // skipping them (the web's grid does the same).
-            Row(modifier = Modifier.fillMaxWidth()) {
-                slots.forEach { column ->
-                    Text(
-                        text = column.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontSize = 9.sp,
-                        color = if (column.written) TextSecondary else TextTertiary,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            }
-        } else if (slots.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(shortDateOf(slots.first().key), style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-                Text(shortDateOf(slots.last().key), style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-            }
-        }
-
-        // The year's takeaway in one line, right under the columns: with twelve bars the
-        // shape alone does not say which month was the good one.
-        if (monthly) {
-            monthSummary(months)?.let { summary ->
-                VSpace(8)
-                Text(
-                    text = summary,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary,
-                )
-            }
-        }
-
-        VSpace(10)
-        // Legend as a glass chip instead of a bare dot + line.
-        GlassChip(text = averageLabel, accent = IndigoLight)
-
-        selected?.let { index ->
-            val column = slots.getOrNull(index)
-            if (column != null) {
-                VSpace(10)
-                GlassDivider()
-                VSpace(10)
-                ReadOnlyRow(label = column.title, value = column.moodText)
-                column.detailRows.forEach { (label, value) ->
-                    VSpace(6)
-                    ReadOnlyRow(label = label, value = value)
-                }
-                average.getOrNull(index)?.let { value ->
-                    VSpace(6)
-                    ReadOnlyRow(
-                        label = if (monthly) averageLabel else "7denní průměr",
-                        value = "${formatAverageMood(value)} / 5",
-                    )
-                }
-            }
-        }
+        MoodTrendChart(
+            slots = slots,
+            average = average,
+            averageLabel = averageLabel,
+            averageDetailLabel = if (monthly) averageLabel else "7denní průměr",
+            caption = if (monthly) MoodTrendCaption.PerSlot else MoodTrendCaption.EdgeDates,
+            summary = if (monthly) monthSummary(months) else null,
+        )
     }
 }
-
-/**
- * One column of the trend chart: a day in the short windows, a month in the year window.
- *
- * Flattening both into one shape is what lets the year reuse the daily chart's drawing,
- * tap handling and detail rows instead of a second chart that would drift from it.
- */
-private data class TrendSlot(
-    /** Identity for the grow animation and the reveal — a date, or `m3` for March. */
-    val key: String,
-    /** The caption under the column ("Led"). */
-    val label: String,
-    /** What the tap detail calls this column ("Leden 2026", "13. 9."). */
-    val title: String,
-    /** The value the bar is drawn from; 0 keeps the near-flat grey stub of a blank slot. */
-    val mood: Int,
-    /** True when the slot holds a real answer — blank slots stay off the moving average. */
-    val written: Boolean,
-    /** The mood sentence of the tap detail ("🙂 Dobře", "Bez odpovědi"). */
-    val moodText: String,
-    /** Extra label → value rows of the tap detail. */
-    val detailRows: List<Pair<String, String>>,
-)
 
 /**
  * "Nejlepší: Srpen 4,1 / 5 · nejslabší: Únor 2,9 / 5" — the year's one-line takeaway, or

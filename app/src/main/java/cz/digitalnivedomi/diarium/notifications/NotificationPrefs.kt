@@ -10,6 +10,9 @@ data class NotificationPrefs(
     val reminderTimeMinutes: Int = 19 * 60,          // 19:00
     val reminderDays: Set<Int> = setOf(1, 2, 3, 4, 5, 6, 7), // 1=Po … 7=Ne
     val smartReminder: Boolean = true,               // only if no entry saved today
+    // Morning reminder — "včerejšek není vyplněn" (owner request 2026-09-25)
+    val morningReminderEnabled: Boolean = true,
+    val morningReminderTimeMinutes: Int = 8 * 60,    // 08:00
     val weeklyEnabled: Boolean = true,
     val weeklyDay: Int = 7,                          // 7 = Sunday (report generated Sunday 20:00)
     val weeklyTimeMinutes: Int = 20 * 60,            // 20:00
@@ -22,6 +25,7 @@ data class NotificationPrefs(
     val sound: Boolean = true,
     // Markers — remember what we already notified so we never double-notify
     val lastReminderDate: String? = null,
+    val lastMorningReminderDate: String? = null,     // morning reminder marker
     val lastWeeklyNotifiedId: String? = null,
     val lastMonthlyNotifiedId: String? = null,
 )
@@ -38,6 +42,8 @@ class NotificationPrefsStore(context: Context) {
             ?.let { parseDays(it) }
             ?: setOf(1, 2, 3, 4, 5, 6, 7),
         smartReminder = prefs.getBoolean(KEY_SMART, true),
+        morningReminderEnabled = prefs.getBoolean(KEY_MORNING, true),
+        morningReminderTimeMinutes = prefs.getInt(KEY_MORNING_TIME, 8 * 60),
         weeklyEnabled = prefs.getBoolean(KEY_WEEKLY, true),
         weeklyDay = prefs.getInt(KEY_WEEKLY_DAY, 7),
         weeklyTimeMinutes = prefs.getInt(KEY_WEEKLY_TIME, 20 * 60),
@@ -48,6 +54,7 @@ class NotificationPrefsStore(context: Context) {
         screenSyncMorningMinutes = prefs.getInt(KEY_SYNC_MORNING, 7 * 60),
         sound = prefs.getBoolean(KEY_SOUND, true),
         lastReminderDate = prefs.getString(KEY_LAST_REMINDER, null),
+        lastMorningReminderDate = prefs.getString(KEY_LAST_MORNING, null),
         lastWeeklyNotifiedId = prefs.getString(KEY_LAST_WEEKLY, null),
         lastMonthlyNotifiedId = prefs.getString(KEY_LAST_MONTHLY, null),
     )
@@ -59,6 +66,8 @@ class NotificationPrefsStore(context: Context) {
             .putInt(KEY_REMINDER_TIME, p.reminderTimeMinutes)
             .putString(KEY_REMINDER_DAYS, JSONArray(p.reminderDays.toList()).toString())
             .putBoolean(KEY_SMART, p.smartReminder)
+            .putBoolean(KEY_MORNING, p.morningReminderEnabled)
+            .putInt(KEY_MORNING_TIME, p.morningReminderTimeMinutes)
             .putBoolean(KEY_WEEKLY, p.weeklyEnabled)
             .putInt(KEY_WEEKLY_DAY, p.weeklyDay)
             .putInt(KEY_WEEKLY_TIME, p.weeklyTimeMinutes)
@@ -73,6 +82,10 @@ class NotificationPrefsStore(context: Context) {
 
     fun setLastReminderDate(date: String?) {
         prefs.edit().putString(KEY_LAST_REMINDER, date).apply()
+    }
+
+    fun setLastMorningReminderDate(date: String?) {
+        prefs.edit().putString(KEY_LAST_MORNING, date).apply()
     }
 
     fun setLastWeeklyId(id: String?) {
@@ -97,6 +110,8 @@ class NotificationPrefsStore(context: Context) {
         private const val KEY_REMINDER_TIME = "reminder_time"
         private const val KEY_REMINDER_DAYS = "reminder_days"
         private const val KEY_SMART = "reminder_smart"
+        private const val KEY_MORNING = "morning_enabled"
+        private const val KEY_MORNING_TIME = "morning_time"
         private const val KEY_WEEKLY = "weekly_enabled"
         private const val KEY_WEEKLY_DAY = "weekly_day"
         private const val KEY_WEEKLY_TIME = "weekly_time"
@@ -107,6 +122,7 @@ class NotificationPrefsStore(context: Context) {
         private const val KEY_SYNC_MORNING = "sync_morning_time"
         private const val KEY_SOUND = "sound"
         private const val KEY_LAST_REMINDER = "last_reminder_date"
+        private const val KEY_LAST_MORNING = "last_morning_date"
         private const val KEY_LAST_WEEKLY = "last_weekly_id"
         private const val KEY_LAST_MONTHLY = "last_monthly_id"
     }

@@ -17,6 +17,8 @@ import cz.digitalnivedomi.diarium.auth.AuthManager
 import cz.digitalnivedomi.diarium.auth.AuthStateHolder
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.fcm.FcmTokenRegistrar
+import cz.digitalnivedomi.diarium.notifications.EXTRA_OPEN_REPORT_TYPE
+import cz.digitalnivedomi.diarium.notifications.EXTRA_OPEN_ROUTE
 import cz.digitalnivedomi.diarium.notifications.NotificationScheduler
 import cz.digitalnivedomi.diarium.sync.SyncScheduler
 import cz.digitalnivedomi.diarium.ui.DiariumApp
@@ -36,6 +38,12 @@ class MainActivity : ComponentActivity() {
 
     /** `diarium://auth-callback#access_token=…` handed up to the auth layer. */
     private val authDeepLink = mutableStateOf<String?>(null)
+
+    /** In-app route a tapped notification asked to open (extra `open_route`). */
+    private val notificationRoute = mutableStateOf<String?>(null)
+
+    /** "weekly"/"monthly" when the notification was a reflection (`open_report_type`). */
+    private val notificationReportType = mutableStateOf<String?>(null)
 
     /**
      * Mirrors whether the user lets us post notifications. The M6 notifications
@@ -74,6 +82,8 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermissionIfNeeded()
 
         authDeepLink.value = intent?.dataString
+        // A notification tap on a cold start: the route for the Compose shell to place.
+        applyNotificationIntent(intent)
 
         setContent {
             DiariumTheme {
@@ -82,6 +92,12 @@ class MainActivity : ComponentActivity() {
                     authState = authState,
                     onSignIn = { authManager.startSignIn() },
                     onAuthDeepLink = { link -> authManager.handleAuthCallback(Uri.parse(link)) },
+                    notificationRoute = notificationRoute,
+                    notificationReportType = notificationReportType,
+                    onNotificationHandled = {
+                        notificationRoute.value = null
+                        notificationReportType.value = null
+                    },
                 )
             }
         }
@@ -92,6 +108,20 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         // A deep link arriving while the app is already open (e.g. OAuth return).
         authDeepLink.value = intent.dataString
+        // The same intent may be a notification tap; both extras are re-read.
+        applyNotificationIntent(intent)
+    }
+
+    /**
+     * Reads the notification route extras (`open_route` / `open_report_type`) out of
+     * [intent] — both on a cold start and on a tap that lands in a running app.
+     * Nothing is consumed here: the Compose shell places the route once the user is
+     * signed in and then clears it through `onNotificationHandled`.
+     */
+    private fun applyNotificationIntent(intent: Intent?) {
+        val route = intent?.getStringExtra(EXTRA_OPEN_ROUTE) ?: return
+        notificationRoute.value = route
+        notificationReportType.value = intent.getStringExtra(EXTRA_OPEN_REPORT_TYPE)
     }
 
     private fun requestNotificationPermissionIfNeeded() {

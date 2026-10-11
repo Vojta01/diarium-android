@@ -43,7 +43,8 @@ class DiariumFirebaseMessagingService : FirebaseMessagingService() {
         val body = message.notification?.body ?: return
         // The server may target a route; otherwise the tap opens the dashboard.
         val route = message.data[EXTRA_OPEN_ROUTE] ?: Routes.HOME
-        showNotification(title, body, route)
+        val reportType = message.data[EXTRA_OPEN_REPORT_TYPE]
+        showNotification(title, body, route, reportType)
     }
 
     /**
@@ -61,12 +62,13 @@ class DiariumFirebaseMessagingService : FirebaseMessagingService() {
         }
     }
 
-    private fun showNotification(title: String, body: String, route: String) {
+    private fun showNotification(title: String, body: String, route: String, reportType: String?) {
         ensureRemindersChannel()
 
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(EXTRA_OPEN_ROUTE, route)
+            if (reportType != null) putExtra(EXTRA_OPEN_REPORT_TYPE, reportType)
         }
         val pi = PendingIntent.getActivity(
             this, 0, intent,
@@ -120,6 +122,12 @@ class DiariumFirebaseMessagingService : FirebaseMessagingService() {
          * name must not diverge, and this branch must not create that file.
          */
         const val EXTRA_OPEN_ROUTE = "open_route"
+
+        /**
+         * Which AI-report card a reflection push targets ("weekly"/"monthly").
+         * The literal matches `NotificationIntents.EXTRA_OPEN_REPORT_TYPE`.
+         */
+        const val EXTRA_OPEN_REPORT_TYPE = "open_report_type"
 
         /** Stable id so a newer push replaces the previous one instead of stacking. */
         const val NOTIFICATION_ID = 1001

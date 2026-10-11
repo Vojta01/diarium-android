@@ -82,6 +82,14 @@ data class DashboardData(
      * without a second request. Empty in tests that build the dashboard by hand.
      */
     val entryByDate: Map<String, DiaryEntry> = emptyMap(),
+    /**
+     * The whole [LOAD_DAYS]-day window the read covers, oldest first, in the same
+     * shape as [week] — what the dashboard's mood chart card draws under its 7/30-day
+     * switch. Days the read has no entry for keep their slot as mood-less
+     * placeholders, exactly like the week window's, so both views line up with the
+     * calendar.
+     */
+    val month: List<DashboardDay> = emptyList(),
 )
 
 /**
@@ -167,6 +175,9 @@ class DashboardRepository(private val entries: EntriesRepository) {
             val week = daysFor(weekWindow(today), byDate)
             // Same shape, one week back: the trend captions compare like with like.
             val previousWeek = daysFor(previousWindow(today), byDate)
+            // The whole loaded window, oldest first — the mood chart's 30-day view;
+            // its 7-day view simply takes the tail of this list.
+            val month = daysFor(monthWindow(today), byDate)
 
             // A mood of 0 means "not answered", not "the worst possible day": the
             // check-in stores 0 for an untouched picker, so averaging it in would
@@ -196,6 +207,7 @@ class DashboardRepository(private val entries: EntriesRepository) {
                 newestRecorded = newestRecorded(byDate),
                 lastGratitude = latestGratitude(byDate),
                 entryByDate = byDate,
+                month = month,
             )
         }
 
@@ -250,6 +262,16 @@ class DashboardRepository(private val entries: EntriesRepository) {
         fun previousWindow(today: String): List<String> {
             val end = LocalDate.parse(today).minusDays(WEEK_DAYS.toLong())
             return (WEEK_DAYS - 1 downTo 0).map { back -> end.minusDays(back.toLong()).toString() }
+        }
+
+        /**
+         * The whole [LOAD_DAYS]-day window ending on [today], oldest first — the same
+         * calendar days [load] already fetches, which is what lets the mood chart
+         * show a month without a second request.
+         */
+        fun monthWindow(today: String): List<String> {
+            val end = LocalDate.parse(today)
+            return (LOAD_DAYS - 1 downTo 0).map { back -> end.minusDays(back.toLong()).toString() }
         }
 
         /**

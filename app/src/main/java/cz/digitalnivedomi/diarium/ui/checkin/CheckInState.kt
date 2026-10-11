@@ -31,8 +31,10 @@ data class CheckInUiState(
      */
     val storedEntry: Boolean = false,
     /**
-     * True while the form is open for editing. Entering a stored day does not edit it;
-     * the passive view's "Upravit" flips this on, and a day switch flips it back off.
+     * True while the form is open for editing. Entering a stored day does not edit it
+     * by itself; the passive view's "Upravit" flips this on, and a day switch flips it
+     * back off. A day requested from another screen arrives through
+     * [CheckInStateHolder.requestEdit], so its load starts in the form.
      */
     val editing: Boolean = false,
     /**
@@ -92,8 +94,28 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
     val date: String get() = state.date
     val entry: DiaryEntry get() = state.entry
 
+    /**
+     * A one-shot "open the form" request for the next [load]: the screen asks for it
+     * when the check-in tab is entered for a specific day from another screen, and
+     * [load] consumes it. Deliberately not part of [CheckInUiState] — nothing renders
+     * from it, and it must not outlive the load it belongs to.
+     */
+    private var pendingEdit = false
+
+    /**
+     * Asks the next [load] to open the day in the form rather than the passive view.
+     * One-shot: [load] consumes it, and [setDate] clears it, so a day switch without
+     * a fresh request never edits.
+     */
+    fun requestEdit() {
+        pendingEdit = true
+    }
+
     /** Switching day clears the form; the screen reloads entry/draft for it. */
     fun setDate(date: String) {
+        // The flag belongs to one requested arrival only — a day switch without a
+        // fresh [requestEdit] must never open the form on its own.
+        pendingEdit = false
         state = state.copy(
             date = date,
             entry = DiaryEntry.EMPTY,
@@ -144,7 +166,9 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
             loading = false,
             saved = false,
             storedEntry = stored,
-            editing = false,
+            // A requested arrival (see [requestEdit]) opens the stored day straight
+            // in the form; an ordinary (re)load stays passive.
+            editing = pendingEdit,
             // The day already has a reflection when the row carried one — showing
             // it straight away is what the web does on load.
             reflection = entry.aiReflection,
@@ -154,6 +178,8 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
             // pop the reflection window back up.
             showReflectionDialog = false,
         )
+        // Consumed — one requested arrival means exactly one editing session.
+        pendingEdit = false
     }
 
     fun setLoading(loading: Boolean) {
