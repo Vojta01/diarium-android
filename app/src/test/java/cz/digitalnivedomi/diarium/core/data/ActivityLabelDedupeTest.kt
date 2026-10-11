@@ -183,12 +183,15 @@ class ActivityLabelDedupeTest {
 
     @Test
     fun `the positive-negative flag is never flipped by the merge`() {
-        val negative = HabitDef(key = "koureni", label = "Kouření", icon = "🚬", isNegative = true)
+        val negative = HabitDef(key = "koureni", label = "Koureni", icon = "🚬", isNegative = true)
         val positive = HabitDef(key = "koureni_", label = "koureni", icon = "⭐", isNegative = false)
 
         val kept = dedupeHabits(listOf(positive, negative)).single()
 
-        assertEquals("Kouření", kept.label)
+        // The pair must differ by letter case only (like `alkohol`/`Alkohol` above):
+        // normalization is a plain lowercase, so one diacritic would split the two
+        // rows into different groups and the merge would never happen.
+        assertEquals("Koureni", kept.label)
         assertTrue("isNegative must come from the surviving row, not be reset", kept.isNegative)
     }
 
