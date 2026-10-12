@@ -79,6 +79,11 @@ android {
         // gets Czech prose back; the DeepSeek key stays on our server, so no AI
         // credential is ever part of the APK.
         buildConfigField("String", "AI_REFLECT_URL", "\"https://diarium-two.vercel.app/api/ai/reflect\"")
+        // DeepSeek chat completions — called directly by the phone for report
+        // generation when the user stored their own key (option C). The key is
+        // entered in Settings, kept in EncryptedSharedPreferences, and is never
+        // part of the build.
+        buildConfigField("String", "DEEPSEEK_URL", "\"https://api.deepseek.com/chat/completions\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -143,6 +148,10 @@ dependencies {
     implementation(libs.androidx.browser)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.datastore.preferences)
+
+    // Encrypted storage for the user's own DeepSeek API key (option C): the
+    // master key lives in the Android Keystore, values are AES-256 at rest.
+    implementation(libs.androidx.security.crypto)
 
     // Compose (BOM keeps every artifact on one version)
     implementation(platform(libs.androidx.compose.bom))

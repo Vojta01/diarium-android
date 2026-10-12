@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android auto-backup + device transfer rules (API 31+).
+
+  Same reasoning as the `backup_rules.xml` counterpart for API ≤ 30: the
+  encrypted prefs file holding the user's DeepSeek API key is device-bound
+  (Keystore master key) and must not travel through cloud backup or a
+  device-to-device transfer — restoring it anywhere else could never decrypt
+  it, and the key must never leave the phone by any path.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="diarium_ai_secrets.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="diarium_ai_secrets.xml" />
+    </device-transfer>
+</data-extraction-rules>

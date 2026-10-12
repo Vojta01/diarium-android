@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -136,6 +137,8 @@ fun GlassTextField(
     modifier: Modifier = Modifier,
     minHeight: Int = 44,
     testTag: String? = null,
+    /** Pass a masking transformation (e.g. `PasswordVisualTransformation()`) for secrets. */
+    visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
     val shape = RoundedCornerShape(14.dp)
     Box(
@@ -160,6 +163,7 @@ fun GlassTextField(
             modifier = Modifier.fillMaxWidth().heightIn(min = minHeight.dp),
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = TextPrimary),
             cursorBrush = SolidColor(Indigo),
+            visualTransformation = visualTransformation,
         )
     }
 }

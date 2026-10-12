@@ -24,6 +24,8 @@ import cz.digitalnivedomi.diarium.ui.templates.TemplatesScreen
 import cz.digitalnivedomi.diarium.ui.reports.ReportsDeps
 import cz.digitalnivedomi.diarium.ui.reports.ReportsScreen
 import cz.digitalnivedomi.diarium.ui.reports.ReportsState
+import cz.digitalnivedomi.diarium.ui.settings.AiSettingsDeps
+import cz.digitalnivedomi.diarium.ui.settings.AiSettingsSection
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -302,11 +304,16 @@ private fun AuthenticatedScaffold(
                         )
                     }
                     composable(Routes.SETTINGS) {
+                        val context = LocalContext.current
+                        // The AI card owns the encrypted key store; built here so the
+                        // settings composable stays free of platform wiring.
+                        val aiDeps = remember(context) { AiSettingsDeps.forContext(context) }
                         SettingsScreen(
                             onSignOut = onSignOut,
                             onOpen = { route ->
                                 navController.navigate(route) { launchSingleTop = true }
                             },
+                            aiDeps = aiDeps,
                         )
                     }
                     subScreen(Routes.GOALS) {
@@ -409,7 +416,7 @@ private fun NavGraphBuilder.subScreen(route: String, content: @Composable () -> 
  * from here and from the dashboard, each with its own back arrow.
  */
 @Composable
-private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
+private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit, aiDeps: AiSettingsDeps) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -503,6 +510,9 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit) {
                 onClick = { onOpen(Routes.REPORTS) },
             )
         }
+        // Bring-your-own-key (option C): the key card sits right under Přehledy —
+        // it configures exactly those reports.
+        AiSettingsSection(deps = aiDeps)
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = "Data",

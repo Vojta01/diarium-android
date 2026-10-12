@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
@@ -11,6 +12,10 @@ import androidx.work.WorkerParameters
 import cz.digitalnivedomi.diarium.BuildConfig
 import cz.digitalnivedomi.diarium.R
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AiKeyStore
+import cz.digitalnivedomi.diarium.core.data.ReportGenerator
+import cz.digitalnivedomi.diarium.core.data.ReportOutcome
+import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.ui.nav.Routes
@@ -36,18 +41,24 @@ import java.util.concurrent.TimeUnit
  *    silent, and it does not care whether today is filled.
  *  - weekly/monthly: the app is the only scheduler — the exact alarm (and the
  *    periodic safety net, [ReportSafetyNetWorker]) triggers this worker, which
- *    asks the server to generate the period report when nothing fresh exists,
- *    then polls `ai_reports` briefly and notifies the new row (id ≠ last-notified
- *    marker). A row that is already fresh is notified without another
- *    generation. The tap opens the AI Reports screen (`Routes.REPORTS`, period
- *    in the `open_report_type` extra).
+ *    first looks for a fresh report row and notifies it without regenerating.
+ *    When nothing fresh exists the report is generated:
+ *      - with the user's own DeepSeek key (option C, "bring your own key") the
+ *        phone generates it itself — [ReportGenerator] builds the exact prompt
+ *        the server route uses and inserts the row into `ai_reports`;
+ *      - without a key the old server route still mints it (transitional
+ *        fallback — `GET {DIARIUM_URL}/api/cron/ai-report?type=…`).
+ *    Either way the worker then polls `ai_reports` briefly and notifies the new
+ *    row (id ≠ last-notified marker). The tap opens the AI Reports screen
+ *    (`Routes.REPORTS`, period in the `open_report_type` extra).
  *
  * Reads and the report download go through [SupabaseClient] with the user JWT
- * (RLS-secured). The one deliberate exception is the report *generation* call:
- * the DeepSeek key must never live in the APK, so the worker asks
+ * (RLS-secured). The one deliberate exception WAS the report *generation* call:
+ * the DeepSeek key must never live in the APK, so the worker used to always ask
  * `GET {DIARIUM_URL}/api/cron/ai-report?type=…` — an endpoint that accepts the
- * user's own JWT and generates only that user's report. No server secret and no
- * server-side schedule is involved anywhere.
+ * user's own JWT. Since option C the generation itself needs no server at all
+ * when the user stored a key; the route remains only as the no-key fallback. No
+ * server secret and no server-side schedule is involved anywhere.
  */
 class NotificationWorker(
     appContext: Context,
@@ -57,6 +68,12 @@ class NotificationWorker(
     private val prefsStore = NotificationPrefsStore(appContext)
     private val session = SessionStore(appContext)
     private val supabase = SupabaseClient(session)
+
+    /** The user's own DeepSeek key, if they added one (encrypted at rest). */
+    private val aiKeys = AiKeyStore.forContext(appContext)
+
+    /** On-device report generation (option C); used only when a key is stored. */
+    private val generator by lazy { ReportGenerator(supabase, aiKeys, SessionContext(session)) }
 
     /** Only for the report-generation request; no secret travels with it. */
     private val http = OkHttpClient.Builder()
@@ -141,7 +158,9 @@ class NotificationWorker(
 
     // ── Weekly / monthly reports ───────────────────────────────
     // App-driven: a fresh row (asked for moments ago) is only notified;
-    // otherwise we ask the route to generate one and poll `ai_reports`.
+    // otherwise the report is generated — on this phone when the user has
+    // stored their own DeepSeek key (option C), via the transitional server
+    // route when they have not. Either way the fresh row is then polled.
 
     private suspend fun handleReport(type: String) {
         val prefs = prefsStore.load()
@@ -150,13 +169,24 @@ class NotificationWorker(
 
         val marker = if (type == "weekly") prefs.lastWeeklyNotifiedId else prefs.lastMonthlyNotifiedId
 
-        // Never ask for a second report when a fresh one already sits on the
+        // Never generate a second report when a fresh one already sits on the
         // server (this run's own request, the safety net, or a manual run).
-        // Otherwise ask the route to generate it and give DeepSeek a moment
-        // (the route retries empty outputs, so up to ~75 s) to produce the row.
+        // Otherwise: on-device generation with the user's key generates and
+        // inserts synchronously, so the poll below finds the row immediately;
+        // the server fallback needs the longer poll (the route retries empty
+        // outputs, so up to ~75 s).
         val existing = latestReportOnce(type)
         val latest = if (existing != null && isFresh(existing)) {
             existing
+        } else if (aiKeys.hasKey()) {
+            val outcome = generator.generate(type)
+            if (outcome !is ReportOutcome.Generated) {
+                // No key path never reaches here (checked above); record why a
+                // failure happened so the cause is visible in logs — the poll
+                // below then simply finds nothing new.
+                Log.i(LOG_TAG, "On-device report generation for $type did not produce a row: $outcome")
+            }
+            latestReport(type, attempts = if (outcome is ReportOutcome.Generated) REPORT_POLL_ATTEMPTS else 1)
         } else {
             val requested = requestReportGeneration(type)
             latestReport(type, attempts = if (requested) REPORT_POLL_ATTEMPTS else 1)
@@ -319,6 +349,8 @@ class NotificationWorker(
     }
 
     private companion object {
+        const val LOG_TAG = "DiariumNotify"
+
         /** The route retries empty generations, so allow up to ~75 s (15 × 5 s) of polling. */
         const val REPORT_POLL_ATTEMPTS = 15
         const val REPORT_POLL_DELAY_MS = 5_000L

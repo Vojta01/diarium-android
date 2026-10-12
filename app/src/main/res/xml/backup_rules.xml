@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android auto-backup (API ≤ 30) rules.
+
+  The user's DeepSeek API key lives in the EncryptedSharedPreferences file
+  `diarium_ai_secrets` (option C, "bring your own key"). Its master key sits in
+  the Android Keystore, which is device-bound and never leaves the phone — so a
+  backed-up copy of the file could never be decrypted. Excluding it keeps a dead
+  blob out of the backup and guarantees the key cannot travel through any cloud
+  path, accident included.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="diarium_ai_secrets.xml" />
+</full-backup-content>
