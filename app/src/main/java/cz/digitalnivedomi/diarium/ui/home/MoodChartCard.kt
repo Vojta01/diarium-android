@@ -1,26 +1,12 @@
 package cz.digitalnivedomi.diarium.ui.home
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import cz.digitalnivedomi.diarium.core.data.DashboardDay
 import cz.digitalnivedomi.diarium.core.data.MoodDiscState
 import cz.digitalnivedomi.diarium.core.data.moodDiscState
@@ -35,24 +21,9 @@ import cz.digitalnivedomi.diarium.ui.components.MoodTrendChart
 import cz.digitalnivedomi.diarium.ui.components.MoodTrendSlot
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
-import cz.digitalnivedomi.diarium.ui.components.rememberLightHaptics
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
-import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
-import cz.digitalnivedomi.diarium.ui.theme.Outline
-import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
-import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-
-/** The chart's two windows: a week, or the whole month the dashboard loads. */
-private enum class MoodChartRange { WEEK, MONTH }
-
-/** The chips' exact labels. */
-private val MoodChartRange.label: String
-    get() = when (this) {
-        MoodChartRange.WEEK -> "7 dní"
-        MoodChartRange.MONTH -> "30 dní"
-    }
 
 /** Czech numeric date, used for a day's title in the tap detail. */
 private val shortDate = DateTimeFormatter.ofPattern("d. M. yyyy", Locale("cs", "CZ"))
@@ -88,8 +59,8 @@ internal fun MoodChartCard(
     month: List<DashboardDay>,
     onOpenDay: (String) -> Unit,
 ) {
-    var range by rememberSaveable { mutableStateOf(MoodChartRange.WEEK) }
-    val days = if (range == MoodChartRange.WEEK) month.takeLast(7) else month
+    var range by rememberSaveable { mutableStateOf(ChartRange.WEEK) }
+    val days = if (range == ChartRange.WEEK) month.takeLast(7) else month
 
     val slots: List<MoodTrendSlot> = days.map { day ->
         MoodTrendSlot(
@@ -128,56 +99,5 @@ internal fun MoodChartCard(
             caption = MoodTrendCaption.EdgeDates,
             onOpenDay = onOpenDay,
         )
-    }
-}
-
-/** The compact 7/30-day chips — the statistics screen's switch, reduced to two taps. */
-@Composable
-private fun RangeToggle(
-    range: MoodChartRange,
-    onSelect: (MoodChartRange) -> Unit,
-) {
-    val haptics = rememberLightHaptics()
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        MoodChartRange.entries.forEach { option ->
-            val selected = option == range
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(
-                        if (selected) {
-                            Indigo.copy(alpha = 0.30f)
-                        } else {
-                            Color.White.copy(alpha = 0.05f)
-                        },
-                    )
-                    .border(
-                        width = 1.dp,
-                        color = if (selected) {
-                            IndigoLight.copy(alpha = 0.55f)
-                        } else {
-                            Outline.copy(alpha = 0.40f)
-                        },
-                        shape = RoundedCornerShape(50),
-                    )
-                    .clickable {
-                        if (!selected) {
-                            // A window change is a value change: the softer tick the
-                            // statistics switch uses, not a full tap.
-                            haptics()
-                            onSelect(option)
-                        }
-                    }
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-            ) {
-                Text(
-                    text = option.label,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (selected) TextPrimary else TextSecondary,
-                    maxLines = 1,
-                )
-            }
-        }
     }
 }

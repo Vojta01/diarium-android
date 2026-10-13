@@ -258,19 +258,26 @@ fun EmojiChoiceRow(
     }
 }
 
-/** Pill toggle used for habits and goals (no Material Switch grey). */
+/**
+ * Pill toggle used for habits and goals (no Material Switch grey).
+ *
+ * [accentEnd] is the second gradient stop, so a lit pill ramps inside its own hue
+ * (red → light red) instead of bleeding into indigo; the default keeps the brand
+ * indigo ramp for goals.
+ */
 @Composable
 fun TogglePill(
     checked: Boolean,
     modifier: Modifier = Modifier,
     accent: Color = Indigo,
+    accentEnd: Color = IndigoLight,
     testTag: String? = null,
     onClick: () -> Unit,
 ) {
     val haptics = rememberHaptics()
     val travel by animateFloatAsState(targetValue = if (checked) 1f else 0f, label = "toggle")
     val track = if (checked) {
-        Modifier.background(Brush.horizontalGradient(listOf(accent, IndigoLight)))
+        Modifier.background(Brush.horizontalGradient(listOf(accent, accentEnd)))
     } else {
         Modifier.background(Color.White.copy(alpha = 0.10f))
     }
@@ -282,7 +289,7 @@ fun TogglePill(
             .clip(CircleShape)
             .then(track)
             .then(
-                if (checked) Modifier.gradientBorder(CircleShape, listOf(accent, IndigoLight), width = 1.dp)
+                if (checked) Modifier.gradientBorder(CircleShape, listOf(accent, accentEnd), width = 1.dp)
                 else Modifier.border(1.dp, Outline.copy(alpha = 0.6f), CircleShape),
             )
             .clickable {

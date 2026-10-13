@@ -136,6 +136,8 @@ val GlassCornerRadius = Dimens.radiusCard
  * @param sheen    the 1dp highlight along the top edge (default on — it is what
  *                 makes the surface read as glass).
  * @param glow     adds an accent radial wash bleeding from the top-left corner.
+ * @param opaque   paints a near-opaque ink base under the fill — for dialogs, so the
+ *                 screen behind the window cannot shine through it.
  */
 fun Modifier.glassSurface(
     shape: Shape,
@@ -144,10 +146,15 @@ fun Modifier.glassSurface(
     sheen: Boolean = true,
     glow: Boolean = false,
     borderWidth: Dp = Dimens.border,
+    opaque: Boolean = false,
 ): Modifier {
-    var modifier = this
-        .clip(shape)
-        .background(Brush.linearGradient(Gradients.glassFill(accent, elevated)))
+    var modifier = this.clip(shape)
+    if (opaque) {
+        // Near-opaque ink base: dialogs must not let the screen behind them shine
+        // through (readability complaint), while the glass fill stays on top.
+        modifier = modifier.background(InkDeep.copy(alpha = 0.98f))
+    }
+    modifier = modifier.background(Brush.linearGradient(Gradients.glassFill(accent, elevated)))
 
     if (glow) {
         modifier = modifier.accentGlow(
@@ -241,6 +248,8 @@ fun Modifier.accentGlow(
  * Opt-in extras — all defaults keep the previous look and signature:
  * - [elevated] — brighter fill; for the one card that matters most on a screen.
  * - [glow]     — accent wash from the top-left + a stronger border.
+ * - [opaque]   — near-opaque ink base under the fill; for dialogs, so the screen
+ *   behind the window cannot shine through.
  * - [onClick]   — turns the card into a pressable surface: it scales slightly under
  *   the finger, fires a light haptic and shows no ripple.
  */
@@ -252,6 +261,7 @@ fun GlassCard(
     elevated: Boolean = false,
     sheen: Boolean = true,
     glow: Boolean = false,
+    opaque: Boolean = false,
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -280,7 +290,14 @@ fun GlassCard(
     Column(
         modifier = modifier
             .then(pressModifier)
-            .glassSurface(shape = shape, accent = accent, elevated = elevated, sheen = sheen, glow = glow)
+            .glassSurface(
+                shape = shape,
+                accent = accent,
+                elevated = elevated,
+                sheen = sheen,
+                glow = glow,
+                opaque = opaque,
+            )
             .padding(Spacing.cardPadding),
         content = content,
     )
@@ -302,13 +319,21 @@ fun GlassSurface(
     elevated: Boolean = false,
     sheen: Boolean = true,
     glow: Boolean = false,
+    opaque: Boolean = false,
     contentPadding: PaddingValues = PaddingValues(Spacing.cardPadding),
     contentAlignment: Alignment = Alignment.TopStart,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
         modifier = modifier
-            .glassSurface(shape = shape, accent = accent, elevated = elevated, sheen = sheen, glow = glow)
+            .glassSurface(
+                shape = shape,
+                accent = accent,
+                elevated = elevated,
+                sheen = sheen,
+                glow = glow,
+                opaque = opaque,
+            )
             .padding(contentPadding),
         contentAlignment = contentAlignment,
         content = content,

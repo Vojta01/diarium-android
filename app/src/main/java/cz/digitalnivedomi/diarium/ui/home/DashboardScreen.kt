@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1041,7 +1042,8 @@ private fun WeekCard(
 }
 
 /**
- * 📱 The screen-time chart of the week window.
+ * 📱 The screen-time chart: the week window by default, switchable 7/30 days with the
+ * same shared toggle the mood chart uses, so the card can also show the whole month.
  *
  * Split from the unlock count on 2026-09-12: the owner asked for one chart for the
  * time on screen and its own chart for the unlocks, instead of one card carrying
@@ -1055,22 +1057,28 @@ private fun ScreenTimeCard(data: DashboardData, onReload: () -> Unit) {
         emptyTitle = "Zatím žádná data",
         accent = Indigo,
         week = data.week,
+        month = data.month,
         today = data.today,
         valueOf = { day -> day.screenTimeSeconds },
         valueLabel = { seconds -> ScreenTimeSeries.secondsLabel(seconds) },
         barBrush = Brush.verticalGradient(listOf(IndigoLight, Indigo)),
-        total = data.screenTimeMinutes?.let { minutes -> formatMinutes(minutes) },
-        totalHint = "Celkem za posledních ${DashboardRepository.WEEK_DAYS} dní",
+        totalWeek = data.screenTimeMinutes?.let { minutes -> formatMinutes(minutes) },
+        totalMonth = data.month.mapNotNull { it.screenTimeSeconds }
+            .takeIf { it.isNotEmpty() }
+            ?.sum()
+            ?.div(60)
+            ?.let { minutes -> formatMinutes(minutes) },
+        totalHintOf = { n -> "Celkem za posledních $n dní" },
         emptyHint = "Data o screen timu se ještě nenasynchronizovala. " +
-            "Až je telefon odešle, uvidíš tady sloupce za posledních " +
-            "${DashboardRepository.WEEK_DAYS} dní.",
+            "Až je telefon odešle, uvidíš tady sloupce.",
         legend = "Číslo pod sloupcem = čas na obrazovce ten den.",
         onReload = onReload,
     )
 }
 
 /**
- * 🔓 The same seven days, one bar per day's unlock count.
+ * 🔓 The unlock count, one bar per day — the same 7/30-day toggle as the screen-time
+ * chart above it, week still the default, so both usage charts move together.
  *
  * Its own card and its own scale: 200 unlocks used to be invisible next to a
  * six-hour screen-time bar. Cyan-to-violet keeps it a sibling of the screen-time
@@ -1084,15 +1092,19 @@ private fun UnlocksCard(data: DashboardData, onReload: () -> Unit) {
         emptyTitle = "Zatím žádná data",
         accent = Cyan,
         week = data.week,
+        month = data.month,
         today = data.today,
         valueOf = { day -> day.unlocks },
         valueLabel = { unlocks -> unlocks?.toString() ?: ScreenTimeSeries.NO_DATA },
         barBrush = Brush.verticalGradient(listOf(Cyan, Violet)),
-        total = data.unlocks?.let { count -> "$count odemknutí" },
-        totalHint = "Celkem za posledních ${DashboardRepository.WEEK_DAYS} dní",
+        totalWeek = data.unlocks?.let { count -> "$count odemknutí" },
+        totalMonth = data.month.mapNotNull { it.unlocks }
+            .takeIf { it.isNotEmpty() }
+            ?.sum()
+            ?.let { count -> "$count odemknutí" },
+        totalHintOf = { n -> "Celkem za posledních $n dní" },
         emptyHint = "Počet odemknutí se ještě nenasynchronizoval. " +
-            "Až je telefon odešle, uvidíš tady sloupce za posledních " +
-            "${DashboardRepository.WEEK_DAYS} dní.",
+            "Až je telefon odešle, uvidíš tady sloupce.",
         legend = "Číslo pod sloupcem = počet odemknutí ten den.",
         onReload = onReload,
     )
@@ -1210,10 +1222,12 @@ private fun TopAppRow(app: PhoneTopApp, maxMinutes: Int) {
  * printed under it, and the weekday captions.
  *
  * Shared by [ScreenTimeCard] and [UnlocksCard], so the two charts differ only in the
- * number they plot — a split must not make them look like two different apps. A day
- * the phone never synced draws a stub bar and prints "—", so "nothing reported" can
- * never read as a very quiet day. A chart with no data at all becomes an [EmptyState]
- * with a refresh action instead of a lone grey line.
+ * number they plot — a split must not make them look like two different apps. The
+ * window is switchable 7/30 days through the shared [RangeToggle]; the 30-day view
+ * thins the bars and drops the per-bar numbers, so the month still reads as one row.
+ * A day the phone never synced draws a stub bar and prints "—", so "nothing
+ * reported" can never read as a very quiet day. A chart with no data at all becomes
+ * an [EmptyState] with a refresh action instead of a lone grey line.
  */
 @Composable
 private fun UsageCard(
@@ -1222,22 +1236,35 @@ private fun UsageCard(
     emptyTitle: String,
     accent: Color?,
     week: List<DashboardDay>,
+    month: List<DashboardDay>,
     today: String,
     valueOf: (DashboardDay) -> Int?,
     valueLabel: (Int?) -> String,
     barBrush: Brush,
-    total: String?,
-    totalHint: String,
+    /** Totals per window, pre-formatted (screen time in minutes, unlocks in count). */
+    totalWeek: String?,
+    totalMonth: String?,
+    totalHintOf: (Int) -> String,
     emptyHint: String,
     legend: String,
     onReload: () -> Unit,
 ) {
-    val maxValue = week.mapNotNull(valueOf).maxOrNull() ?: 0
+    var range by rememberSaveable { mutableStateOf(ChartRange.WEEK) }
+    val days = if (range == ChartRange.WEEK) week else month
+    val total = if (range == ChartRange.WEEK) totalWeek else totalMonth
+    val maxValue = days.mapNotNull(valueOf).maxOrNull() ?: 0
+    // 30-day mode packs thirty columns into one row, so the bars thin out and the
+    // per-bar numbers are dropped; the totals above carry the numbers instead.
+    val compact = days.size > 10 // 30-day mode: thin bars, no per-bar labels
+    val barWidth = if (compact) 5.dp else 16.dp
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = accent) {
-        SectionHeader(title)
+        SectionHeader(
+            title,
+            trailing = { RangeToggle(range = range, onSelect = { range = it }) },
+        )
         VSpace(4)
         Text(
-            text = "Posledních ${DashboardRepository.WEEK_DAYS} dní",
+            text = "Posledních ${days.size} dní",
             style = MaterialTheme.typography.titleMedium,
             color = TextPrimary,
         )
@@ -1263,14 +1290,14 @@ private fun UsageCard(
             fontWeight = FontWeight.Bold,
             color = TextPrimary,
         )
-        SectionHint(totalHint)
+        SectionHint(totalHintOf(days.size))
         VSpace(16)
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 6.dp),
         ) {
-            week.forEach { day ->
+            days.forEach { day ->
                 val value = valueOf(day)
                 Column(
                     modifier = Modifier.weight(1f),
@@ -1285,7 +1312,7 @@ private fun UsageCard(
                             // not a bar that could be mistaken for a small value.
                             Box(
                                 modifier = Modifier
-                                    .width(16.dp)
+                                    .width(barWidth)
                                     .height(3.dp)
                                     .clip(RoundedCornerShape(2.dp))
                                     .background(Color.White.copy(alpha = 0.10f)),
@@ -1293,7 +1320,7 @@ private fun UsageCard(
                         } else {
                             Box(
                                 modifier = Modifier
-                                    .width(16.dp)
+                                    .width(barWidth)
                                     .height(
                                         (BAR_TRACK.value * value / maxValue)
                                             .coerceAtLeast(6f)
@@ -1304,30 +1331,34 @@ private fun UsageCard(
                             )
                         }
                     }
-                    VSpace(4)
-                    Text(
-                        text = valueLabel(value),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.wrapContentWidth(
-                            align = Alignment.CenterHorizontally,
-                            unbounded = true,
-                        ),
-                    )
-                    VSpace(2)
-                    Text(
-                        text = dayLabel(day.date, today),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (day.date == today) TextPrimary else TextTertiary,
-                    )
+                    if (!compact) {
+                        VSpace(4)
+                        Text(
+                            text = valueLabel(value),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.wrapContentWidth(
+                                align = Alignment.CenterHorizontally,
+                                unbounded = true,
+                            ),
+                        )
+                        VSpace(2)
+                        Text(
+                            text = dayLabel(day.date, today),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (day.date == today) TextPrimary else TextTertiary,
+                        )
+                    }
                 }
             }
         }
 
-        VSpace(8)
-        SectionHint(legend)
+        if (!compact) {
+            VSpace(8)
+            SectionHint(legend)
+        }
     }
 }
 

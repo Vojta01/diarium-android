@@ -80,6 +80,9 @@ fun EmojiPickerDialog(
                 .fillMaxWidth()
                 .testTagOrEmpty("emoji_picker"),
             accent = Indigo,
+            // Opaque: the picker opens over an editor; the screen behind it must
+            // not shine through the catalogue.
+            opaque = true,
         ) {
             Text(
                 text = title,

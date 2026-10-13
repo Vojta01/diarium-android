@@ -94,6 +94,9 @@ fun HabitEditorDialog(
         GlassCard(
             modifier = Modifier.fillMaxWidth(),
             accent = if (confirmingRemove) ErrorRed else Indigo,
+            // Opaque: this window opens over the screen and must not let it shine
+            // through the glass.
+            opaque = true,
         ) {
             if (confirmingRemove) {
                 // Removal is destructive but never loses data — the past days keep
@@ -158,7 +161,7 @@ fun HabitEditorDialog(
                         color = TextPrimary,
                     )
                     Text(
-                        text = "Zaškrtnutí pak znamená „dnes jsem to udělal\".",
+                        text = "Zapnutý přepínač pak znamená „dnes jsem to udělal\".",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary,
                     )
@@ -166,6 +169,9 @@ fun HabitEditorDialog(
                 TogglePill(
                     checked = isNegative,
                     accent = MaterialTheme.colorScheme.error,
+                    // Light red end-stop, so the lit pill stays in the error hue
+                    // instead of ramping into the brand indigo.
+                    accentEnd = Color(0xFFFCA5A5),
                     testTag = "habit_negative",
                 ) { isNegative = !isNegative }
             }
