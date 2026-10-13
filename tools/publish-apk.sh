@@ -46,6 +46,10 @@ else
 fi
 
 cd "$WORK"
+# Fresh clones inherit the host's global git identity (a personal e-mail).
+# Pin the sanitized public identity so every published commit carries it.
+git config user.name "Vojta01"
+git config user.email "22679657+Vojta01@users.noreply.github.com"
 cp "$APK" "diarium.apk"
 cp "$APK" "diarium-${VER}.apk"
 cat > README.md <<EOF
