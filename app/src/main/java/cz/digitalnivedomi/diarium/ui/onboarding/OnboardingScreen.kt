@@ -132,6 +132,14 @@ fun OnboardingScreen(
     /** Shown above „Dokončit" when the goal writes fail; never a silent empty dashboard. */
     var finishError by remember { mutableStateOf<String?>(null) }
 
+    /** True when an AI key is already in the KeyStore (step 2 offers „Zachovat"). */
+    var hasStoredKey by remember { mutableStateOf<Boolean?>(null) }
+
+    /** The „✕" confirm; on confirm the guide hands control back to the app. */
+    var showExitConfirm by remember { mutableStateOf(false) }
+
+    var habitError by remember { mutableStateOf<String?>(null) }
+
     // Profile prefill (a restart of the guide must not wipe what is stored) and the
     // habit catalogue, both off the main thread.
     LaunchedEffect(deps) {
@@ -147,6 +155,7 @@ fun OnboardingScreen(
             withContext(Dispatchers.IO) { deps.pickers.habits() }
                 .filter { it.source == "default" },
         )
+        hasStoredKey = withContext(Dispatchers.IO) { deps.aiKeys.hasKey() }
         habitsLoaded = true
     }
 
@@ -251,6 +260,25 @@ fun OnboardingScreen(
         }
     }
 
+    /**
+     * „✕": leave the guide from any step. The wizard writes nothing before „Dokončit",
+     * so the only write here is the walked-through flag — on a re-run it is already
+     * true and this just hands control back to the app.
+     */
+    fun exitWizard() {
+        if (finishing) return
+        finishing = true
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { deps.profile.setOnboardingDone(true) }
+                    .onFailure { Log.w(FINISH_TAG, "setOnboardingDone failed", it) }
+            }
+            finishing = false
+            showExitConfirm = false
+            onFinished()
+        }
+    }
+
     /** Escape hatch when the goal writes keep failing: finish the guide without them. */
     fun skipFinish() {
         if (finishing) return
@@ -293,12 +321,19 @@ fun OnboardingScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    if (state.step > 1) {
-                        Row(modifier = Modifier.fillMaxWidth()) {
+                    // Back arrow (steps 2–4) on the left, the guide's exit on the right —
+                    // both ride this row, so the mark itself never shifts between steps.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (state.step > 1) {
                             GlassIconButton(text = "←", testTag = "onboarding_back") { state.back() }
                         }
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.weight(1f))
+                        GlassIconButton(text = "✕", testTag = "onboarding_exit") { showExitConfirm = true }
                     }
+                    Spacer(Modifier.height(2.dp))
                     GlowDisc(accent = Indigo, size = 88.dp) {
                         BrandMark(size = 64.dp)
                     }
@@ -411,6 +446,22 @@ fun OnboardingScreen(
                     Spacer(Modifier.height(4.dp))
                     SectionHint("Používá vlastní klíč z platform.deepseek.com — zdarma a bezpečně v telefonu.")
                     Spacer(Modifier.height(14.dp))
+                    if (hasStoredKey == true) {
+                        // A re-run must not force a new key: keep the stored one with one
+                        // tap, or replace it in the field below.
+                        OutlinedButton(
+                            onClick = {
+                                aiEnabled = true
+                                state.next()
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("onboarding_keep_key"),
+                        ) {
+                            Text("🔑 Zachovat aktuální klíč")
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        SectionHint("Nebo vlož nový klíč:")
+                        Spacer(Modifier.height(6.dp))
+                    }
                     GlassTextField(
                         value = state.aiKey,
                         onValueChange = { state.aiKey = it },
@@ -469,6 +520,7 @@ fun OnboardingScreen(
                     OutlinedButton(
                         onClick = {
                             habitName = ""
+                            habitError = null
                             showHabitDialog = true
                         },
                         modifier = Modifier.testTag("onboarding_add_habit"),
@@ -590,7 +642,7 @@ fun OnboardingScreen(
 
                 2 -> {
                     WizardPrimaryButton(
-                        text = "Uložit klíč a pokračovat",
+                        text = if (hasStoredKey == true) "Uložit nový klíč a pokračovat" else "Uložit klíč a pokračovat",
                         testTag = "onboarding_save_key",
                     ) { continueWithKey() }
                     Spacer(Modifier.height(4.dp))
@@ -660,16 +712,33 @@ fun OnboardingScreen(
                     placeholder = "Název návyku",
                     testTag = "onboarding_custom_habit_name",
                 )
+                habitError?.let { message ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ErrorRed,
+                    )
+                }
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = {
                         val name = habitName
                         savingHabit = true
+                        habitError = null
                         scope.launch {
                             val def = withContext(Dispatchers.IO) { deps.pickers.addHabit(name, "✅") }
-                            if (def != null) state.addCustomHabit(def)
-                            savingHabit = false
-                            showHabitDialog = false
+                            if (def != null) {
+                                state.addCustomHabit(def)
+                                // The row is in memory even if the initial load failed —
+                                // lift the „Načítám" gate so it is visible right away.
+                                habitsLoaded = true
+                                savingHabit = false
+                                showHabitDialog = false
+                            } else {
+                                habitError = "Návyk se nepodařilo uložit. Zkontroluj připojení a zkus to znovu."
+                                savingHabit = false
+                            }
                         }
                     },
                     enabled = habitName.isNotBlank() && !savingHabit,
@@ -859,6 +928,41 @@ fun OnboardingScreen(
                     ) {
                         Text("Zrušit")
                     }
+                }
+            }
+        }
+    }
+
+    // ── „✕ Ukončit průvodce" potvrzení ──────────────────────────────────────────
+    if (showExitConfirm) {
+        Dialog(onDismissRequest = { showExitConfirm = false }) {
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                accent = Indigo,
+                opaque = true,
+            ) {
+                Text(
+                    text = "Ukončit průvodce?",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary,
+                )
+                Spacer(Modifier.height(6.dp))
+                SectionHint("Nedokončené volby se neuloží. Průvodce spustíš znovu v Nastavení → Profil.")
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = { exitWizard() },
+                    colors = ButtonDefaults.buttonColors(containerColor = Indigo),
+                    modifier = Modifier.fillMaxWidth().testTag("onboarding_exit_confirm"),
+                ) {
+                    Text("Ukončit")
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick = { showExitConfirm = false },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Zůstat")
                 }
             }
         }

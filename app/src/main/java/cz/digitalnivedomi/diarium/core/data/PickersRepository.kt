@@ -112,20 +112,30 @@ class PickersRepository(
             )
         }
 
-        // Web parity: defaults always show, and a user row shows when it is active and
-        // brings a key of its own. An active row on a *default's* key is how the icon
-        // editor stores its override, so it replaces that default's label/icon/negative
-        // flag instead of being thrown away as a stale duplicate — without this, renaming
-        // or re-iconing a catalogue habit would silently revert on the next read. An
-        // inactive row stays a hide-override and never shows.
+        // Defaults show unless the user has switched them off. An active row on a
+        // *default's* key is how the icon editor stores its override, so it replaces that
+        // default's label/icon/negative flag instead of being thrown away as a stale
+        // duplicate — without this, renaming or re-iconing a catalogue habit would
+        // silently revert on the next read. A switched-off (inactive) row on a default's
+        // key is the wizard's hide write — it removes that default for good; an inactive
+        // custom row simply never shows.
         //
         // Only the fields the editor writes come from the override: the catalogue keeps
         // its own category and colour.
         val defaultKeys = defaults.map { it.key }.toSet()
+        // A habit the wizard switched off must vanish from every picker (check-in, goals
+        // editor, settings): without this, unchecking a standard habit in the guide
+        // looked like it worked, yet the habit kept showing everywhere.
+        val hiddenDefaultKeys = userHabits
+            .filter { !it.isActive && it.key in defaultKeys }
+            .map { it.key }
+            .toSet()
         val overrides = userHabits
             .filter { it.isActive && it.key in defaultKeys }
             .associateBy { it.key }
-        val mergedDefaults = defaults.map { row ->
+        val mergedDefaults = defaults
+            .filter { it.key !in hiddenDefaultKeys }
+            .map { row ->
             val override = overrides[row.key]
             if (override == null) {
                 row

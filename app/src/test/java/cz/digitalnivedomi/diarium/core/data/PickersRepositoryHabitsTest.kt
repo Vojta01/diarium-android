@@ -169,6 +169,41 @@ class PickersRepositoryHabitsTest {
     }
 
     @Test
+    fun `an inactive row on a default's key hides that default`() = runTest {
+        catalog = JSONArray()
+            .put(defaultRow("alkohol", "Alkohol", 1))
+            .put(defaultRow("koureni", "Kouření", 2))
+            .toString()
+        userRows = JSONArray()
+            // The wizard's "switched off" write for a standard habit: the guide looked
+            // like it worked, yet the default kept showing in every picker.
+            .put(userRow("u1", "koureni", "Kouření", active = false))
+            .toString()
+
+        val habits = repository().habits()
+
+        assertEquals(listOf("alkohol"), habits.map { it.key })
+    }
+
+    @Test
+    fun `a hidden default disappears while active customs stay`() = runTest {
+        catalog = JSONArray()
+            .put(defaultRow("alkohol", "Alkohol", 1))
+            .put(defaultRow("koureni", "Kouření", 2))
+            .toString()
+        userRows = JSONArray()
+            .put(userRow("u1", "koureni", "Kouření", active = false))
+            // An inactive *custom* (not a default key) simply never shows.
+            .put(userRow("u2", "porno", "Porno", active = false))
+            .put(userRow("u3", "studena_sprcha", "Studená sprcha", active = true))
+            .toString()
+
+        val habits = repository().habits()
+
+        assertEquals(listOf("alkohol", "studena_sprcha"), habits.map { it.key })
+    }
+
+    @Test
     fun `an empty read degrades to the static fallback`() = runTest {
         catalog = "[]"
         userRows = "[]"
