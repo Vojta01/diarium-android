@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.onboarding
 
+import android.util.Log
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -128,6 +129,9 @@ fun OnboardingScreen(
     var showingNewActivity by remember { mutableStateOf(false) }
     var addingActivity by remember { mutableStateOf(false) }
 
+    /** Shown above „Dokončit" when the goal writes fail; never a silent empty dashboard. */
+    var finishError by remember { mutableStateOf<String?>(null) }
+
     // Profile prefill (a restart of the guide must not wipe what is stored) and the
     // habit catalogue, both off the main thread.
     LaunchedEffect(deps) {
@@ -165,13 +169,21 @@ fun OnboardingScreen(
     }
 
     /**
-     * „Dokončit": the whole write plan of the wizard, in the order the state's docs
-     * promise — profile, AI flag + key, habits (hide / restore), goals — then
-     * [onFinished]. Guarded so a double tap cannot create goals twice.
+     * „Dokončit": the whole write plan of the wizard — profile, AI flag + key, habits
+     * (hide / restore), goals — then [onFinished]. Guarded so a double tap cannot
+     * create goals twice.
+     *
+     * Every step runs in its own guard: the local writes (DataStore / KeyStore, work
+     * offline) may fail without stopping the rest, and the goal writes — the one
+     * network part — are counted. If any goal fails, [finishError] is shown and the
+     * guide stays open, so a failure can never read as „nothing to see here" (that
+     * was alpha28's silent-failure bug). `onboardingDone` is written only after
+     * everything succeeded.
      */
     fun finish() {
         if (finishing) return
         finishing = true
+        finishError = null
         val name = state.name
         val birthYear = state.birthYearValue()
         val key = state.aiKey
@@ -179,25 +191,74 @@ fun OnboardingScreen(
         val habitsToHide = state.habitsToHide().map { it.toHabitDef() }
         val habitsToRestore = state.habitsToRestore()
         scope.launch {
-            runCatching {
-                val existingGoalKeys = withContext(Dispatchers.IO) {
-                    deps.profile.saveName(name)
-                    deps.profile.saveBirthYear(birthYear)
-                    deps.profile.setAiEnabled(enableAi)
-                    deps.profile.setOnboardingDone(true)
-                    if (key.isNotBlank()) deps.aiKeys.saveKey(key)
+            withContext(Dispatchers.IO) {
+                runCatching { deps.profile.saveName(name) }
+                    .onFailure { Log.w(FINISH_TAG, "profile.saveName failed", it) }
+                runCatching { deps.profile.saveBirthYear(birthYear) }
+                    .onFailure { Log.w(FINISH_TAG, "profile.saveBirthYear failed", it) }
+                runCatching { deps.profile.setAiEnabled(enableAi) }
+                    .onFailure { Log.w(FINISH_TAG, "profile.setAiEnabled failed", it) }
+                runCatching { if (key.isNotBlank()) deps.aiKeys.saveKey(key) }
+                    .onFailure { Log.w(FINISH_TAG, "aiKeys.saveKey failed", it) }
+                runCatching {
                     habitsToHide.forEach { deps.pickers.removeHabit(it) }
                     habitsToRestore.forEach { choice ->
                         deps.pickers.updateHabit(choice.key, choice.label, choice.icon, choice.isNegative)
                     }
-                    deps.goals.list()?.map { it.activityKey }?.toSet() ?: emptySet()
+                }.onFailure { Log.w(FINISH_TAG, "habits write failed", it) }
+            }
+
+            val existingGoalKeys = withContext(Dispatchers.IO) {
+                runCatching { deps.goals.list()?.map { it.activityKey }?.toSet() }
+                    .onFailure { Log.w(FINISH_TAG, "goals.list failed", it) }
+                    .getOrNull()
+            }
+            if (existingGoalKeys == null) {
+                finishError = "Nepodařilo se načíst cíle. Zkontroluj připojení a zkus to znovu."
+                finishing = false
+                return@launch
+            }
+            val toCreate = state.goalsToCreate(existingGoalKeys)
+            var goalFailures = 0
+            withContext(Dispatchers.IO) {
+                toCreate.forEach { goal ->
+                    runCatching { deps.goals.create(goal.name, goal.activityKey, goal.targetCount, goal.frequency) }
+                        .onSuccess { Log.i(FINISH_TAG, "goal created: ${goal.name}") }
+                        .onFailure {
+                            goalFailures++
+                            Log.w(FINISH_TAG, "goal create failed: ${goal.name}", it)
+                        }
                 }
-                val toCreate = state.goalsToCreate(existingGoalKeys)
-                withContext(Dispatchers.IO) {
-                    toCreate.forEach { goal ->
-                        deps.goals.create(goal.name, goal.activityKey, goal.targetCount, goal.frequency)
-                    }
+            }
+            if (goalFailures > 0) {
+                finishError = if (goalFailures == 1) {
+                    "Jeden cíl se nepodařilo uložit. Zkus to prosím znovu."
+                } else {
+                    "Některé cíle se nepodařilo uložit ($goalFailures). Zkus to prosím znovu."
                 }
+                finishing = false
+                return@launch
+            }
+
+            // Everything that had to land has landed — only now is the guide done, so
+            // a failure can never leave the wizard unreachable while nothing saved.
+            withContext(Dispatchers.IO) {
+                runCatching { deps.profile.setOnboardingDone(true) }
+                    .onFailure { Log.w(FINISH_TAG, "setOnboardingDone failed", it) }
+            }
+            finishing = false
+            onFinished()
+        }
+    }
+
+    /** Escape hatch when the goal writes keep failing: finish the guide without them. */
+    fun skipFinish() {
+        if (finishing) return
+        finishing = true
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { deps.profile.setOnboardingDone(true) }
+                    .onFailure { Log.w(FINISH_TAG, "setOnboardingDone failed", it) }
             }
             finishing = false
             onFinished()
@@ -549,11 +610,28 @@ fun OnboardingScreen(
                     testTag = "onboarding_continue_habits",
                 ) { state.next() }
 
-                else -> WizardPrimaryButton(
-                    text = if (finishing) "⏳ Ukládám…" else "Dokončit",
-                    enabled = !finishing,
-                    testTag = "onboarding_finish",
-                ) { finish() }
+                else -> {
+                    finishError?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ErrorRed,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        TextButton(
+                            onClick = { skipFinish() },
+                            modifier = Modifier.fillMaxWidth().testTag("onboarding_finish_skip"),
+                        ) {
+                            Text("Přeskočit cíle a pokračovat")
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    WizardPrimaryButton(
+                        text = if (finishing) "⏳ Ukládám…" else if (finishError != null) "Zkusit znovu" else "Dokončit",
+                        enabled = !finishing,
+                        testTag = "onboarding_finish",
+                    ) { finish() }
+                }
             }
         }
     }
@@ -786,6 +864,9 @@ fun OnboardingScreen(
         }
     }
 }
+
+/** Log tag for every step of the wizard's finish write plan. */
+private const val FINISH_TAG = "OnboardingFinish"
 
 /**
  * Primary wizard CTA: the brand gradient with a soft glow, sized like the login
