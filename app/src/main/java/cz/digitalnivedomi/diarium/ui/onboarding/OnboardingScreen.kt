@@ -1,5 +1,13 @@
 package cz.digitalnivedomi.diarium.ui.onboarding
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -34,34 +43,38 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
+import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassIconButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassTextField
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.checkin.components.SelectableChip
 import cz.digitalnivedomi.diarium.ui.checkin.components.TogglePill
+import cz.digitalnivedomi.diarium.ui.components.BrandMark
+import cz.digitalnivedomi.diarium.ui.components.FrequencyDropdown
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
+import cz.digitalnivedomi.diarium.ui.components.GlowDisc
 import cz.digitalnivedomi.diarium.ui.components.ScreenBackdrop
+import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
+import cz.digitalnivedomi.diarium.ui.components.accentGlow
 import cz.digitalnivedomi.diarium.ui.theme.ErrorRed
+import cz.digitalnivedomi.diarium.ui.theme.Gradients
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
+import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
+import cz.digitalnivedomi.diarium.ui.theme.Violet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-/** The three goal periods, Czech label → the canonical value `GoalsRepository` stores. */
-private val FREQUENCY_CHOICES: List<Pair<String, String>> = listOf(
-    "daily" to "denně",
-    "weekly" to "týdně",
-    "monthly" to "měsíčně",
-)
 
 /** Czech label for a stored frequency value. */
 private fun frequencyLabel(frequency: String): String = when (frequency) {
@@ -110,6 +123,7 @@ fun OnboardingScreen(
     var goalFrequency by remember { mutableStateOf("weekly") }
     var goalActivityKey by remember { mutableStateOf<String?>(null) }
     var activities by remember { mutableStateOf<List<ActivityDef>>(emptyList()) }
+    var goalHabits by remember { mutableStateOf<List<HabitDef>>(emptyList()) }
     var newActivityName by remember { mutableStateOf("") }
     var showingNewActivity by remember { mutableStateOf(false) }
     var addingActivity by remember { mutableStateOf(false) }
@@ -121,14 +135,22 @@ fun OnboardingScreen(
         if (profile.name.isNotBlank()) state.name = profile.name
         profile.birthYear?.let { state.birthYear = it.toString() }
         aiEnabled = profile.aiEnabled
-        state.loadHabits(withContext(Dispatchers.IO) { deps.pickers.habits() })
+        // Owner decision: the wizard only ever offers the catalogue's standard habits
+        // (`source == "default"`) — personal/custom habits are never offered as toggles
+        // here. Habits created in this wizard run are appended by `addCustomHabit`, so
+        // they stay visible.
+        state.loadHabits(
+            withContext(Dispatchers.IO) { deps.pickers.habits() }
+                .filter { it.source == "default" },
+        )
         habitsLoaded = true
     }
 
-    // The goal dialog's activity picker reads the catalogue each time it opens.
+    // The goal dialog's activity and habit pickers read the catalogue each time it opens.
     LaunchedEffect(showGoalDialog) {
         if (showGoalDialog) {
             activities = withContext(Dispatchers.IO) { deps.pickers.activities() }
+            goalHabits = withContext(Dispatchers.IO) { deps.pickers.habits() }
         }
     }
 
@@ -182,7 +204,18 @@ fun OnboardingScreen(
         }
     }
 
-    ScreenBackdrop(modifier = modifier.fillMaxSize(), accent = Indigo) {
+    // The backdrop tint follows the step (staying inside the brand ramp), so the
+    // guide reads as one continuous surface while moving through it.
+    val stepAccent by animateColorAsState(
+        targetValue = when (state.step) {
+            2 -> Violet
+            3 -> IndigoLight
+            else -> Indigo
+        },
+        label = "stepAccent",
+    )
+
+    ScreenBackdrop(modifier = modifier.fillMaxSize(), accent = stepAccent) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -191,19 +224,32 @@ fun OnboardingScreen(
                 .padding(horizontal = 20.dp)
                 .padding(top = 40.dp, bottom = 28.dp),
         ) {
-            // Header: back arrow (steps 2-4) + title + step counter.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (state.step > 1) {
-                    GlassIconButton(text = "←", testTag = "onboarding_back") { state.back() }
-                    Spacer(Modifier.width(10.dp))
-                }
-                Column {
+            // Hero: the brand mark over a gradient wordmark, the step counter
+            // underneath. The back arrow (steps 2–4) rides its own row above, so the
+            // mark itself never shifts between steps.
+            StaggeredItem(index = 0) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (state.step > 1) {
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            GlassIconButton(text = "←", testTag = "onboarding_back") { state.back() }
+                        }
+                        Spacer(Modifier.height(2.dp))
+                    }
+                    GlowDisc(accent = Indigo, size = 88.dp) {
+                        BrandMark(size = 64.dp)
+                    }
+                    Spacer(Modifier.height(12.dp))
                     Text(
                         text = "Vítej v Diarium",
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            brush = Brush.linearGradient(Gradients.brand),
+                        ),
                         fontWeight = FontWeight.Bold,
-                        color = TextPrimary,
                     )
+                    Spacer(Modifier.height(3.dp))
                     Text(
                         text = "Krok ${state.step} ze ${OnboardingState.STEP_COUNT}",
                         style = MaterialTheme.typography.labelSmall,
@@ -211,27 +257,51 @@ fun OnboardingScreen(
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(16.dp))
 
-            // Progress dots: past + current steps lit, the current one larger.
+            // Progress pills: past + current lit; width and colour animate, so a step
+            // change reads as motion, not as a redraw.
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 repeat(OnboardingState.STEP_COUNT) { index ->
                     val done = index + 1 <= state.step
                     val current = index + 1 == state.step
+                    val pillWidth by animateDpAsState(
+                        targetValue = if (current) 22.dp else 8.dp,
+                        label = "pillWidth",
+                    )
+                    val pillColor by animateColorAsState(
+                        targetValue = if (done) Indigo else Color.White.copy(alpha = 0.16f),
+                        label = "pillColor",
+                    )
+                    if (index > 0) Spacer(Modifier.width(6.dp))
                     Box(
                         Modifier
-                            .size(if (current) 9.dp else 7.dp)
+                            .width(pillWidth)
+                            .height(8.dp)
                             .clip(CircleShape)
-                            .background(if (done) Indigo else Color.White.copy(alpha = 0.16f)),
+                            .background(pillColor),
                     )
                 }
             }
             Spacer(Modifier.height(20.dp))
 
-            when (state.step) {
+            // The step body: slides in from the side the flow is moving toward, so
+            // forward and back are distinguishable at a glance.
+            AnimatedContent(
+                targetState = state.step,
+                transitionSpec = {
+                    val forward = targetState > initialState
+                    val enter = slideInHorizontally { if (forward) it / 5 else -it / 5 } + fadeIn()
+                    val exit = slideOutHorizontally { if (forward) -it / 5 else it / 5 } + fadeOut()
+                    enter togetherWith exit
+                },
+                label = "onboardingStep",
+            ) { step ->
+                when (step) {
                 // ── Step 1: Profil ──────────────────────────────────────────────
                 1 -> GlassCard(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -286,6 +356,13 @@ fun OnboardingScreen(
                         placeholder = "API klíč (sk-…)",
                         testTag = "onboarding_ai_key",
                     )
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = { deps.openUrl("https://platform.deepseek.com/api_keys") },
+                        modifier = Modifier.testTag("onboarding_deepseek_link"),
+                    ) {
+                        Text("🔑 Získat klíč na platform.deepseek.com")
+                    }
                 }
 
                 // ── Step 3: Návyky ──────────────────────────────────────────────
@@ -352,6 +429,7 @@ fun OnboardingScreen(
                     Spacer(Modifier.height(14.dp))
                     state.templates.forEachIndexed { index, template ->
                         if (index > 0) Spacer(Modifier.height(8.dp))
+                        val activityKey = template.activityKey
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -359,15 +437,35 @@ fun OnboardingScreen(
                             Text(text = template.emoji, fontSize = 18.sp)
                             Spacer(Modifier.width(10.dp))
                             Text(
-                                text = template.name,
+                                text = template.baseName,
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = TextPrimary,
                             )
+                            GlassTextField(
+                                value = template.targetCount.toString(),
+                                onValueChange = { raw ->
+                                    // Empty or non-numeric input is ignored: the field
+                                    // then snaps back to the last valid count.
+                                    raw.filter { it.isDigit() }.take(2).toIntOrNull()?.let { count ->
+                                        state.updateTemplateCount(activityKey, count)
+                                    }
+                                },
+                                placeholder = "3",
+                                modifier = Modifier.width(56.dp),
+                                testTag = "onboarding_template_count_$activityKey",
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            FrequencyDropdown(
+                                value = template.frequency,
+                                onValueChange = { state.updateTemplateFrequency(activityKey, it) },
+                                testTag = "onboarding_template_frequency_$activityKey",
+                            )
+                            Spacer(Modifier.width(6.dp))
                             TogglePill(
                                 checked = template.checked,
-                                testTag = "onboarding_template_${template.activityKey}",
-                            ) { state.toggleTemplate(template.activityKey) }
+                                testTag = "onboarding_template_$activityKey",
+                            ) { state.toggleTemplate(activityKey) }
                         }
                     }
                     if (state.customGoals.isNotEmpty()) {
@@ -417,28 +515,23 @@ fun OnboardingScreen(
                     }
                 }
             }
+            }
 
             Spacer(Modifier.height(22.dp))
 
             // ── Bottom actions ──────────────────────────────────────────────────
             when (state.step) {
-                1 -> Button(
-                    onClick = { state.next() },
+                1 -> WizardPrimaryButton(
+                    text = "Pokračovat",
                     enabled = state.birthYearValid,
-                    colors = ButtonDefaults.buttonColors(containerColor = Indigo),
-                    modifier = Modifier.fillMaxWidth().testTag("onboarding_continue"),
-                ) {
-                    Text("Pokračovat")
-                }
+                    testTag = "onboarding_continue",
+                ) { state.next() }
 
                 2 -> {
-                    Button(
-                        onClick = { continueWithKey() },
-                        colors = ButtonDefaults.buttonColors(containerColor = Indigo),
-                        modifier = Modifier.fillMaxWidth().testTag("onboarding_save_key"),
-                    ) {
-                        Text("Uložit klíč a pokračovat")
-                    }
+                    WizardPrimaryButton(
+                        text = "Uložit klíč a pokračovat",
+                        testTag = "onboarding_save_key",
+                    ) { continueWithKey() }
                     Spacer(Modifier.height(4.dp))
                     TextButton(
                         onClick = {
@@ -451,22 +544,16 @@ fun OnboardingScreen(
                     }
                 }
 
-                3 -> Button(
-                    onClick = { state.next() },
-                    colors = ButtonDefaults.buttonColors(containerColor = Indigo),
-                    modifier = Modifier.fillMaxWidth().testTag("onboarding_continue_habits"),
-                ) {
-                    Text("Pokračovat")
-                }
+                3 -> WizardPrimaryButton(
+                    text = "Pokračovat",
+                    testTag = "onboarding_continue_habits",
+                ) { state.next() }
 
-                else -> Button(
-                    onClick = { finish() },
+                else -> WizardPrimaryButton(
+                    text = if (finishing) "⏳ Ukládám…" else "Dokončit",
                     enabled = !finishing,
-                    colors = ButtonDefaults.buttonColors(containerColor = Indigo),
-                    modifier = Modifier.fillMaxWidth().testTag("onboarding_finish"),
-                ) {
-                    Text(if (finishing) "⏳ Ukládám…" else "Dokončit")
-                }
+                    testTag = "onboarding_finish",
+                ) { finish() }
             }
         }
     }
@@ -581,6 +668,23 @@ fun OnboardingScreen(
                                 )
                             }
                         }
+                        if (goalHabits.isNotEmpty()) {
+                            Text(
+                                text = "Návyky",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = TextSecondary,
+                            )
+                            goalHabits.forEach { habit ->
+                                SelectableChip(
+                                    text = habit.label,
+                                    icon = habit.icon.takeIf { it.isNotBlank() },
+                                    selected = habit.key == goalActivityKey,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    testTag = "onboarding_goal_habit_${habit.key}",
+                                    onClick = { goalActivityKey = habit.key },
+                                )
+                            }
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                     if (!showingNewActivity) {
@@ -634,16 +738,11 @@ fun OnboardingScreen(
                     Spacer(Modifier.height(12.dp))
                     SectionHint("Jak často")
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FREQUENCY_CHOICES.forEach { (value, label) ->
-                            SelectableChip(
-                                text = label,
-                                selected = goalFrequency == value,
-                                testTag = "onboarding_goal_frequency_$value",
-                                onClick = { goalFrequency = value },
-                            )
-                        }
-                    }
+                    FrequencyDropdown(
+                        value = goalFrequency,
+                        onValueChange = { goalFrequency = it },
+                        testTag = "onboarding_goal_frequency",
+                    )
                     Spacer(Modifier.height(12.dp))
                     SectionHint("Kolikrát za období")
                     Spacer(Modifier.height(6.dp))
@@ -685,5 +784,43 @@ fun OnboardingScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Primary wizard CTA: the brand gradient with a soft glow, sized like the login
+ * screen's sign-in button so both heroes feel like one product. Disabled falls
+ * back to a quiet glass fill; the whole button is one clickable box, so pressing
+ * it never shifts the layout.
+ */
+@Composable
+private fun WizardPrimaryButton(
+    text: String,
+    testTag: String,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .clip(shape)
+            .background(
+                if (enabled) Brush.linearGradient(Gradients.brand)
+                else SolidColor(Color.White.copy(alpha = 0.08f)),
+            )
+            .then(if (enabled) Modifier.accentGlow(Indigo, alpha = 0.35f) else Modifier)
+            .clickable(enabled = enabled, onClick = onClick)
+            .testTag(testTag),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = if (enabled) Color.White else Color.White.copy(alpha = 0.45f),
+        )
     }
 }

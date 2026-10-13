@@ -32,8 +32,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
-import cz.digitalnivedomi.diarium.core.data.DailyGoal
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
+import cz.digitalnivedomi.diarium.core.data.GoalProgress
+import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.core.data.NoteTemplate
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
@@ -41,9 +42,9 @@ import cz.digitalnivedomi.diarium.core.data.Scale
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
 import cz.digitalnivedomi.diarium.ui.checkin.components.ActivitiesSection
+import cz.digitalnivedomi.diarium.ui.checkin.components.CheckInGoalsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.DateNav
 import cz.digitalnivedomi.diarium.ui.checkin.components.ErrorBanner
-import cz.digitalnivedomi.diarium.ui.checkin.components.GoalsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.GratitudeSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.HabitEditorDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.HabitsSection
@@ -76,8 +77,9 @@ import kotlinx.coroutines.withContext
  * One-page daily check-in — native port of the web's `OnePageCheckIn.tsx`.
  *
  * Sections, in the web's order: datum, nálada, spánek, stres, aktivity, návyky,
- * vděčnost, počasí, fotka, škály, poznámka, denní cíle, the read-only screen time
- * and the AI reflection. Saving goes through `save_daily_entry(jsonb)`; the
+ * vděčnost, počasí, fotka, škály, poznámka, cíle (read-only progress computed from
+ * the diary), the read-only screen time and the AI reflection. Saving goes through
+ * `save_daily_entry(jsonb)`; the
  * reflection comes from our `/api/ai/reflect` endpoint, called with the signed-in
  * user's JWT, and is stored on the entry by a second save.
  *
@@ -105,7 +107,7 @@ fun CheckInScreen(
     val reflectionRepo = deps.reflection
     val pickersRepo = deps.pickers
     val drafts = deps.drafts
-    val goalsStore = deps.goals
+    val goalsRepo: GoalsRepository? = deps.goals
 
     /**
      * Flushes the pending debounced draft — leaving the screen (a tab switch) or the
@@ -142,7 +144,9 @@ fun CheckInScreen(
     var habits by remember { mutableStateOf(PickerDefaults.HABIT_FALLBACK) }
     var scales by remember { mutableStateOf<List<Scale>>(emptyList()) }
     var templates by remember { mutableStateOf(PickerDefaults.DEFAULT_TEMPLATES) }
-    var goals by remember { mutableStateOf(GoalsStoreDefaults.DEFAULT) }
+    // Read-only goal progress: null while unknown (the section hides), a list once
+    // [GoalsRepository.loadProgress] has answered — computed from the diary.
+    var goalProgress by remember { mutableStateOf<List<GoalProgress>?>(null) }
     var uploadingPhoto by remember { mutableStateOf(false) }
 
     // ── The 2026-09 additions ──
@@ -158,7 +162,8 @@ fun CheckInScreen(
     var moveDialogOpen by remember { mutableStateOf(false) }
     var moveTarget by remember { mutableStateOf<String?>(null) }
 
-    // Pickers + goals once per screen (they do not depend on the selected day).
+    // Pickers + goal progress once per screen. The progress is read-only and
+    // computed from the diary, so the check-in only ever displays it.
     LaunchedEffect(deps) {
         if (pickersRepo != null) {
             activities = pickersRepo.activities().ifEmpty { PickerDefaults.ACTIVITY_FALLBACK }
@@ -167,8 +172,8 @@ fun CheckInScreen(
             scales = pickersRepo.scales()
             templates = pickersRepo.templates().ifEmpty { PickerDefaults.DEFAULT_TEMPLATES }
         }
-        if (goalsStore != null) {
-            goals = goalsStore.load().ifEmpty { GoalsStoreDefaults.DEFAULT }
+        if (goalsRepo != null) {
+            goalProgress = goalsRepo.loadProgress()
         }
     }
 
@@ -243,7 +248,12 @@ fun CheckInScreen(
         holder.markSaving()
         scope.launch {
             persistEntry()
-                .onSuccess { holder.markSaved() }
+                .onSuccess {
+                    holder.markSaved()
+                    // The diary just changed under the goals: recompute the read-only
+                    // progress so the section reflects the save without a reload.
+                    goalProgress = goalsRepo?.loadProgress()
+                }
                 .onFailure { holder.markError(it.message ?: "Uložení se nezdařilo.") }
         }
     }
@@ -269,6 +279,9 @@ fun CheckInScreen(
                 holder.markError("Zápis je přesunutý, ale původní den se nepodařilo smazat.")
             }
             drafts?.clear(from)
+            // The entry moved between days, so the days that logged an activity
+            // changed: recompute the read-only goal progress from the diary.
+            goalProgress = goalsRepo?.loadProgress()
             moveDialogOpen = false
             moveTarget = null
             // Landing on the target day re-reads it, so the screen shows the moved entry
@@ -384,25 +397,6 @@ fun CheckInScreen(
                 holder.markError("Fotku se nepodařilo nahrát.")
             }
         }
-    }
-
-    fun persistGoals() {
-        scope.launch { goalsStore?.save(goals) }
-    }
-
-    fun toggleGoal(id: String) {
-        val date = holder.date
-        goals = goals.map { goal ->
-            if (goal.id != id) goal
-            else goal.copy(
-                completedDates = if (date in goal.completedDates) {
-                    goal.completedDates - date
-                } else {
-                    goal.completedDates + date
-                },
-            )
-        }
-        persistGoals()
     }
 
     // The save just flipped the day into its read-only state, so its reflection
@@ -551,29 +545,9 @@ fun CheckInScreen(
             onChange = { holder.setNote(it) },
         )
 
-        GoalsSection(
-            goals = goals,
-            date = state.date,
-            onToggle = { toggleGoal(it) },
-            onAdd = { name, emoji ->
-                goals = goals + DailyGoal(
-                    id = "goal-${System.currentTimeMillis()}",
-                    emoji = emoji,
-                    name = name,
-                )
-                persistGoals()
-            },
-            onEdit = { id, name, emoji ->
-                goals = goals.map { goal ->
-                    if (goal.id == id) goal.copy(name = name, emoji = emoji) else goal
-                }
-                persistGoals()
-            },
-            onRemove = { id ->
-                goals = goals.filterNot { it.id == id }
-                persistGoals()
-            },
-        )
+        // Read-only: the progress is computed from the diary by GoalsRepository;
+        // ticking and editing live on the Cíle screen.
+        CheckInGoalsSection(progress = goalProgress)
 
         ScreenTimeSection(
             // phoneScreenTime is seconds; the property converts to the minutes this
@@ -759,13 +733,6 @@ private fun StoredDayView(
             SecondaryButton(text = "🗓 Změnit datum", testTag = "checkin_move") { onMoveDate() }
         }
     }
-}
-
-/** Mirrors [cz.digitalnivedomi.diarium.core.data.GoalsStore.DEFAULT_GOALS]. */
-private object GoalsStoreDefaults {
-    val DEFAULT: List<DailyGoal> = listOf(
-        DailyGoal(id = "1", emoji = "🏋️", name = "Krátké cvičení"),
-    )
 }
 
 /** Shown when the reflection flow is asked to run while the AI master switch is off. */

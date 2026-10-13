@@ -36,6 +36,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import cz.digitalnivedomi.diarium.ui.components.BrandMark
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlowDisc
 import cz.digitalnivedomi.diarium.ui.components.StaggeredItem
@@ -176,26 +177,6 @@ fun LoginScreen(
             style = MaterialTheme.typography.labelSmall,
             color = TextTertiary,
             textAlign = TextAlign.Center,
-        )
-    }
-}
-
-/** Brand mark: indigo→violet glass square with a "D". */
-@Composable
-private fun BrandMark() {
-    Box(
-        modifier = Modifier
-            .size(76.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(Brush.linearGradient(listOf(Indigo, Violet)))
-            .border(1.dp, Color.White.copy(alpha = 0.20f), RoundedCornerShape(24.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = "D",
-            style = MaterialTheme.typography.displaySmall,
-            fontWeight = FontWeight.Bold,
-            color = Color.White,
         )
     }
 }

@@ -98,6 +98,27 @@ class OnboardingState(
         }
     }
 
+    /**
+     * Step-4 editing: the count stepper on a template row. Unknown keys are ignored;
+     * the count is floored at 1 so a goal never targets zero days.
+     */
+    fun updateTemplateCount(activityKey: String, count: Int) {
+        templates = templates.map { template ->
+            if (template.activityKey == activityKey) template.copy(targetCount = count.coerceAtLeast(1)) else template
+        }
+    }
+
+    /**
+     * Step-4 editing: the frequency chip on a template row. Only „daily", „weekly" and
+     * „monthly" are accepted — anything else, or an unknown key, changes nothing.
+     */
+    fun updateTemplateFrequency(activityKey: String, frequency: String) {
+        if (frequency !in KNOWN_FREQUENCIES) return
+        templates = templates.map { template ->
+            if (template.activityKey == activityKey) template.copy(frequency = frequency) else template
+        }
+    }
+
     /** Adds a custom goal; blank names/keys are refused (the dialog validates too). */
     fun addCustomGoal(name: String, activityKey: String, targetCount: Int, frequency: String) {
         val cleanName = name.trim()
@@ -125,8 +146,9 @@ class OnboardingState(
 
     /** Everything the user selected, in the order shown (templates first). */
     fun plannedGoals(): List<PlannedGoal> =
-        templates.filter { it.checked }.map { PlannedGoal(it.name, it.activityKey, it.targetCount, it.frequency) } +
-            customGoals.map { PlannedGoal(it.name, it.activityKey, it.targetCount, it.frequency) }
+        templates.filter { it.checked }.map {
+            PlannedGoal(goalNameFor(it.baseName, it.targetCount, it.frequency), it.activityKey, it.targetCount, it.frequency)
+        } + customGoals.map { PlannedGoal(it.name, it.activityKey, it.targetCount, it.frequency) }
 
     /**
      * [plannedGoals] minus the goals the account already has (same `activityKey`),
@@ -150,13 +172,33 @@ class OnboardingState(
          * real check-in days the moment it is created.
          */
         val TEMPLATES: List<GoalTemplate> = listOf(
-            GoalTemplate(emoji = "🏋️", name = "Cvičit 3× týdně", activityKey = "trenink", targetCount = 3, frequency = "weekly"),
-            GoalTemplate(emoji = "🚶", name = "Chodit denně", activityKey = "chuze", targetCount = 1, frequency = "daily"),
-            GoalTemplate(emoji = "📖", name = "Číst 4× týdně", activityKey = "cteni", targetCount = 4, frequency = "weekly"),
-            GoalTemplate(emoji = "🧘", name = "Meditovat 3× týdně", activityKey = "meditovat", targetCount = 3, frequency = "weekly"),
-            GoalTemplate(emoji = "🥗", name = "Jíst zdravě 5× týdně", activityKey = "jist_zdrave", targetCount = 5, frequency = "weekly"),
-            GoalTemplate(emoji = "💧", name = "Pít vodu denně", activityKey = "pit_vody", targetCount = 1, frequency = "daily"),
+            GoalTemplate(emoji = "🏋️", name = "Cvičit 3× týdně", baseName = "Cvičit", activityKey = "trenink", targetCount = 3, frequency = "weekly"),
+            GoalTemplate(emoji = "🚶", name = "Chodit denně", baseName = "Chodit", activityKey = "chuze", targetCount = 1, frequency = "daily"),
+            GoalTemplate(emoji = "📖", name = "Číst 4× týdně", baseName = "Číst", activityKey = "cteni", targetCount = 4, frequency = "weekly"),
+            GoalTemplate(emoji = "🧘", name = "Meditovat 3× týdně", baseName = "Meditovat", activityKey = "meditovat", targetCount = 3, frequency = "weekly"),
+            GoalTemplate(emoji = "🥗", name = "Jíst zdravě 5× týdně", baseName = "Jíst zdravě", activityKey = "jist_zdrave", targetCount = 5, frequency = "weekly"),
+            GoalTemplate(emoji = "💧", name = "Pít vodu denně", baseName = "Pít vodu", activityKey = "pit_vody", targetCount = 1, frequency = "daily"),
         )
+
+        /** The only frequencies [updateTemplateFrequency] lets a template take. */
+        private val KNOWN_FREQUENCIES = setOf("daily", "weekly", "monthly")
+
+        /**
+         * The goal name a template row stands for, derived from its editable parts —
+         * `1× daily` reads bare („Chodit denně"), everything else keeps the `N×` shape
+         * („Cvičit 3× týdně", „Pít vodu 1× týdně", „Číst 1× měsíčně").
+         */
+        fun goalNameFor(baseName: String, count: Int, frequency: String): String =
+            if (count == 1 && frequency == "daily") {
+                "$baseName denně"
+            } else {
+                val adverb = when (frequency) {
+                    "daily" -> "denně"
+                    "monthly" -> "měsíčně"
+                    else -> "týdně"
+                }
+                "$baseName $count× $adverb"
+            }
 
         private fun choiceOf(def: HabitDef) = HabitChoice(
             key = def.key,
@@ -206,6 +248,8 @@ data class HabitChoice(
 data class GoalTemplate(
     val emoji: String,
     val name: String,
+    /** The name without the count/frequency tail; [OnboardingState.goalNameFor] rebuilds the goal name from it. */
+    val baseName: String,
     val activityKey: String,
     val targetCount: Int,
     val frequency: String,

@@ -24,6 +24,8 @@ class OnboardingDeps(
     val aiKeys: AiKeyStore,
     val pickers: PickersRepository,
     val goals: GoalsRepository,
+    /** Opens an external URL in the browser; a no-op in previews and tests. */
+    val openUrl: (String) -> Unit = {},
 ) {
 
     companion object {
@@ -38,6 +40,12 @@ class OnboardingDeps(
                 aiKeys = AiKeyStore.forContext(context),
                 pickers = PickersRepository(client, session),
                 goals = GoalsRepository(client, session),
+                openUrl = { url ->
+                    context.startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                },
             )
         }
     }

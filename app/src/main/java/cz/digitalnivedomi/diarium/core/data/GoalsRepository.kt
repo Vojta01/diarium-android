@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -17,7 +18,10 @@ import java.util.Locale
  *  - week  = (today − 7 days) … today inclusive; month = (today − 1 month) … today.
  *  - the period count is the number of **days** in the range whose `entries`
  *    row lists `goal.activity_key` in its `activities` array — one count per day,
- *    never per occurrence.
+ *    never per occurrence. Values are compared through [normalizeActivityValue],
+ *    because in practice `activities` holds display labels (`Chůze`) while goals
+ *    hold slug keys (`chuze`); a `true` value for the key in the row's `habits`
+ *    object fulfils that day too.
  *  - `target_met` is `count >= target_count`.
  *  - the streak walks the distinct dates (descending) that have the activity and
  *    adds one per consecutive day, breaking at the first gap that is not exactly
@@ -149,9 +153,11 @@ class GoalsRepository(
     }
 
     /**
-     * `entries` rows for the user at or after [from], reduced to the two columns
-     * the maths needs. A day with several entries is merged into one day so the
-     * count is per day and not per occurrence.
+     * `entries` rows for the user at or after [from], reduced to the columns the
+     * maths needs: `activities` (the day's logged values) and `habits` (a
+     * key→Boolean object naming the habits fulfilled that day). A day with
+     * several entries is merged into one day so the count is per day and not
+     * per occurrence.
      */
     private fun readDays(userId: String, from: String): List<DayActivities>? {
         val resp = client.get(
@@ -159,7 +165,7 @@ class GoalsRepository(
             mapOf(
                 "user_id" to "eq.$userId",
                 "date" to "gte.$from",
-                "select" to "date,activities",
+                "select" to "date,activities,habits",
             ),
         )
         if (!resp.isSuccessful) return null
@@ -246,34 +252,83 @@ data class GoalProgress(
         else (count.toFloat() / goal.targetCount.toFloat()).coerceIn(0f, 1f)
 }
 
-/** One day's activity keys (already unioned across that day's entries). */
-internal data class DayActivities(val date: String, val keys: List<String>)
+/**
+ * One day's logged values (already unioned across that day's entries).
+ *
+ * [keys] holds the raw `entries.activities` values — historically display
+ * LABELS like `Chůze` even though goals store slug KEYS like `chuze`, which is
+ * why every comparison runs through [normalizeActivityValue]. [habitKeys] holds
+ * the `entries.habits` keys whose JSON value is `true`: a goal bound to a habit
+ * is fulfilled by that habit, which never appears in `activities`. The default
+ * keeps every existing constructor call (and test) source-compatible.
+ */
+internal data class DayActivities(
+    val date: String,
+    val keys: List<String>,
+    val habitKeys: List<String> = emptyList(),
+)
 
 // ── Pure progress maths (JVM-tested, no Android, no clock, no network) ───────
+
+/**
+ * The one normalisation every activity comparison runs through: a stored LABEL
+ * (`Chůze`, `Trénink`, `CTENI`) and a goal's slug KEY (`chuze`, `trenink`,
+ * `cteni`) both land on the same string, so counting can no longer miss.
+ *
+ * Mirrors `PickersRepository.slug` (which is `private`, so replicated here —
+ * keep the two in step): NFD-decompose, drop combining marks, lower-case,
+ * every run of non-`[a-z0-9]` → `_`, trim `_`, and the same blank fallback so
+ * two punctuation-only values with different text never collapse into one.
+ * Idempotent for values that are already slugs, which keeps the existing
+ * key==key tests passing unchanged.
+ */
+internal fun normalizeActivityValue(v: String): String {
+    val ascii = Normalizer.normalize(v, Normalizer.Form.NFD)
+        .replace(Regex("\\p{Mn}+"), "")
+    return ascii.lowercase(Locale.ROOT)
+        .replace(Regex("[^a-z0-9]+"), "_")
+        .trim('_')
+        .ifBlank { "vlastni_" + v.hashCode().toString().replace("-", "n") }
+}
 
 /**
  * Number of days that logged [activityKey].
  *
  * One count per DAY: a day whose list repeats the key (several entries, or the
  * activity twice in one entry) still counts once, and a day without the key is
- * skipped entirely.
+ * skipped entirely. Comparison goes through [normalizeActivityValue], so a
+ * label stored in `entries.activities` matches a slug goal key.
  */
-internal fun countActivity(activitiesPerDay: List<List<String>>, activityKey: String): Int =
-    activitiesPerDay.count { day -> day.any { it == activityKey } }
+internal fun countActivity(activitiesPerDay: List<List<String>>, activityKey: String): Int {
+    val target = normalizeActivityValue(activityKey)
+    return activitiesPerDay.count { day -> day.any { normalizeActivityValue(it) == target } }
+}
 
-/** The days in `[from, to]` that logged [activityKey], distinct and descending. */
+/**
+ * The days in `[from, to]` that logged [activityKey], distinct and descending.
+ *
+ * A day counts when ANY of its `activities` values OR its fulfilled
+ * `habitKeys` normalises to the goal key ([normalizeActivityValue]); a day
+ * matching both still contributes a single date.
+ */
 internal fun activityDates(
     days: List<DayActivities>,
     activityKey: String,
     from: String,
     to: String,
-): List<String> =
-    days.asSequence()
-        .filter { it.date in from..to && it.keys.contains(activityKey) }
+): List<String> {
+    val target = normalizeActivityValue(activityKey)
+    return days.asSequence()
+        .filter { day ->
+            day.date in from..to &&
+                (day.keys.any { normalizeActivityValue(it) == target } ||
+                    day.habitKeys.any { normalizeActivityValue(it) == target })
+        }
         .map { it.date }
         .distinct()
         .sortedDescending()
         .toList()
+}
 
 /** Days in the goal's period that logged [activityKey] — the goal's `count`. */
 internal fun countActivityInPeriod(
@@ -463,17 +518,47 @@ private fun pad(value: Int, width: Int): String {
     return if (s.length >= width) s else "0".repeat(width - s.length) + s
 }
 
-/** `entries` rows → one [DayActivities] per date, keys unioned across the day. */
+/**
+ * `entries` rows → one [DayActivities] per date: activity values and fulfilled
+ * habit keys unioned across the day's entries.
+ *
+ * `habits` is a JSON object key→Boolean; only keys whose value is `true` are
+ * kept (an explicit `false` means the habit was not fulfilled that day).
+ */
 internal fun daysFrom(rows: List<JSONObject>): List<DayActivities> {
-    val byDate = LinkedHashMap<String, LinkedHashSet<String>>()
+    val activitiesByDate = LinkedHashMap<String, LinkedHashSet<String>>()
+    val habitsByDate = LinkedHashMap<String, LinkedHashSet<String>>()
     rows.forEach { row ->
         val date = row.plainString("date").takeIf { it.isNotBlank() } ?: return@forEach
-        val keys = byDate.getOrPut(date) { LinkedHashSet<String>() }
+        val keys = activitiesByDate.getOrPut(date) { LinkedHashSet<String>() }
         row.optJSONArray("activities")?.stringList()?.forEach { key ->
             if (key.isNotBlank()) keys.add(key)
         }
+        val habits = habitsByDate.getOrPut(date) { LinkedHashSet<String>() }
+        habitsObject(row)?.let { obj ->
+            obj.keys().forEach { key ->
+                if (key.isNotBlank() && obj.optBoolean(key, false)) habits.add(key)
+            }
+        }
     }
-    return byDate.map { DayActivities(it.key, it.value.toList()) }
+    return activitiesByDate.map { (date, keys) ->
+        DayActivities(date, keys.toList(), habitsByDate[date]?.toList() ?: emptyList())
+    }
+}
+
+/**
+ * `entries.habits` as a JSON object; tolerates the column arriving as a
+ * JSON-encoded string (a `jsonb` column normally arrives as an object).
+ */
+private fun habitsObject(row: JSONObject): JSONObject? {
+    row.optJSONObject("habits")?.let { return it }
+    val raw = row.optString("habits", "")
+    if (raw.isBlank() || raw == "null") return null
+    return try {
+        JSONObject(raw)
+    } catch (_: Exception) {
+        null
+    }
 }
 
 /** Today as the web writes it (`yyyy-MM-dd`, local time). */

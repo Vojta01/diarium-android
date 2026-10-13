@@ -42,8 +42,11 @@ import kotlinx.coroutines.launch
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.Goal
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
+import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassTextField
+import cz.digitalnivedomi.diarium.ui.checkin.components.SelectableChip
 import cz.digitalnivedomi.diarium.ui.checkin.components.labelWithIcon
+import cz.digitalnivedomi.diarium.ui.components.FrequencyDropdown
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
@@ -71,6 +74,7 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
     var deleteTarget by remember { mutableStateOf<Goal?>(null) }
     var saving by remember { mutableStateOf(false) }
     var activities by remember { mutableStateOf<List<ActivityDef>>(emptyList()) }
+    var habits by remember { mutableStateOf<List<HabitDef>>(emptyList()) }
 
     LaunchedEffect(reloadToken) {
         if (repository == null) {
@@ -82,11 +86,15 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
         }
     }
 
-    // Labels and icons for the cards and the picker. Read only with a session; a
-    // failed read comes back as the repository's static fallback list, and every
-    // lookup then falls back to the stored key instead of hiding the goal.
+    // Labels and icons for the cards and the pickers (activities + habits). Read
+    // only with a session; a failed read comes back as the repository's static
+    // fallback list, and every lookup then falls back to the stored key instead
+    // of hiding the goal.
     LaunchedEffect(reloadToken) {
-        if (repository != null) activities = pickers.activities()
+        if (repository != null) {
+            activities = pickers.activities()
+            habits = pickers.habits()
+        }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -171,6 +179,7 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
             GoalEditorDialog(
                 initial = editorTarget,
                 activities = activities,
+                habits = habits,
                 canCreateActivity = repository != null,
                 saving = saving,
                 onDismiss = { if (!saving) editorOpen = false },
@@ -419,6 +428,7 @@ private fun GoalProgressBar(fraction: Float, accent: Color) {
 private fun GoalEditorDialog(
     initial: Goal?,
     activities: List<ActivityDef>,
+    habits: List<HabitDef>,
     canCreateActivity: Boolean,
     saving: Boolean,
     onDismiss: () -> Unit,
@@ -509,15 +519,11 @@ private fun GoalEditorDialog(
             Spacer(Modifier.height(14.dp))
             FieldLabel("Období")
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FREQUENCIES.forEach { (value, label) ->
-                    ChoiceChip(
-                        text = label,
-                        selected = frequency == value,
-                        onClick = { frequency = value },
-                    )
-                }
-            }
+            FrequencyDropdown(
+                value = frequency,
+                onValueChange = { frequency = it },
+                testTag = "goal_editor_frequency",
+            )
 
             Spacer(Modifier.height(18.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -535,6 +541,8 @@ private fun GoalEditorDialog(
     if (pickerOpen) {
         ActivityPickerDialog(
             activities = activities,
+            habits = habits,
+            pickedKey = activityKey,
             canCreate = canCreateActivity && !saving,
             onCreateNew = {
                 pickerOpen = false
@@ -580,6 +588,8 @@ private fun GoalEditorDialog(
 @Composable
 private fun ActivityPickerDialog(
     activities: List<ActivityDef>,
+    habits: List<HabitDef>,
+    pickedKey: String,
     canCreate: Boolean,
     onCreateNew: () -> Unit,
     onPick: (ActivityDef) -> Unit,
@@ -621,6 +631,31 @@ private fun ActivityPickerDialog(
                             text = labelWithIcon(def.icon, def.label),
                             accent = Indigo,
                             onClick = { onPick(def) },
+                        )
+                    }
+                }
+
+                // Habits double as goals: picking one stores its key as the goal's
+                // activity, and a fresh goal auto-fills its name from the label.
+                if (habits.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    FieldLabel("Návyky")
+                    habits.forEach { habit ->
+                        SelectableChip(
+                            text = habit.label,
+                            selected = pickedKey.equals(habit.key, ignoreCase = true),
+                            icon = habit.icon,
+                            testTag = "goal_habit_${habit.key}",
+                            onClick = {
+                                onPick(
+                                    ActivityDef(
+                                        key = habit.key,
+                                        label = habit.label,
+                                        icon = habit.icon,
+                                        category = habit.category,
+                                    ),
+                                )
+                            },
                         )
                     }
                 }
@@ -804,12 +839,6 @@ private fun FieldLabel(text: String) {
 // ── Constants ───────────────────────────────────────────────────────────────
 
 private val Danger = Color(0xFFF87171)
-
-private val FREQUENCIES = listOf(
-    "daily" to "den",
-    "weekly" to "týden",
-    "monthly" to "měsíc",
-)
 
 private const val MSG_NO_SESSION = "Chybí přihlášení — cíle se nepodařilo načíst."
 private const val MSG_LOAD_FAILED = "Zkontroluj připojení a zkus to znovu."

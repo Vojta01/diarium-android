@@ -120,6 +120,84 @@ class OnboardingStateTest {
         assertTrue(state.templates.none { it.checked })
     }
 
+    private fun OnboardingState.template(key: String): GoalTemplate =
+        templates.first { it.activityKey == key }
+
+    @Test
+    fun `updateTemplateCount floors the count at one and ignores unknown keys`() {
+        val state = OnboardingState()
+
+        state.updateTemplateCount("trenink", 0)
+        assertEquals(1, state.template("trenink").targetCount)
+
+        state.updateTemplateCount("trenink", 5)
+        assertEquals(5, state.template("trenink").targetCount)
+
+        // Unknown key: no row moves.
+        val before = state.templates.map { it.activityKey to it.targetCount }
+        state.updateTemplateCount("neexistuje", 7)
+        assertEquals(before, state.templates.map { it.activityKey to it.targetCount })
+    }
+
+    @Test
+    fun `updateTemplateFrequency takes the three known values and refuses anything else`() {
+        val state = OnboardingState()
+
+        state.updateTemplateFrequency("trenink", "daily")
+        assertEquals("daily", state.template("trenink").frequency)
+
+        state.updateTemplateFrequency("trenink", "monthly")
+        assertEquals("monthly", state.template("trenink").frequency)
+
+        state.updateTemplateFrequency("trenink", "weekly")
+        assertEquals("weekly", state.template("trenink").frequency)
+
+        // Junk keeps the last accepted value.
+        state.updateTemplateFrequency("trenink", "obcas")
+        state.updateTemplateFrequency("trenink", "")
+        assertEquals("weekly", state.template("trenink").frequency)
+
+        // Unknown key: no row moves, even with a valid frequency.
+        val before = state.templates.map { it.activityKey to it.frequency }
+        state.updateTemplateFrequency("neexistuje", "daily")
+        assertEquals(before, state.templates.map { it.activityKey to it.frequency })
+    }
+
+    @Test
+    fun `goalNameFor keeps the daily single bare and builds N× names otherwise`() {
+        assertEquals("Chodit denně", OnboardingState.goalNameFor("Chodit", 1, "daily"))
+        assertEquals("Cvičit 3× týdně", OnboardingState.goalNameFor("Cvičit", 3, "weekly"))
+        // Only 1× daily drops the N× tail — 1× weekly keeps it.
+        assertEquals("Pít vodu 1× týdně", OnboardingState.goalNameFor("Pít vodu", 1, "weekly"))
+        assertEquals("Číst 1× měsíčně", OnboardingState.goalNameFor("Číst", 1, "monthly"))
+        assertEquals("Číst 4× měsíčně", OnboardingState.goalNameFor("Číst", 4, "monthly"))
+    }
+
+    @Test
+    fun `every template's default name is goalNameFor of its own parts`() {
+        for (template in OnboardingState.TEMPLATES) {
+            assertEquals(
+                template.name,
+                OnboardingState.goalNameFor(template.baseName, template.targetCount, template.frequency),
+            )
+        }
+    }
+
+    @Test
+    fun `an edited template creates its goal under the derived name`() {
+        val state = OnboardingState()
+        state.toggleTemplate("trenink")
+
+        state.updateTemplateCount("trenink", 5)
+        state.updateTemplateFrequency("trenink", "monthly")
+
+        val fresh = state.goalsToCreate(emptySet())
+        assertEquals(listOf("trenink"), fresh.map { it.activityKey })
+        assertEquals("Cvičit 5× měsíčně", fresh[0].name)
+        assertEquals(5, fresh[0].targetCount)
+        assertEquals("monthly", fresh[0].frequency)
+    }
+
     // ── custom goals + goalsToCreate ─────────────────────────────────────────
 
     @Test
