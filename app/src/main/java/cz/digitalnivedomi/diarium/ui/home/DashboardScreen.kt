@@ -52,12 +52,14 @@ import cz.digitalnivedomi.diarium.core.data.DashboardReflection
 import cz.digitalnivedomi.diarium.core.data.DashboardNewestEntry
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
+import cz.digitalnivedomi.diarium.core.data.GoalProgress
 import cz.digitalnivedomi.diarium.core.data.MetricTrend
 import cz.digitalnivedomi.diarium.core.data.MoodDiscState
 import cz.digitalnivedomi.diarium.core.data.PhoneTopApp
 import cz.digitalnivedomi.diarium.core.data.formatTopAppDuration
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.moodDiscState
+import cz.digitalnivedomi.diarium.core.data.ProfileData
 import cz.digitalnivedomi.diarium.core.data.rankTopApps
 import cz.digitalnivedomi.diarium.core.stats.ScreenTimeSeries
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
@@ -96,6 +98,7 @@ import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.MotionTokens
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
+import cz.digitalnivedomi.diarium.ui.theme.SuccessGreen
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
@@ -141,6 +144,13 @@ fun DashboardScreen(
     val repository = deps.dashboard
     var reloadTrigger by remember { mutableStateOf(0) }
 
+    // Goals and the profile ride the dashboard's own load/reload: a failed goals
+    // read stays null and the card simply hides — a flaky network must never
+    // render as "no goals". The resume reload also keeps the AI master switch in
+    // step with Nastavení, so turning AI off removes the button on the way back.
+    var goalsProgress by remember { mutableStateOf<List<GoalProgress>?>(null) }
+    var profile by remember { mutableStateOf<ProfileData?>(null) }
+
     var firstResume by remember { mutableStateOf(true) }
     LifecycleResumeEffect(Unit) {
         if (firstResume) firstResume = false else reloadTrigger++
@@ -157,6 +167,10 @@ fun DashboardScreen(
                 .onSuccess { loaded -> holder.show(loaded) }
                 .onFailure { error -> holder.showError(error.message ?: ERROR_LOAD) }
         }
+        // Silent on purpose: neither read is allowed to touch the dashboard's own
+        // loading/error state, and neither failure is worth a banner.
+        goalsProgress = runCatching { deps.goals?.loadProgress() }.getOrNull()
+        profile = runCatching { deps.profile?.load() }.getOrNull()
     }
 
     Column(
@@ -186,6 +200,8 @@ fun DashboardScreen(
                 onOpen = onOpen,
                 onReload = { reloadTrigger++ },
                 reflectionRepository = deps.reflection,
+                goalsProgress = goalsProgress,
+                profile = profile,
             )
         }
 
@@ -268,6 +284,10 @@ private fun DashboardContent(
     onOpen: (String) -> Unit,
     onReload: () -> Unit,
     reflectionRepository: AiReflectionRepository?,
+    /** Null while unknown/failed — the goals card hides rather than guessing. */
+    goalsProgress: List<GoalProgress>?,
+    /** Null while unknown — the reflection card then keeps the AI enabled path. */
+    profile: ProfileData?,
 ) {
     // One day opened from the mood strip, one hero number opened as a fourteen-day
     // breakdown. Both live here: they only decide which window is on top of the
@@ -293,9 +313,18 @@ private fun DashboardContent(
         StaggeredItem(3) {
             MoodChartCard(month = data.month, onOpenDay = { date -> detailDate = date })
         }
-        StaggeredItem(4) { ScreenTimeCard(data = data, onReload = onReload) }
-        StaggeredItem(5) { UnlocksCard(data = data, onReload = onReload) }
-        StaggeredItem(6) { TopAppsCard(data = data, onReload = onReload) }
+        // Goals sit right under the mood chart (owner request 2026-10-13): the
+        // cards above say how the days went, this one says what they were for.
+        // Hidden on a failed read (null) — only a list the repository really
+        // returned may say "no goals".
+        goalsProgress?.let { goals ->
+            StaggeredItem(4) {
+                GoalsCard(goals = goals, onOpen = onOpen)
+            }
+        }
+        StaggeredItem(5) { ScreenTimeCard(data = data, onReload = onReload) }
+        StaggeredItem(6) { UnlocksCard(data = data, onReload = onReload) }
+        StaggeredItem(7) { TopAppsCard(data = data, onReload = onReload) }
         // The card keys off the newest *recorded* day (mood filled, see RecordDay):
         // a day the phone only synced is not a record and must not blank the card
         // (2026-09-12). Hidden only when the "Dnes" card already renders that exact
@@ -303,17 +332,18 @@ private fun DashboardContent(
         val anchor = data.newestRecorded ?: data.newestEntry
         val todayShowsIt = !data.todayEntry?.aiReflection.isNullOrBlank()
         if (!todayShowsIt && (anchor != null || data.reflection != null)) {
-            StaggeredItem(7) {
+            StaggeredItem(8) {
                 ReflectionCard(
                     anchor = anchor,
                     latest = data.reflection,
                     repository = reflectionRepository,
+                    profile = profile,
                 )
             }
         }
         // The M5 screens have no tab of their own (the bar already carries five),
         // so the overview carries their entrances. Pure navigation, no read.
-        StaggeredItem(7) { EntriesCard(onOpen = onOpen) }
+        StaggeredItem(8) { EntriesCard(onOpen = onOpen) }
     }
 
     // The two windows sit beside the scrolling column, not inside it: opening a day
@@ -1362,6 +1392,128 @@ private fun UsageCard(
     }
 }
 
+/** How many goals the dashboard card shows; the rest live behind the footer link. */
+private const val GOAL_CARD_LIMIT = 4
+
+/**
+ * The fallback emoji on a goal row: a goal carries an activity key, not an icon, and
+ * the pickers repository is not part of the dashboard's deps — so the target emoji
+ * stands in rather than inventing a picture per activity.
+ */
+private const val GOAL_CARD_EMOJI = "🎯"
+
+/**
+ * The goals card: up to [GOAL_CARD_LIMIT] goals, unmet first, each with the current
+ * period's progress and how the previous period went.
+ *
+ * An empty list is a real answer ("this account has no active goals") and gets the
+ * compact empty card with a way into the goals screen. A failed read never gets
+ * here — it hides the card upstream, so "no goals" is never shown for a state the
+ * app could not read.
+ */
+@Composable
+private fun GoalsCard(goals: List<GoalProgress>, onOpen: (String) -> Unit) {
+    GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+        SectionHeader("🎯 Cíle")
+        VSpace(10)
+        if (goals.isEmpty()) {
+            SectionHint("Žádné cíle")
+            VSpace(6)
+            GoalsLink(text = "＋ Vytvořit cíl →", onOpen = onOpen)
+        } else {
+            // Unmet first — a stable sort, so the repository's own order survives
+            // inside each group. The card is a nudge, not a trophy case.
+            val shown = goals.sortedBy { it.targetMet }.take(GOAL_CARD_LIMIT)
+            shown.forEachIndexed { index, progress ->
+                if (index > 0) VSpace(14)
+                GoalProgressRow(progress)
+            }
+            VSpace(12)
+            GoalsLink(text = "Všechny cíle →", onOpen = onOpen)
+        }
+    }
+}
+
+/** One goal row: emoji, name, `count/target · period`, a thin bar and the last period. */
+@Composable
+private fun GoalProgressRow(progress: GoalProgress) {
+    val goal = progress.goal
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = GOAL_CARD_EMOJI,
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(Modifier.width(Spacing.small))
+        Text(
+            text = goal.name,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleSmall,
+            color = TextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = "${progress.count}/${goal.targetCount} · ${progress.periodLabel}",
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary,
+        )
+        if (progress.targetMet) {
+            Spacer(Modifier.width(Spacing.tight))
+            Text(
+                text = "✓",
+                style = MaterialTheme.typography.labelLarge,
+                color = SuccessGreen,
+            )
+        }
+    }
+    VSpace(6)
+    // Thin bar in the same shape language as the top-apps rows; green once the
+    // period's target is met, indigo while it is still running.
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(6.dp)
+            .clip(RoundedCornerShape(3.dp))
+            .background(Color.White.copy(alpha = 0.07f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(progress.fraction)
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(SolidColor(if (progress.targetMet) SuccessGreen else Indigo)),
+        )
+    }
+    progress.previousMet?.let { met ->
+        VSpace(4)
+        Text(
+            text = if (met) "minule: ✓" else "minule: ✗",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (met) SuccessGreen else TextTertiary,
+        )
+    }
+}
+
+/** The card's footer link — the whole row is the tap target, reading like a link. */
+@Composable
+private fun GoalsLink(text: String, onOpen: (String) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onOpen(Routes.GOALS) }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = Indigo,
+        )
+    }
+}
+
 /**
  * 🤖 The AI reflection the dashboard shows.
  *
@@ -1377,13 +1529,15 @@ private fun UsageCard(
  *    reflection can be generated for.
  *
  * A generation request fires only on the tap — nothing network-bound runs while the
- * screen loads.
+ * screen loads; with the AI master switch off, no button is drawn at all.
  */
 @Composable
 private fun ReflectionCard(
     anchor: DashboardNewestEntry?,
     latest: DashboardReflection?,
     repository: AiReflectionRepository?,
+    /** The on-device profile: the AI master switch and the prompt's name/birth year. */
+    profile: ProfileData?,
 ) {
     val scope = rememberCoroutineScope()
     val anchorText = anchor?.reflection?.takeIf { it.isNotBlank() }
@@ -1423,36 +1577,51 @@ private fun ReflectionCard(
                 SectionHint("Za ${shortDateOf(missing.date)} ji ještě nemáš.")
             }
             VSpace(12)
-            GlassActionButton(
-                text = if (loading) {
-                    "Generuji reflexi…"
-                } else {
-                    "Vygenerovat reflexi za ${shortDateOf(missing.date)}"
-                },
-                enabled = !loading,
-                leadingSpinner = loading,
-            ) {
-                // The only place a request is ever fired: the user's tap.
-                val repo = repository
-                if (repo == null) {
-                    error = AiReflectionRepository.MESSAGE_CONNECT
-                } else if (!loading) {
-                    loading = true
-                    error = null
-                    scope.launch {
-                        repo.generate(missing.date, missing.entry, repo.userName())
-                            .onSuccess { generated ->
-                                text = generated
-                                label = missing.date
-                                loading = false
-                            }
-                            .onFailure { failure ->
-                                // The repository's own Czech sentence, verbatim: a
-                                // 429 cooldown must be shown as-is, never retried
-                                // in a loop.
-                                error = failure.message ?: AiReflectionRepository.MESSAGE_GENERIC
-                                loading = false
-                            }
+            // The AI master switch lives in the profile (Nastavení → Profil). With
+            // it off the button is not drawn at all — nothing to mis-tap — and a
+            // hint says where the switch is. An unknown profile keeps the old path.
+            if (profile?.aiEnabled == false) {
+                SectionHint("AI je vypnutá — zapneš ji v Nastavení.")
+            } else {
+                GlassActionButton(
+                    text = if (loading) {
+                        "Generuji reflexi…"
+                    } else {
+                        "Vygenerovat reflexi za ${shortDateOf(missing.date)}"
+                    },
+                    enabled = !loading,
+                    leadingSpinner = loading,
+                ) {
+                    // The only place a request is ever fired: the user's tap.
+                    val repo = repository
+                    if (repo == null) {
+                        error = AiReflectionRepository.MESSAGE_CONNECT
+                    } else if (!loading) {
+                        loading = true
+                        error = null
+                        scope.launch {
+                            // The profile's name (falling back to the session name)
+                            // and birth year travel with the prompt.
+                            repo.generate(
+                                date = missing.date,
+                                entry = missing.entry,
+                                userName = profile?.name?.ifBlank { repo.userName() }
+                                    ?: repo.userName(),
+                                birthYear = profile?.birthYear,
+                            )
+                                .onSuccess { generated ->
+                                    text = generated
+                                    label = missing.date
+                                    loading = false
+                                }
+                                .onFailure { failure ->
+                                    // The repository's own Czech sentence, verbatim: a
+                                    // 429 cooldown must be shown as-is, never retried
+                                    // in a loop.
+                                    error = failure.message ?: AiReflectionRepository.MESSAGE_GENERIC
+                                    loading = false
+                                }
+                        }
                     }
                 }
             }

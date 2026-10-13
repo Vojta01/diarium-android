@@ -73,6 +73,10 @@ object ReportsState {
     /** Shown instead of any loading state when the screen has no repository at all. */
     const val OFFLINE_MESSAGE = "Přehledy teď nejsou dostupné. Zkus to později."
 
+    /** The banner above the cards while the AI master switch (Nastavení → AI) is off. */
+    const val AI_OFF_BANNER =
+        "🤖 AI je vypnutá — reflexe a přehledy se negenerují. Zapneš ji v Nastavení."
+
     val TYPES: List<String> = listOf(TYPE_WEEKLY, TYPE_MONTHLY)
 
     /** Prague time, not the JVM default: `SELČ`/`SEST` is what the user's watch shows. */

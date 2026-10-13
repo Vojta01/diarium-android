@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -38,9 +39,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.launch
+import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.Goal
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassTextField
+import cz.digitalnivedomi.diarium.ui.checkin.components.labelWithIcon
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassChip
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
@@ -56,6 +59,7 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 @Composable
 fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
     val repository = deps.goals
+    val pickers = deps.pickers
     val scope = rememberCoroutineScope()
 
     var state by remember { mutableStateOf<GoalsUiState>(GoalsUiState.Loading) }
@@ -66,6 +70,7 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
     var editorTarget by remember { mutableStateOf<Goal?>(null) }
     var deleteTarget by remember { mutableStateOf<Goal?>(null) }
     var saving by remember { mutableStateOf(false) }
+    var activities by remember { mutableStateOf<List<ActivityDef>>(emptyList()) }
 
     LaunchedEffect(reloadToken) {
         if (repository == null) {
@@ -75,6 +80,13 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
             val items = repository.loadProgress()
             state = if (items == null) GoalsUiState.Error(MSG_LOAD_FAILED) else GoalsUiState.Ready(items)
         }
+    }
+
+    // Labels and icons for the cards and the picker. Read only with a session; a
+    // failed read comes back as the repository's static fallback list, and every
+    // lookup then falls back to the stored key instead of hiding the goal.
+    LaunchedEffect(reloadToken) {
+        if (repository != null) activities = pickers.activities()
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -141,6 +153,7 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
                         current.items.forEach { item ->
                             GoalCard(
                                 item = item,
+                                activities = activities,
                                 onEdit = {
                                     editorTarget = item.goal
                                     editorOpen = true
@@ -157,8 +170,25 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
         if (editorOpen) {
             GoalEditorDialog(
                 initial = editorTarget,
+                activities = activities,
+                canCreateActivity = repository != null,
                 saving = saving,
                 onDismiss = { if (!saving) editorOpen = false },
+                onCreateActivity = { label, onCreated ->
+                    scope.launch {
+                        val added = pickers.addActivity(label)
+                        if (!added) {
+                            onCreated(null)
+                        } else {
+                            // Re-read so the created activity's real key comes back
+                            // from the repository instead of being guessed here.
+                            val fresh = pickers.activities()
+                            activities = fresh
+                            val clean = label.trim()
+                            onCreated(fresh.firstOrNull { it.label.equals(clean, ignoreCase = true) })
+                        }
+                    }
+                },
                 onSave = { name, activityKey, targetCount, frequency ->
                     val repo = repository
                     if (repo == null) {
@@ -276,13 +306,22 @@ private fun EmptyCard(onCreate: () -> Unit) {
 // ── Goal card ───────────────────────────────────────────────────────────────
 
 @Composable
-private fun GoalCard(item: GoalProgress, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun GoalCard(
+    item: GoalProgress,
+    activities: List<ActivityDef>,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val met = item.targetMet
     val accent = if (met) SuccessGreen else Indigo
+    // A missing/renamed activity falls back to the stored key instead of vanishing.
+    val def = activities.firstOrNull { it.key.equals(item.goal.activityKey, ignoreCase = true) }
+    val icon = def?.icon?.takeIf { it.isNotBlank() } ?: emojiFor(item.goal.activityKey)
+    val label = def?.label ?: item.goal.activityKey
 
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = accent) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = emojiFor(item.goal.activityKey), fontSize = 22.sp)
+            Text(text = icon, fontSize = 22.sp)
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -293,7 +332,7 @@ private fun GoalCard(item: GoalProgress, onEdit: () -> Unit, onDelete: () -> Uni
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = "aktivita: ${item.goal.activityKey}",
+                    text = "aktivita: $label",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
                 )
@@ -379,14 +418,32 @@ private fun GoalProgressBar(fraction: Float, accent: Color) {
 @Composable
 private fun GoalEditorDialog(
     initial: Goal?,
+    activities: List<ActivityDef>,
+    canCreateActivity: Boolean,
     saving: Boolean,
     onDismiss: () -> Unit,
+    onCreateActivity: (label: String, onCreated: (ActivityDef?) -> Unit) -> Unit,
     onSave: (name: String, activityKey: String, targetCount: Int, frequency: String) -> Unit,
 ) {
     var name by remember { mutableStateOf(initial?.name.orEmpty()) }
+    // Only a brand-new goal auto-fills its name; a manual edit wins from then on.
+    var nameTouched by remember { mutableStateOf(initial != null) }
     var activityKey by remember { mutableStateOf(initial?.activityKey.orEmpty()) }
     var targetText by remember { mutableStateOf((initial?.targetCount ?: 3).toString()) }
     var frequency by remember { mutableStateOf(initial?.frequency ?: "weekly") }
+
+    var pickerOpen by remember { mutableStateOf(false) }
+    var newActivityOpen by remember { mutableStateOf(false) }
+    var creatingActivity by remember { mutableStateOf(false) }
+    var activityError by remember { mutableStateOf<String?>(null) }
+
+    val selected = activities.firstOrNull { it.key.equals(activityKey, ignoreCase = true) }
+
+    /** A picked or freshly created activity sets the key; a fresh goal takes its name. */
+    fun applyPicked(def: ActivityDef) {
+        activityKey = def.key
+        if (initial == null && (name.isBlank() || !nameTouched)) name = def.label
+    }
 
     val targetCount = targetText.trim().toIntOrNull() ?: 0
     val valid = name.isNotBlank() && activityKey.isNotBlank() && targetCount > 0
@@ -405,21 +462,37 @@ private fun GoalEditorDialog(
             Spacer(Modifier.height(6.dp))
             GlassTextField(
                 value = name,
-                onValueChange = { name = it },
+                onValueChange = {
+                    nameTouched = true
+                    name = it
+                },
                 placeholder = "Např. Běhání",
             )
 
             Spacer(Modifier.height(14.dp))
-            FieldLabel("Aktivita (klíč)")
+            FieldLabel("Aktivita")
             Spacer(Modifier.height(6.dp))
-            GlassTextField(
-                value = activityKey,
-                onValueChange = { activityKey = it },
-                placeholder = "Např. beh",
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = when {
+                        activityKey.isBlank() -> "Nevybráno"
+                        selected != null -> labelWithIcon(selected.icon, selected.label)
+                        else -> activityKey
+                    },
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (activityKey.isBlank()) TextSecondary else TextPrimary,
+                )
+                Spacer(Modifier.width(8.dp))
+                ActionPill(text = "Vybrat", accent = IndigoLight) { pickerOpen = true }
+            }
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Musí odpovídat klíči aktivity v deníku.",
+                text = "Cíl se plní, když si zvolenou aktivitu zapíšeš v deníku.",
                 style = MaterialTheme.typography.labelSmall,
                 color = TextSecondary,
             )
@@ -453,6 +526,185 @@ private fun GoalEditorDialog(
                     accent = if (valid && !saving) IndigoLight else Color.White.copy(alpha = 0.3f),
                 ) {
                     if (valid && !saving) onSave(name, activityKey, targetCount, frequency)
+                }
+                ActionPill(text = "Zrušit", accent = TextSecondary, onClick = onDismiss)
+            }
+        }
+    }
+
+    if (pickerOpen) {
+        ActivityPickerDialog(
+            activities = activities,
+            canCreate = canCreateActivity && !saving,
+            onCreateNew = {
+                pickerOpen = false
+                activityError = null
+                newActivityOpen = true
+            },
+            onPick = { def ->
+                applyPicked(def)
+                pickerOpen = false
+            },
+            onDismiss = { pickerOpen = false },
+        )
+    }
+
+    if (newActivityOpen) {
+        NewActivityDialog(
+            saving = creatingActivity,
+            error = activityError,
+            onDismiss = {
+                if (!creatingActivity) {
+                    newActivityOpen = false
+                    activityError = null
+                }
+            },
+            onCreate = { label ->
+                activityError = null
+                creatingActivity = true
+                onCreateActivity(label) { created ->
+                    creatingActivity = false
+                    if (created == null) {
+                        activityError = MSG_ACTIVITY_FAILED
+                    } else {
+                        newActivityOpen = false
+                        applyPicked(created)
+                    }
+                }
+            },
+        )
+    }
+}
+
+/** Picker list with a fixed ceiling so it never outgrows the screen; scrolls instead. */
+@Composable
+private fun ActivityPickerDialog(
+    activities: List<ActivityDef>,
+    canCreate: Boolean,
+    onCreateNew: () -> Unit,
+    onPick: (ActivityDef) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+            Text(
+                text = "Vybrat aktivitu",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary,
+            )
+
+            Spacer(Modifier.height(12.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (canCreate) {
+                    PickerRow(
+                        text = "＋ Nová aktivita",
+                        accent = SuccessGreen,
+                        onClick = onCreateNew,
+                    )
+                }
+                if (activities.isEmpty()) {
+                    Text(
+                        text = "Žádné aktivity k výběru.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                    )
+                } else {
+                    activities.forEach { def ->
+                        PickerRow(
+                            text = labelWithIcon(def.icon, def.label),
+                            accent = Indigo,
+                            onClick = { onPick(def) },
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            ActionPill(text = "Zrušit", accent = TextSecondary, onClick = onDismiss)
+        }
+    }
+}
+
+/** Full-width tappable row inside the activity picker. */
+@Composable
+private fun PickerRow(text: String, accent: Color, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(12.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(accent.copy(alpha = 0.10f))
+            .border(1.dp, accent.copy(alpha = 0.30f), shape)
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = TextPrimary,
+        )
+    }
+}
+
+/** Creates a custom activity; the created row comes back with its real key. */
+@Composable
+private fun NewActivityDialog(
+    saving: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onCreate: (label: String) -> Unit,
+) {
+    var label by remember { mutableStateOf("") }
+    val valid = label.isNotBlank() && !saving
+
+    Dialog(onDismissRequest = onDismiss) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+            Text(
+                text = "＋ Nová aktivita",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary,
+            )
+
+            Spacer(Modifier.height(14.dp))
+            FieldLabel("Název aktivity")
+            Spacer(Modifier.height(6.dp))
+            GlassTextField(
+                value = label,
+                onValueChange = { label = it },
+                placeholder = "Např. Jóga",
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Přidá se do deníku a rovnou se vybere pro tenhle cíl.",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+
+            error?.let { text ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Danger,
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ActionPill(
+                    text = if (saving) "Přidávám…" else "Přidat",
+                    accent = if (valid) IndigoLight else Color.White.copy(alpha = 0.3f),
+                ) {
+                    if (valid) onCreate(label)
                 }
                 ActionPill(text = "Zrušit", accent = TextSecondary, onClick = onDismiss)
             }
@@ -563,6 +815,7 @@ private const val MSG_NO_SESSION = "Chybí přihlášení — cíle se nepodaři
 private const val MSG_LOAD_FAILED = "Zkontroluj připojení a zkus to znovu."
 private const val MSG_SAVE_FAILED = "Cíl se nepodařilo uložit. Zkus to znovu."
 private const val MSG_DELETE_FAILED = "Cíl se nepodařilo smazat. Zkus to znovu."
+private const val MSG_ACTIVITY_FAILED = "Aktivitu se nepodařilo přidat. Zkus to znovu."
 
 /** Tiny activity-key → emoji map; unknown keys get the goals target. */
 private fun emojiFor(activityKey: String): String = when (activityKey.trim().lowercase()) {

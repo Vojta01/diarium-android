@@ -161,7 +161,7 @@ fun HabitEditorDialog(
                         color = TextPrimary,
                     )
                     Text(
-                        text = "Zapnutý přepínač pak znamená „dnes jsem to udělal\".",
+                        text = "Zaškrtnutý návyk v deníku = splněno. U nežádoucích návyků to znamená, že jsi je ten den nedělal.",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary,
                     )

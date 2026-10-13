@@ -3,6 +3,7 @@ package cz.digitalnivedomi.diarium.ui
 import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -13,9 +14,11 @@ import cz.digitalnivedomi.diarium.auth.AuthManager
 import cz.digitalnivedomi.diarium.auth.AuthStateHolder
 import cz.digitalnivedomi.diarium.auth.AuthStatus
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.ui.auth.GoogleSignInButtonTag
 import cz.digitalnivedomi.diarium.ui.auth.GoogleSignInLabel
 import cz.digitalnivedomi.diarium.ui.theme.DiariumTheme
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -76,6 +79,9 @@ class AuthGateTest {
     fun `the oauth deep link authenticates in place and reveals the nav bar`() {
         val store = SessionStore(context)
         val holder = AuthStateHolder(store)
+        // The shell gate waits for the profile store; mark onboarding done so the
+        // authenticated state renders the tabs, not the first-run wizard.
+        runBlocking { ProfileStore.from(context).setOnboardingDone(true) }
         val link = mutableStateOf<String?>(null)
         val handled = mutableListOf<String>()
 
@@ -109,6 +115,8 @@ class AuthGateTest {
         assertTrue(store.hasSession())
         assertEquals(AuthStatus.AUTHENTICATED, holder.status.value)
         // Same composition, no restart: bottom bar is here, login screen is gone.
+        // The shell appears once the profile store answers (seeded above).
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Historie").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Historie").assertExists()
         compose.onNodeWithText(GoogleSignInLabel).assertDoesNotExist()
     }
@@ -150,6 +158,9 @@ class AuthGateTest {
     fun `logout from settings returns to the login screen`() {
         val store = SessionStore(context)
         store.save(session())
+        // The shell gate waits for the profile store; mark onboarding done so the
+        // authenticated state renders the tabs, not the first-run wizard.
+        runBlocking { ProfileStore.from(context).setOnboardingDone(true) }
         val holder = AuthStateHolder(store)
         compose.setContent {
             DiariumTheme {
@@ -157,6 +168,8 @@ class AuthGateTest {
             }
         }
 
+        // The shell appears once the profile store answers (seeded above).
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Historie").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Historie").assertExists() // authenticated shell
         compose.onNodeWithText("Nastavení").performClick()
         compose.waitForIdle()

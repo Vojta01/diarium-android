@@ -43,8 +43,12 @@ sealed interface ReportOutcome {
  *     `user_habits` through [SupabaseClient] with the signed-in user's JWT (RLS
  *     scopes every row); a failed scales/habits read degrades exactly like the
  *     route's `try/catch` — the prompt just loses that section;
- *  2. builds the prompt via [ReportPromptBuilder];
- *  3. calls DeepSeek directly (`POST https://api.deepseek.com/chat/completions`);
+ *  2. optionally reads the local profile and the current goals progress
+ *     ([profile] / [goals], both nullable): the prompt gains the
+ *     `👤 Uživatel` header and the `🎯 Cíle:` section, and a failed read just
+ *     drops them — personalisation never fails a report;
+ *  3. builds the prompt via [ReportPromptBuilder];
+ *  4. calls DeepSeek directly (`POST https://api.deepseek.com/chat/completions`);
  *     the model comes from `app_settings.deepseek_model` when that row is
  *     readable, else [DEFAULT_MODEL]. (Today `app_settings` has RLS on with no
  *     read policy, so the app naturally falls back — same value the route
@@ -52,7 +56,7 @@ sealed interface ReportOutcome {
  *     release.)
  *     An empty `choices[0].message.content` is retried up to [MAX_ATTEMPTS]
  *     times — the model occasionally answers empty on a 200;
- *  4. inserts the row into `ai_reports` with the user's JWT (RLS policy
+ *  5. inserts the row into `ai_reports` with the user's JWT (RLS policy
  *     `Users insert own`: `with_check (user_id = auth.uid())`).
  *
  * The HTTP exchange is an injected [HttpTransport], so the whole path is
@@ -69,6 +73,16 @@ class ReportGenerator(
     private val today: () -> LocalDate = { LocalDate.now() },
     /** Pause between empty-content retries; 0 in tests so they stay instant. */
     private val retryDelayMs: Long = RETRY_DELAY_MS,
+    /**
+     * The user's local profile (name + birth year) — read only to personalise
+     * the prompt header; null (or a failed read) simply omits the header.
+     */
+    private val profile: ProfileStore? = null,
+    /**
+     * The goals repository feeding the `🎯 Cíle:` section with the current
+     * period's progress; null (or a failed read) simply omits the section.
+     */
+    private val goals: GoalsRepository? = null,
 ) {
 
     suspend fun generate(type: String): ReportOutcome = withContext(Dispatchers.IO) {
@@ -103,7 +117,33 @@ class ReportGenerator(
         val scaleNameMap = readScaleNames(userId)
         val habitMap = readHabitMap(userId)
 
-        val userPrompt = ReportPromptBuilder.buildPeriodPrompt(entries, type, scaleNameMap, habitMap)
+        // Personalisation is best-effort: a failed profile read drops the header
+        // (null), a failed goals read drops the section (empty list) — neither
+        // may cost the user their report. Cancellation still propagates.
+        val profileData = try {
+            profile?.load()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        val goalsProgress = try {
+            goals?.loadProgress()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }.orEmpty()
+
+        val userPrompt = ReportPromptBuilder.buildPeriodPrompt(
+            entries = entries,
+            type = type,
+            scaleNameMap = scaleNameMap,
+            habitMap = habitMap,
+            userName = profileData?.name?.ifBlank { null },
+            birthYear = profileData?.birthYear,
+            goals = goalsProgress,
+        )
         val model = resolveModel()
 
         val analysis = requestAnalysis(apiKey, type, model, userPrompt)

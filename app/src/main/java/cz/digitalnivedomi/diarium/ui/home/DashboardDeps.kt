@@ -5,6 +5,8 @@ import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
+import cz.digitalnivedomi.diarium.core.data.GoalsRepository
+import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 
@@ -29,6 +31,16 @@ class DashboardDeps(
      * Nothing here is touched on load — the endpoint is called only on a tap.
      */
     val reflection: AiReflectionRepository? = null,
+    /**
+     * Goals for the dashboard card. Null while signed out: the card hides rather
+     * than claiming "no goals" for a state it cannot read.
+     */
+    val goals: GoalsRepository? = null,
+    /**
+     * The on-device profile — the AI master switch ([ProfileData.aiEnabled]) the
+     * reflection card respects, plus the name/birth year sent with a generation.
+     */
+    val profile: ProfileStore? = null,
 ) {
 
     val online: Boolean get() = dashboard != null
@@ -47,6 +59,8 @@ class DashboardDeps(
                     EntriesRepository(client, SessionContext(sessionStore)),
                 ),
                 reflection = AiReflectionRepository(sessionStore),
+                goals = GoalsRepository(client, SessionContext(sessionStore)),
+                profile = ProfileStore.from(context),
             )
         }
     }

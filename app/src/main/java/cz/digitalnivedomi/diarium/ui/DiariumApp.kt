@@ -24,8 +24,13 @@ import cz.digitalnivedomi.diarium.ui.templates.TemplatesScreen
 import cz.digitalnivedomi.diarium.ui.reports.ReportsDeps
 import cz.digitalnivedomi.diarium.ui.reports.ReportsScreen
 import cz.digitalnivedomi.diarium.ui.reports.ReportsState
+import cz.digitalnivedomi.diarium.core.data.ProfileStore
+import cz.digitalnivedomi.diarium.ui.onboarding.OnboardingDeps
+import cz.digitalnivedomi.diarium.ui.onboarding.OnboardingScreen
 import cz.digitalnivedomi.diarium.ui.settings.AiSettingsDeps
 import cz.digitalnivedomi.diarium.ui.settings.AiSettingsSection
+import cz.digitalnivedomi.diarium.ui.settings.ProfileSettingsDeps
+import cz.digitalnivedomi.diarium.ui.settings.ProfileSettingsSection
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -170,6 +175,27 @@ private fun AuthenticatedScaffold(
     notificationReportType: State<String?>,
     onNotificationHandled: () -> Unit,
 ) {
+    val context = LocalContext.current
+    // The profile decides what the signed-in shell shows first: until its file has
+    // been read only the backdrop is painted (no tab flash), an unfinished first-run
+    // guide takes the whole screen, and everything else is the ordinary scaffold.
+    val profileStore = remember(context) { ProfileStore.from(context) }
+    val profileData by profileStore.data.collectAsState(initial = null)
+    val profile = profileData
+    if (profile == null) {
+        // The first DataStore read hits the disk; showing the tabs in that window
+        // would flash the whole app before onboarding can replace it.
+        DiariumShellBackdrop {}
+        return
+    }
+    if (!profile.onboardingDone) {
+        OnboardingScreen(
+            deps = OnboardingDeps.forContext(context),
+            onFinished = {},
+        )
+        return
+    }
+
     val navController = rememberNavController()
     // The tab screens' state holders live here, above the NavHost, so navigating away
     // and back does not rebuild them: Navigation disposes a destination's composition
@@ -417,6 +443,7 @@ private fun NavGraphBuilder.subScreen(route: String, content: @Composable () -> 
  */
 @Composable
 private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit, aiDeps: AiSettingsDeps) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -428,6 +455,11 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit, aiDe
         ScreenHeader(
             title = "Nastavení",
             subtitle = "Účet, cíle a připomínky na jednom místě.",
+        )
+        // „👤 Profil" leads the cards: it is the one about the owner, and it carries
+        // „Spustit průvodce znovu" — the way back into the first-run guide.
+        ProfileSettingsSection(
+            deps = remember(context) { ProfileSettingsDeps.forContext(context) },
         )
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             Text(

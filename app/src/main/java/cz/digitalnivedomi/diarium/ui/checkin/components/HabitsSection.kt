@@ -31,37 +31,37 @@ import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 
-/** Lighter stops for the checked-pill gradient: a lit pill must ramp inside its own
- *  hue (red -> light red, green -> light green), not bleed into indigo. */
-private val NegativeColor = Color(0xFFEF4444)
-private val NegativeColorLight = Color(0xFFF87171)
+/** Lighter stop for the checked-pill gradient: a lit pill must ramp inside its own
+ *  hue (green -> light green), not bleed into indigo. */
 private val PositiveColorLight = Color(0xFF6EE7B7)
 
 /**
  * How one habit row should read.
  *
- * Ticking a *positive* habit is a win, so the row turns green (the theme's
+ * A tick always means fulfilled (owner decision, 2026-10-13): on a positive habit
+ * it means the user did it, on a negative — "avoid" — habit (e.g. Alkohol) it
+ * means the user *didn't* do it. Either way a ticked row turns green (the theme's
  * semantic success colour) with a `✓ Splněno` glyph — ticking must never be a
- * colour-only signal. A *negative* habit (one the user is trying to avoid, e.g.
- * Alkohol) is the opposite: ticking it means "I did the bad thing", so it keeps
- * the long-standing red accent. Whatever the kind, an unticked habit is neutral.
+ * colour-only signal and is never red. An unticked habit is neutral whatever its
+ * kind.
  */
-internal enum class HabitAccent { NEUTRAL, POSITIVE, NEGATIVE }
+internal enum class HabitAccent { NEUTRAL, POSITIVE }
 
-/** The single decision a habit row's fill, border, accent and glyph hang off. */
-internal fun habitAccentState(isNegative: Boolean, checked: Boolean): HabitAccent = when {
-    !checked -> HabitAccent.NEUTRAL
-    isNegative -> HabitAccent.NEGATIVE
-    else -> HabitAccent.POSITIVE
-}
+/** The single decision a habit row's fill, border, accent and glyph hang off.
+ *  The kind no longer splits the outcome; the flag stays so call sites read the
+ *  decision explicitly. */
+@Suppress("UNUSED_PARAMETER")
+internal fun habitAccentState(isNegative: Boolean, checked: Boolean): HabitAccent =
+    if (checked) HabitAccent.POSITIVE else HabitAccent.NEUTRAL
 
 /**
  * Návyky — the user's habits from the `habits` table as a 2-column toggle grid.
  *
- * `is_negative` habits are tinted red: they are the ones the user is trying to
- * avoid, so a switched-on pill means "I did it" and the row says so with
- * „✕ Dnes zapsáno", same as the web. A ticked positive habit is a fulfilled one,
- * so it gets the green treatment.
+ * A tick always means fulfilled (owner decision, 2026-10-13), `is_negative`
+ * (avoid) habits included — there a ticked pill means the user *didn't* do it
+ * that day. So every checked habit gets the same green treatment with „✓ Splněno",
+ * never red; only an unticked avoid habit carries the quiet „nežádoucí" type hint,
+ * which marks the kind without judging the day.
  *
  * A full-width "➕ Přidat návyk" row sits under the grid — shown even when the
  * list is empty — and the pencil on each pill opens the editor, mirroring the
@@ -93,9 +93,9 @@ fun HabitsSection(
                 color = TextSecondary,
             )
         } else {
-            // Short, no clutter: says what the switch means before the grid, and
-            // that the pencil opens the editor.
-            SectionHint("Přepínačem zapíšeš dnešní stav — u nežádoucích návyků znamená zapnutí „dnes jsem to udělal\". ✏️ otevře úpravu návyku.")
+            // Short, no clutter: says what a tick means before the grid, and that
+            // the pencil opens the editor.
+            SectionHint("Zaškrtnutí = splněno. U nežádoucích návyků je splněno, když jsi je dnes nedělal. ✏️ otevře úpravu návyku.")
             Spacer(Modifier.height(8.dp))
             habits.chunked(2).forEach { pair ->
                 Row(
@@ -107,7 +107,6 @@ fun HabitsSection(
                         val state = habitAccentState(habit.isNegative, checked)
                         val accent = when (state) {
                             HabitAccent.POSITIVE -> SuccessGreen
-                            HabitAccent.NEGATIVE -> NegativeColor
                             // Neutral rows ignore the accent (the pill is off); the
                             // habit's own colour is only a fallback for odd data.
                             HabitAccent.NEUTRAL -> parseHex(habit.color, Indigo)
@@ -116,30 +115,22 @@ fun HabitsSection(
                         // lit pill never ramps into indigo.
                         val accentEnd = when (state) {
                             HabitAccent.POSITIVE -> PositiveColorLight
-                            HabitAccent.NEGATIVE -> NegativeColorLight
                             HabitAccent.NEUTRAL -> IndigoLight
                         }
                         val fulfilled = state == HabitAccent.POSITIVE
-                        val negativeOn = state == HabitAccent.NEGATIVE
                         val shape = RoundedCornerShape(14.dp)
                         Row(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(shape)
                                 .background(
-                                    when {
-                                        fulfilled -> SuccessGreen.copy(alpha = 0.16f)
-                                        negativeOn -> NegativeColor.copy(alpha = 0.10f)
-                                        else -> Color.White.copy(alpha = 0.05f)
-                                    },
+                                    if (fulfilled) SuccessGreen.copy(alpha = 0.16f)
+                                    else Color.White.copy(alpha = 0.05f),
                                 )
                                 .border(
                                     width = 1.dp,
-                                    color = when {
-                                        fulfilled -> SuccessGreen.copy(alpha = 0.7f)
-                                        negativeOn -> NegativeColor.copy(alpha = 0.55f)
-                                        else -> Outline.copy(alpha = 0.6f)
-                                    },
+                                    color = if (fulfilled) SuccessGreen.copy(alpha = 0.7f)
+                                    else Outline.copy(alpha = 0.6f),
                                     shape = shape,
                                 )
                                 .clickable { onToggle(habit.key) }
@@ -158,20 +149,15 @@ fun HabitsSection(
                                     color = TextPrimary,
                                     maxLines = 2,
                                 )
-                                // A ticked positive habit says so in words as well as
-                                // colour; a switched-on `is_negative` habit keeps its
-                                // long-standing red and says „✕ Dnes zapsáno", while
-                                // one that is off keeps the quiet type hint.
+                                // A ticked habit says so in words as well as colour —
+                                // positive and avoid habits alike, where the tick means
+                                // "I didn't". An unticked avoid habit keeps the quiet
+                                // type hint.
                                 when {
                                     state == HabitAccent.POSITIVE -> Text(
                                         text = "✓ Splněno",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = SuccessGreen,
-                                    )
-                                    state == HabitAccent.NEGATIVE -> Text(
-                                        text = "✕ Dnes zapsáno",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = NegativeColor,
                                     )
                                     habit.isNegative -> Text(
                                         text = "nežádoucí",

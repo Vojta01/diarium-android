@@ -13,6 +13,8 @@ import cz.digitalnivedomi.diarium.BuildConfig
 import cz.digitalnivedomi.diarium.R
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.AiKeyStore
+import cz.digitalnivedomi.diarium.core.data.GoalsRepository
+import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.core.data.ReportGenerator
 import cz.digitalnivedomi.diarium.core.data.ReportOutcome
 import cz.digitalnivedomi.diarium.core.data.SessionContext
@@ -72,8 +74,24 @@ class NotificationWorker(
     /** The user's own DeepSeek key, if they added one (encrypted at rest). */
     private val aiKeys = AiKeyStore.forContext(appContext)
 
-    /** On-device report generation (option C); used only when a key is stored. */
-    private val generator by lazy { ReportGenerator(supabase, aiKeys, SessionContext(session)) }
+    /** The on-device profile — name/birth year for the prompt, plus the AI master switch. */
+    private val profileStore = ProfileStore.from(appContext)
+
+    /**
+     * On-device report generation (option C); used only when a key is stored.
+     * Personalised with the local profile (👤 header) and the live goals
+     * progress (🎯 section), wired from the same client/session the worker
+     * already holds — the construction `GoalsDeps` does for the goals screen.
+     */
+    private val generator by lazy {
+        ReportGenerator(
+            client = supabase,
+            keyStore = aiKeys,
+            session = SessionContext(session),
+            profile = profileStore,
+            goals = GoalsRepository(supabase, SessionContext(session)),
+        )
+    }
 
     /** Only for the report-generation request; no secret travels with it. */
     private val http = OkHttpClient.Builder()
@@ -161,11 +179,17 @@ class NotificationWorker(
     // otherwise the report is generated — on this phone when the user has
     // stored their own DeepSeek key (option C), via the transitional server
     // route when they have not. Either way the fresh row is then polled.
+    // The AI master switch (Profil → AI zapnutá) silences the whole path:
+    // with AI off no report is generated and no notification is posted.
 
     private suspend fun handleReport(type: String) {
         val prefs = prefsStore.load()
         val enabled = if (type == "weekly") prefs.weeklyEnabled else prefs.monthlyEnabled
         if (!enabled) return
+
+        // The master switch is read before anything else happens: with AI off the
+        // worker returns success with no generation and no notification.
+        if (!profileStore.load().aiEnabled) return
 
         val marker = if (type == "weekly") prefs.lastWeeklyNotifiedId else prefs.lastMonthlyNotifiedId
 
@@ -253,16 +277,32 @@ class NotificationWorker(
     }
 
     /**
-     * `GET {DIARIUM_URL}/api/cron/ai-report?type=…` with the user's own JWT.
+     * `GET {DIARIUM_URL}/api/cron/ai-report?type=…` with the user's own JWT,
+     * personalised with the local profile when it has a name / birth year: the
+     * route seeds its prompt the same way the on-device path does. Both params
+     * are optional (the server tolerates their absence) and a failed profile
+     * read simply drops them.
      *
      * Returns true when the server accepted the request (2xx). A failure is not
      * fatal: the notification path still polls for an already existing report.
      */
-    private fun requestReportGeneration(type: String): Boolean {
+    private suspend fun requestReportGeneration(type: String): Boolean {
         val token = session.validAccessToken() ?: return false
+        val profile = try {
+            profileStore.load()
+        } catch (_: Exception) {
+            null
+        }
         return try {
+            val url = buildString {
+                append("${BuildConfig.DIARIUM_URL}/api/cron/ai-report?type=$type")
+                profile?.name?.takeIf { it.isNotBlank() }?.let { name ->
+                    append("&userName=").append(java.net.URLEncoder.encode(name, "UTF-8"))
+                }
+                profile?.birthYear?.let { append("&birthYear=").append(it) }
+            }
             val request = Request.Builder()
-                .url("${BuildConfig.DIARIUM_URL}/api/cron/ai-report?type=$type")
+                .url(url)
                 .header("Authorization", "Bearer $token")
                 .get()
                 .build()

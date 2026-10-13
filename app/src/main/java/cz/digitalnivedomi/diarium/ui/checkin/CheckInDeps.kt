@@ -7,6 +7,7 @@ import cz.digitalnivedomi.diarium.core.data.DraftStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GoalsStore
 import cz.digitalnivedomi.diarium.core.data.PickersRepository
+import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 
@@ -30,6 +31,12 @@ class CheckInDeps(
      * the same online and offline.
      */
     val reflection: AiReflectionRepository? = null,
+    /**
+     * The on-device profile: the AI master switch, plus the name and birth year the
+     * reflection prompt may personalise with. Null only in offline/test wiring —
+     * generation then behaves exactly as it did before the master switch existed.
+     */
+    val profile: ProfileStore? = null,
 ) {
     val online: Boolean get() = entries != null
 
@@ -46,6 +53,7 @@ class CheckInDeps(
                 drafts = DraftStore.from(context),
                 goals = GoalsStore.from(context),
                 reflection = AiReflectionRepository(sessionStore),
+                profile = ProfileStore.from(context),
             )
         }
     }

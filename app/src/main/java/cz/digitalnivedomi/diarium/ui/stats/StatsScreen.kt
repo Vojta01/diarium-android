@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import cz.digitalnivedomi.diarium.core.data.GoalProgress
 import cz.digitalnivedomi.diarium.core.data.StatsData
 import cz.digitalnivedomi.diarium.core.data.StatsRepository
 import cz.digitalnivedomi.diarium.core.stats.ActivityStat
@@ -122,6 +123,10 @@ fun StatsScreen(
     val data = state.data
     val repository = deps.stats
     var reloadTrigger by remember { mutableStateOf(0) }
+    // Goals are their own read and their own failure domain: a failed (or missing)
+    // read simply leaves this empty and the „🎯 Cíle" section disappears — it never
+    // turns into an error card and never takes the numbers down with it.
+    var goals by remember { mutableStateOf<List<GoalProgress>>(emptyList()) }
 
     var firstResume by remember { mutableStateOf(true) }
     LifecycleResumeEffect(Unit) {
@@ -129,7 +134,7 @@ fun StatsScreen(
         onPauseOrDispose { }
     }
 
-    LaunchedEffect(repository, reloadTrigger) {
+    LaunchedEffect(repository, deps.goals, reloadTrigger) {
         holder.markLoading()
         val result = repository?.load()
         if (result == null) {
@@ -138,6 +143,14 @@ fun StatsScreen(
             result
                 .onSuccess { loaded -> holder.show(loaded) }
                 .onFailure { error -> holder.showError(error.message ?: ERROR_LOAD) }
+        }
+
+        // Loaded alongside the statistics, and only after they landed: with no numbers
+        // on the screen the goals have no block to sit in anyway.
+        goals = if (result?.isSuccess == true) {
+            deps.goals?.loadProgress().orEmpty()
+        } else {
+            emptyList()
         }
     }
 
@@ -161,6 +174,7 @@ fun StatsScreen(
             state.errorMessage != null -> ErrorCard(state.errorMessage.orEmpty()) { reloadTrigger++ }
             data != null -> StatsContent(
                 data = data,
+                goals = goals,
                 range = state.range,
                 onSelectRange = holder::selectRange,
                 onReload = { reloadTrigger++ },
@@ -365,6 +379,8 @@ private fun RangeSelector(range: StatsRange, onSelect: (StatsRange) -> Unit) {
 @Composable
 private fun StatsContent(
     data: StatsData,
+    /** The goals read that rides along with the statistics; empty hides the section. */
+    goals: List<GoalProgress> = emptyList(),
     range: StatsRange,
     onSelectRange: (StatsRange) -> Unit,
     onReload: () -> Unit,
@@ -396,6 +412,15 @@ private fun StatsContent(
             // The extremes own their own entrance (a header + one card per side), so
             // the stagger lives inside the block, not in a second wrapping animatable.
             BestWorstDayBlock(days = days, entryByDate = data.entryByDate, onOpenCheckIn = onOpenCheckIn)
+        }
+
+        // ── 🎯 Cíle ─────────────────────────────────────────────────────────
+        // The goals run on their own clock (14 days / 8 weeks / 6 months), so they
+        // ignore the range chips and sit between the mood window and the digital
+        // habits. An empty or failed goals read hides the block, divider included.
+        if (goals.isNotEmpty()) {
+            GlassDivider()
+            GoalsSection(goals = goals)
         }
 
         // Hairline rule between two blocks, instead of whitespace alone.

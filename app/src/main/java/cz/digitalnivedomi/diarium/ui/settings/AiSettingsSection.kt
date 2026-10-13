@@ -30,8 +30,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import cz.digitalnivedomi.diarium.core.data.AiKeyStore
+import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassTextField
+import cz.digitalnivedomi.diarium.ui.checkin.components.TogglePill
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.SubScreenEntry
@@ -43,6 +48,9 @@ import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -62,16 +70,19 @@ class AiSettingsDeps(
     val saveKey: (String) -> Boolean,
     val removeKey: () -> Unit,
     val openKeyPage: () -> Unit,
+    /** The on-device profile — the AI master switch lives there. */
+    val profile: ProfileStore,
 ) {
 
     companion object {
 
-        /** No store, no browser — the card still composes (previews, unit tests). */
+        /** No DataStore, no browser — the card still composes (previews, unit tests). */
         fun offline(): AiSettingsDeps = AiSettingsDeps(
             hasKey = { false },
             saveKey = { false },
             removeKey = {},
             openKeyPage = {},
+            profile = ProfileStore.forDataStore(TransientPreferencesDataStore()),
         )
 
         /** The real thing: the encrypted store + an ACTION_VIEW browser intent. */
@@ -82,6 +93,7 @@ class AiSettingsDeps(
                 saveKey = { raw -> store.saveKey(raw) },
                 removeKey = { store.clear() },
                 openKeyPage = { openKeyPage(context) },
+                profile = ProfileStore.from(context),
             )
         }
 
@@ -101,6 +113,26 @@ class AiSettingsDeps(
 }
 
 /**
+ * In-memory [DataStore] behind [AiSettingsDeps.offline]: a preview or a unit test gets a
+ * working AI master switch without a Context, a DataStore file or the Keystore. The app
+ * itself always uses the real store ([ProfileStore.from]).
+ */
+private class TransientPreferencesDataStore : DataStore<Preferences> {
+
+    private val state = MutableStateFlow<Preferences>(emptyPreferences())
+
+    override val data: Flow<Preferences> = state.asStateFlow()
+
+    override suspend fun updateData(
+        transform: suspend (t: Preferences) -> Preferences,
+    ): Preferences {
+        val updated = transform(state.value)
+        state.value = updated
+        return updated
+    }
+}
+
+/**
  * The card itself. The key status is read off the main thread (the first
  * EncryptedSharedPreferences read does the Keystore handshake) and every write
  * goes through the same IO dispatcher, so the settings scroll never janks.
@@ -108,15 +140,50 @@ class AiSettingsDeps(
 @Composable
 fun AiSettingsSection(deps: AiSettingsDeps, modifier: Modifier = Modifier) {
     var hasKey by remember { mutableStateOf<Boolean?>(null) }
+    var aiEnabled by remember { mutableStateOf(true) }
     var field by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val haptics = rememberHaptics()
 
     LaunchedEffect(Unit) {
         hasKey = withContext(Dispatchers.IO) { deps.hasKey() }
+        // The master switch lives in the profile store; read once, like the key state.
+        aiEnabled = withContext(Dispatchers.IO) { deps.profile.load().aiEnabled }
     }
 
     GlassCard(modifier = modifier.fillMaxWidth()) {
+        // ── AI master switch: the first thing in the card, because it rules the rest ──
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "AI zapnutá",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            TogglePill(
+                checked = aiEnabled,
+                testTag = "ai_master_toggle",
+                onClick = {
+                    val next = !aiEnabled
+                    aiEnabled = next
+                    // The write is what makes the switch survive a restart; the pill
+                    // itself answers the tap immediately.
+                    scope.launch {
+                        withContext(Dispatchers.IO) { deps.profile.setAiEnabled(next) }
+                    }
+                },
+            )
+        }
+        VSpace(4)
+        Text(
+            text = "Vypnutá AI = žádné reflexe ani přehledy se negenerují. Klíč zůstává uložený v telefonu.",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+        )
+        VSpace(10)
+        GlassDivider()
+        VSpace(2)
+
         Text(
             text = "AI (DeepSeek)",
             style = MaterialTheme.typography.titleMedium,

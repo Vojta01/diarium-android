@@ -307,6 +307,9 @@ fun CheckInScreen(
      * the request instead of letting the AI reflect on a day it cannot see. The
      * generated text is then written by a second save — that pass is the only one
      * whose payload carries `ai_reflection`.
+     *
+     * The on-device profile decides first: with the AI master switch off
+     * (Nastavení → AI) no request is fired at all, the window just says so.
      */
     fun generateReflection() {
         val repo = reflectionRepo
@@ -318,6 +321,14 @@ fun CheckInScreen(
         // work; the endpoint caches, but the button must not look idle.
         if (holder.state.reflectionLoading || holder.state.saving) return
         scope.launch {
+            // The master switch is read once, before anything is saved or sent:
+            // with AI off the whole flow is skipped.
+            val profile = deps.profile?.load()
+            if (profile != null && !profile.aiEnabled) {
+                holder.markReflectionError(AI_DISABLED_MESSAGE)
+                return@launch
+            }
+
             if (holder.state.hasContent && !holder.state.saved) {
                 holder.markSaving()
                 val stored = persistEntry()
@@ -333,7 +344,10 @@ fun CheckInScreen(
 
             holder.markReflectionLoading()
             val date = holder.date
-            repo.generate(date, holder.entry, repo.userName())
+            // The owner's own name (and birth year) make the reflection personal; the
+            // session's name stays the fallback for a profile that has none.
+            val profileName = profile?.name?.takeIf { it.isNotBlank() } ?: repo.userName()
+            repo.generate(date, holder.entry, profileName, profile?.birthYear)
                 .onSuccess { text ->
                     holder.setReflection(text)
                     persistEntry()
@@ -753,3 +767,6 @@ private object GoalsStoreDefaults {
         DailyGoal(id = "1", emoji = "🏋️", name = "Krátké cvičení"),
     )
 }
+
+/** Shown when the reflection flow is asked to run while the AI master switch is off. */
+private const val AI_DISABLED_MESSAGE = "AI je vypnutá — zapneš ji v Nastavení."

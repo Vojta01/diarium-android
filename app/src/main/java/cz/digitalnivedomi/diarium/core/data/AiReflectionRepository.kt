@@ -59,9 +59,16 @@ class AiReflectionRepository(
      * just produced and the failure is logged (see [persistReflection]).
      *
      * [entry] travels as the fallback data set; [userName] is optional because the
-     * app only knows it when the session carries `user_metadata.full_name`.
+     * app only knows it when the session carries `user_metadata.full_name` (or a
+     * local profile). [birthYear] travels only when known, so the server can
+     * address the user by name and year of birth.
      */
-    suspend fun generate(date: String, entry: DiaryEntry, userName: String? = null): Result<String> =
+    suspend fun generate(
+        date: String,
+        entry: DiaryEntry,
+        userName: String? = null,
+        birthYear: Int? = null,
+    ): Result<String> =
         withContext(Dispatchers.IO) {
             val token = sessionStore?.validAccessToken()
             val userId = SessionContext(sessionStore).userId()
@@ -77,7 +84,7 @@ class AiReflectionRepository(
                 method = "POST",
                 url = endpoint,
                 headers = headers,
-                body = buildReflectPayload(entry, userId, date, userName).toString(),
+                body = buildReflectPayload(entry, userId, date, userName, birthYear).toString(),
             )
             val response = try {
                 transport.execute(request)
@@ -163,7 +170,9 @@ class AiReflectionRepository(
 
         /**
          * The exact body `/api/ai/reflect` expects: the web's snake_case field
-         * names plus `lang = cs` so the server picks the Czech prompt.
+         * names plus `lang = cs` so the server picks the Czech prompt. The two
+         * personalisation keys are camelCase (`userName`, `birthYear`) because
+         * that is the shape the route destructures out of the body.
          *
          * `phone_screen_time` is omitted while the worker has not synced a value,
          * otherwise an un-synced day would look like "0 minutes" to the model.
@@ -173,11 +182,13 @@ class AiReflectionRepository(
             userId: String,
             date: String,
             userName: String? = null,
+            birthYear: Int? = null,
         ): JSONObject = JSONObject().apply {
             put("user_id", userId)
             put("date", date)
             put("lang", "cs")
             if (!userName.isNullOrBlank()) put("userName", userName)
+            if (birthYear != null) put("birthYear", birthYear)
             put("mood", entry.mood)
             put("mood_emoji", entry.moodEmoji)
             put("sleep_quality", entry.sleepQuality)

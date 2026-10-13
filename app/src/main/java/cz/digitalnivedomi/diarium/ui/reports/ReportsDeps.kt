@@ -4,6 +4,7 @@ import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.AiReportsRepository
 import cz.digitalnivedomi.diarium.core.data.HttpReportRequester
+import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 
@@ -21,9 +22,18 @@ import cz.digitalnivedomi.diarium.core.data.SupabaseClient
  * `service_role` key never has to exist inside the APK. Generation itself is started by
  * [HttpReportRequester], which asks the same backend route the web button calls; the
  * report is then read straight from the table.
+ *
+ * The app-wide AI master switch lives in [profile]: with it off the screen shows the
+ * AI-off banner and disables the generate buttons, so no tap here can reach the AI.
  */
 class ReportsDeps(
     val repository: AiReportsRepository? = null,
+    /**
+     * The on-device profile — the AI master switch. Null only in offline/test wiring:
+     * the screen then reads nothing and generating behaves exactly as it did before
+     * the switch existed (the same shape as `CheckInDeps.profile`).
+     */
+    val profile: ProfileStore? = null,
 ) {
 
     val online: Boolean get() = repository != null
@@ -44,6 +54,7 @@ class ReportsDeps(
                     session = session,
                     requester = HttpReportRequester(session),
                 ),
+                profile = ProfileStore.from(context),
             )
         }
     }

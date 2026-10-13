@@ -3,6 +3,7 @@ package cz.digitalnivedomi.diarium.ui.stats
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
+import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.StatsRepository
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
@@ -19,7 +20,15 @@ import cz.digitalnivedomi.diarium.core.data.SupabaseClient
  * signed-in user's own JWT; the statistics read the user's rows under that JWT and
  * never need (or receive) a server-side key.
  */
-class StatsDeps(val stats: StatsRepository? = null) {
+class StatsDeps(
+    val stats: StatsRepository? = null,
+    /**
+     * Goals ("🎯 Cíle") — read with the statistics and shown as their own section.
+     * Null (offline, no session) simply hides that section: the goals are a bonus to
+     * the numbers, not a reason to take the screen down.
+     */
+    val goals: GoalsRepository? = null,
+) {
 
     val online: Boolean get() = stats != null
 
@@ -32,10 +41,12 @@ class StatsDeps(val stats: StatsRepository? = null) {
         fun forContext(context: Context): StatsDeps {
             val sessionStore = SessionStore(context)
             val client = SupabaseClient(sessionStore)
+            val session = SessionContext(sessionStore)
             return StatsDeps(
                 stats = StatsRepository(
-                    EntriesRepository(client, SessionContext(sessionStore)),
+                    EntriesRepository(client, session),
                 ),
+                goals = GoalsRepository(client, session),
             )
         }
     }

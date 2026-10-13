@@ -41,6 +41,7 @@ class ReportGeneratorTest {
     private var catalogJson = "[]"
     private var userHabitsJson = "[]"
     private var appSettingsJson = "[]"
+    private var goalsJson = "[]"
     private var insertResponse = HttpResponse(201, "[]")
 
     private val supabaseTransport = HttpTransport { request ->
@@ -49,6 +50,7 @@ class ReportGeneratorTest {
         when {
             url == "$BASE_URL/ai_reports" -> insertResponse
             url.startsWith("$BASE_URL/entries?") -> HttpResponse(200, entriesJson)
+            url.startsWith("$BASE_URL/goals?") -> HttpResponse(200, goalsJson)
             url.startsWith("$BASE_URL/scales?") -> HttpResponse(200, scalesJson)
             url.startsWith("$BASE_URL/habit_catalog?") -> HttpResponse(200, catalogJson)
             url.startsWith("$BASE_URL/user_habits?") -> HttpResponse(200, userHabitsJson)
@@ -100,7 +102,14 @@ class ReportGeneratorTest {
         assertTrue(userPrompt.startsWith("Data za období: 2 dní\n"))
         assertTrue(userPrompt.contains("Průměrná nálada: 4.5/5"))
         assertTrue(userPrompt.contains("Škály: Energie: průměr 3.5/5"))
-        assertTrue(userPrompt.contains("Návyky: Alkohol: 1d OK / 1d NE; Spánek: 2d OK / 0d NE"))
+        // 2026-10-13 semantics: a stored true = "splněno" for EVERY habit, so
+        // alkohol (false on 10-05 → avoided-only marker) counts one of each and
+        // spánek counts two fulfilled days.
+        assertTrue(
+            userPrompt.contains(
+                "Návyky: Alkohol (nežádoucí): splněno 1d / nesplněno 1d; Spánek: splněno 2d / nesplněno 0d",
+            ),
+        )
         assertTrue(userPrompt.contains("─── Denní přehled ───"))
 
         // 3) The row is inserted with the user JWT and the full period.
@@ -234,6 +243,53 @@ class ReportGeneratorTest {
         assertFalse("the key must not leak into the data-layer calls", flat.contains("sk-test-key"))
         // The DeepSeek call is the one and only place it travels.
         assertTrue(deepSeekRequests.single().headers.getValue("Authorization").contains("sk-test-key"))
+    }
+
+    // ── personalisation wiring ──────────────────────────────────────────────
+
+    @Test
+    fun `the wired profile and goals reach the model's prompt`() = runTest {
+        useRealisticFixtures()
+        goalsJson = JSONArray().put(
+            JSONObject().apply {
+                put("id", "goal-1")
+                put("activity_key", "sport")
+                put("name", "Běhání")
+                put("target_count", 3)
+                put("frequency", "weekly")
+                put("is_active", true)
+            },
+        ).toString()
+        deepSeekPlan = listOf(HttpResponse(200, completion("ok")))
+
+        val profile = ProfileStore.from(context)
+        profile.saveName("Vojta")
+        profile.saveBirthYear(1990)
+        val client = SupabaseClient(
+            sessionStore = signedInStore(),
+            transport = supabaseTransport,
+            baseUrl = BASE_URL,
+            anonKey = "anon-test-key",
+        )
+
+        val outcome = ReportGenerator(
+            client = client,
+            keyStore = AiKeyStore(FakeSlot("sk-test-key")),
+            session = SessionContext(signedInStore()),
+            deepSeek = deepSeekTransport,
+            deepSeekUrl = DEEPSEEK_URL,
+            today = { LocalDate.of(2026, 10, 12) },
+            retryDelayMs = 0,
+            profile = profile,
+            goals = GoalsRepository(client, SessionContext(signedInStore()), today = { "2026-10-12" }),
+        ).generate("weekly")
+
+        assertEquals(ReportOutcome.Generated, outcome)
+        val userPrompt = JSONObject(deepSeekRequests.single().body!!)
+            .getJSONArray("messages").getJSONObject(1).getString("content")
+        assertTrue(userPrompt.startsWith("👤 Uživatel: Vojta (narozen 1990)\n"))
+        // sport is logged on 10-05 and 10-06: weekly count 2/3, streak 2 → unmet + 🔥.
+        assertTrue(userPrompt.contains("- Běhání: 2/3 (týden) — zbývá 1; série 🔥2"))
     }
 
     // ── fixtures / helpers ──────────────────────────────────────────────────

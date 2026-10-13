@@ -3,6 +3,7 @@ package cz.digitalnivedomi.diarium.ui.goals
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
+import cz.digitalnivedomi.diarium.core.data.PickersRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 
@@ -14,12 +15,17 @@ import cz.digitalnivedomi.diarium.core.data.SupabaseClient
  * With a null [goals] the screen shows its retry state rather than the "no goals"
  * card, because a screen that could not read must not claim the account is empty.
  *
+ * [pickers] is non-null and defaults to a session-less repository whose reads fall
+ * back to the static catalogue, so the activity picker always has something to
+ * draw with; [forContext] replaces it with the real, session-backed one.
+ *
  * The client carries only the anon key from [SupabaseClient]'s BuildConfig plus
  * the signed-in user's own JWT; every goals read/write goes through that JWT and
  * no server-side key is ever placed in the app.
  */
 class GoalsDeps(
     val goals: GoalsRepository? = null,
+    val pickers: PickersRepository = PickersRepository(SupabaseClient()),
 ) {
 
     val online: Boolean get() = goals != null
@@ -33,8 +39,10 @@ class GoalsDeps(
         fun forContext(context: Context): GoalsDeps {
             val sessionStore = SessionStore(context)
             val client = SupabaseClient(sessionStore)
+            val session = SessionContext(sessionStore)
             return GoalsDeps(
-                goals = GoalsRepository(client, SessionContext(sessionStore)),
+                goals = GoalsRepository(client, session),
+                pickers = PickersRepository(client, session),
             )
         }
     }

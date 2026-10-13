@@ -221,7 +221,7 @@ private fun DayRecap(
             val def = habits.firstOrNull { it.key == key }
             ReadOnlyRow(
                 label = def?.let { labelWithIcon(it.icon, it.label) } ?: key,
-                value = if (done) "Ano" else "Ne",
+                value = if (done) "Splněno" else "Nesplněno",
             )
             VSpace(4)
         }

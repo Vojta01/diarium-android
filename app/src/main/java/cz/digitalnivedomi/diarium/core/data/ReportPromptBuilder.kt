@@ -17,6 +17,11 @@ data class ReportEntry(
     val sleepQuality: Int? = null,
     val stress: Int? = null,
     val activities: List<String> = emptyList(),
+    /**
+     * Habit key → ticked? Since the 2026-10-13 owner decision a stored `true`
+     * means "splněno" for EVERY habit — for a negative (avoid) habit the tick
+     * means the user avoided it, which is a good day too.
+     */
     val habits: Map<String, Boolean> = emptyMap(),
     val gratitude: List<String> = emptyList(),
     val note: String? = null,
@@ -85,14 +90,25 @@ Tón: reflektivní, optimistický. Max 1200 znaků."""
      * branch, label and separator matches the TypeScript; the only additions are
      * explicit types. Output joins with `\n`, and the first line carries its own
      * trailing `\n` exactly like the template literal does.
+     *
+     * [userName]/[birthYear] prepend the route's `👤 Uživatel` header (omitted
+     * while the name is blank); [goals] add the `🎯 Cíle:` section right after
+     * the habits line. Both are optional personalisation — no profile and no
+     * goals produce exactly the pre-personalisation prompt.
      */
     fun buildPeriodPrompt(
         entries: List<ReportEntry>,
         type: String,
         scaleNameMap: Map<String, String>,
         habitMap: Map<String, ReportHabit>,
+        userName: String? = null,
+        birthYear: Int? = null,
+        goals: List<GoalProgress> = emptyList(),
     ): String {
         val lines = mutableListOf<String>()
+        if (!userName.isNullOrBlank()) {
+            lines.add("👤 Uživatel: $userName${birthYear?.let { " (narozen $it)" } ?: ""}")
+        }
         lines.add("Data za období: ${entries.size} dní\n")
 
         val moods = entries.mapNotNull { it.mood }.filter { it > 0 }
@@ -167,26 +183,40 @@ Tón: reflektivní, optimistický. Max 1200 znaků."""
 
         // Habits: only the user's effective active set (catalogue defaults merged
         // with the active user rows — an inactive row hides the habit), and only
-        // those with recorded days. A negative habit counts value=true as a slip;
-        // a positive one counts value=true as done.
-        val habitCounts = LinkedHashMap<String, Pair<Int, Int>>() // key -> (yes, no)
+        // those with recorded days. 2026-10-13 owner decision: value=true means
+        // "fulfilled" for EVERY habit — a ticked negative (avoid) habit means the
+        // user avoided it, which is a good day too. "Splněno" is therefore always
+        // the number of `true` days; polarity only adds the "(nežádoucí)" marker.
+        val habitCounts = LinkedHashMap<String, Pair<Int, Int>>() // key -> (splněno, nesplněno)
         entries.forEach { entry ->
             entry.habits.forEach { (key, value) ->
                 if (!habitMap.containsKey(key)) return@forEach
-                val (yes, no) = habitCounts[key] ?: (0 to 0)
-                habitCounts[key] = if (value) (yes + 1) to no else yes to (no + 1)
+                val (good, bad) = habitCounts[key] ?: (0 to 0)
+                habitCounts[key] = if (value) (good + 1) to bad else good to (bad + 1)
             }
         }
         val habitParts = habitMap.entries
             .sortedBy { it.value.order }
             .filter { habitCounts.containsKey(it.key) }
             .map { (key, info) ->
-                val (yes, no) = habitCounts.getValue(key)
-                val good = if (info.negative) no else yes
-                val bad = if (info.negative) yes else no
-                "${info.label}: ${good}d OK / ${bad}d NE"
+                val (good, bad) = habitCounts.getValue(key)
+                "${info.label}${if (info.negative) " (nežádoucí)" else ""}: splněno ${good}d / nesplněno ${bad}d"
             }
         if (habitParts.isNotEmpty()) lines.add("\nNávyky: " + habitParts.joinToString("; "))
+
+        // Goals — the goals repository's live progress, one line per goal right
+        // after the habits. The period label ("den"/"týden"/"měsíc") and the 🔥
+        // streak come from [GoalProgress]; without goals the section is skipped.
+        if (goals.isNotEmpty()) {
+            lines.add("\n🎯 Cíle:")
+            goals.forEach { goal ->
+                lines.add(
+                    "- ${goal.goal.name}: ${goal.count}/${goal.goal.targetCount} (${goal.periodLabel}) — " +
+                        "${if (goal.targetMet) "splněno ✅" else "zbývá ${goal.remaining}"}" +
+                        "${if (goal.streak > 0) "; série 🔥${goal.streak}" else ""}",
+                )
+            }
+        }
 
         val allGratitude = mutableListOf<String>()
         entries.forEach { entry ->

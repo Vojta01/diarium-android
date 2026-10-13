@@ -78,6 +78,8 @@ class AiReflectionRepositoryTest {
         assertEquals("2026-09-10", body.getString("date"))
         assertEquals("cs", body.getString("lang"))
         assertEquals("User", body.getString("userName"))
+        // No year passed → the key stays absent, like userName when unknown.
+        assertFalse(body.has("birthYear"))
         assertEquals(5, body.getInt("mood"))
         assertEquals("😄", body.getString("mood_emoji"))
         assertEquals(2, body.getInt("sleep_quality"))
@@ -212,6 +214,23 @@ class AiReflectionRepositoryTest {
         sent.clear()
         repository().generate(DATE, DiaryEntry(), userName = null)
         assertFalse(JSONObject(sent.single().body!!).has("userName"))
+    }
+
+    @Test
+    fun `the birth year travels only when known, independent of the name`() = runTest {
+        repository().generate(DATE, DiaryEntry(mood = 3), userName = "User", birthYear = 1990)
+        assertEquals(1990, JSONObject(sent.single().body!!).getInt("birthYear"))
+
+        sent.clear()
+        repository().generate(DATE, DiaryEntry(mood = 3), userName = "User")
+        assertFalse(JSONObject(sent.single().body!!).has("birthYear"))
+
+        // A year without a name still travels: the route can address by year alone.
+        sent.clear()
+        repository().generate(DATE, DiaryEntry(mood = 3), birthYear = 1990)
+        val solo = JSONObject(sent.single().body!!)
+        assertEquals(1990, solo.getInt("birthYear"))
+        assertFalse(solo.has("userName"))
     }
 
     @Test

@@ -174,7 +174,7 @@ fun DayDetail(
                 habits.forEach { (key, done) ->
                     ReadOnlyRow(
                         label = historyHabitLabel(key),
-                        value = if (done) "Ano" else "Ne",
+                        value = if (done) "Splněno" else "Nesplněno",
                     )
                     VSpace(4)
                 }

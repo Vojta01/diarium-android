@@ -70,6 +70,7 @@ class GoalsRepository(
                 goal = goal,
                 count = countActivityInPeriod(days, goal.activityKey, start, todayIso),
                 streak = streakOf(activityDates(days, goal.activityKey, from, todayIso)),
+                history = computeHistory(days, goal, todayIso),
             )
         }
     }
@@ -215,10 +216,29 @@ data class GoalProgress(
     val count: Int,
     /** Consecutive days up to the newest logged day, web algorithm, 0 when none. */
     val streak: Int,
+    /**
+     * Recent period results, OLDEST first, the current period LAST: 14 periods
+     * (days) for a daily goal, 8 (weeks) weekly, 6 (months) monthly. `true` = the
+     * period's window logged the activity at least [Goal.targetCount] times,
+     * `false` = it did not, `null` = no `entries` rows in that window at all
+     * ("no data"), so missing data is never shown as a missed period. The last
+     * item measures exactly the same window as [count]. Empty when the progress
+     * was built without history — the getters below then report "nothing known".
+     */
+    val history: List<Boolean?> = emptyList(),
 ) {
     val targetMet: Boolean get() = isTargetMet(count, goal.targetCount)
     val remaining: Int get() = (goal.targetCount - count).coerceAtLeast(0)
     val periodLabel: String get() = periodLabelFor(goal.frequency)
+
+    /** The period right before the current one; `null` when unknown/unavailable. */
+    val previousMet: Boolean? get() = history.dropLast(1).lastOrNull()
+
+    /** Periods in [history] that were met. */
+    val metPeriods: Int get() = history.count { it == true }
+
+    /** Periods in [history] that have data at all (met or missed). */
+    val knownPeriods: Int get() = history.count { it != null }
 
     /** 0f…1f, clamped, so the progress bar can never overflow its track. */
     val fraction: Float
@@ -266,6 +286,38 @@ internal fun countActivityInPeriod(
 /** `count >= target` — a goal hit exactly on target is met. */
 internal fun isTargetMet(count: Int, targetCount: Int): Boolean = count >= targetCount
 
+/** How many periods a card shows in history: 14 days, 8 weeks or 6 months. */
+internal fun historyPeriods(frequency: String): Int = when (normalizeFrequency(frequency)) {
+    "daily" -> 14
+    "monthly" -> 6
+    else -> 8
+}
+
+/**
+ * The goal's recent periods, OLDEST first, the current period LAST: 14 days for
+ * a daily goal, 8 weeks for a weekly one, 6 months for a monthly one. Each
+ * period is judged over exactly the same window [countActivityInPeriod] uses,
+ * moved back k whole periods ([periodEndBack], then [periodStart]), with the
+ * repository's existing rules — one count per day, met when the window reaches
+ * `targetCount`. A period with no `entries` rows in its window is `null` ("no
+ * data"), never a miss. `periodsBack = 0` is the current period, so the LAST
+ * item always measures the same window as [GoalProgress.count].
+ */
+internal fun computeHistory(
+    days: List<DayActivities>,
+    goal: Goal,
+    todayIso: String,
+): List<Boolean?> =
+    (historyPeriods(goal.frequency) - 1 downTo 0).map { periodsBack ->
+        val end = periodEndBack(todayIso, goal.frequency, periodsBack)
+        val from = periodStart(end, goal.frequency)
+        if (days.none { it.date in from..end }) null
+        else isTargetMet(
+            countActivityInPeriod(days, goal.activityKey, from, end),
+            goal.targetCount,
+        )
+    }
+
 /**
  * The web's streak algorithm, quirk included: newest-first dates, streak starts
  * at 1 for the newest day, +1 for every day whose gap to the previous one is
@@ -310,6 +362,24 @@ internal fun periodStart(todayIso: String, frequency: String): String = when (no
     "monthly" -> minusOneMonth(todayIso)
     else -> dateMinusDays(todayIso, 7)
 }
+
+/**
+ * [todayIso] moved [periodsBack] whole periods back: daily by days, weekly by
+ * 7-day weeks and monthly by whole calendar months (clamped like
+ * [minusOneMonth]). `periodsBack = 0` returns [todayIso] itself, so [periodStart]
+ * of the result reproduces the current period's window exactly — that is what
+ * keeps history's last item on the same window as the current `count`.
+ */
+internal fun periodEndBack(todayIso: String, frequency: String, periodsBack: Int): String =
+    when (normalizeFrequency(frequency)) {
+        "daily" -> dateMinusDays(todayIso, periodsBack)
+        "monthly" -> {
+            var iso = todayIso
+            repeat(periodsBack) { iso = minusOneMonth(iso) }
+            iso
+        }
+        else -> dateMinusDays(todayIso, 7 * periodsBack)
+    }
 
 /** Czech period label shown on the card. */
 internal fun periodLabelFor(frequency: String): String = when (normalizeFrequency(frequency)) {

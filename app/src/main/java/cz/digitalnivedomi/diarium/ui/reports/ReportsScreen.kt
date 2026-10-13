@@ -58,15 +58,18 @@ import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Test tags — the Compose tests address the controls by these, never by Czech copy. */
 const val ReportsRetryButtonTag = "reports-retry"
 const val ReportsWeeklyButtonTag = "reports-generate-weekly"
 const val ReportsMonthlyButtonTag = "reports-generate-monthly"
 const val ReportsStatusTag = "reports-status"
+const val ReportsAiOffBannerTag = "reports-ai-off"
 
 /** The screen's one warning accent — the same red the export and notification screens use. */
 private val WarnColor = Color(0xFFF87171)
@@ -105,6 +108,10 @@ private enum class ReportPhase {
  * instead of showing the "nothing generated yet" card: a screen that could not reach the
  * server must never look like an empty diary.
  *
+ * With the AI master switch off ([ReportsDeps.profile]) the screen still shows the stored
+ * reports — reading one is not a generation — but a banner above the cards says why
+ * nothing new can be minted and every generate button is disabled.
+ *
  * [focusType] is the deep link from the weekly/monthly reflection notification: the
  * matching card is scrolled into view and briefly glows (see the focus effect below).
  * That focus is one-shot, so [onFocusConsumed] lets the parent clear it once it is spent.
@@ -127,6 +134,15 @@ fun ReportsScreen(
     val generating = remember { mutableStateMapOf<String, Boolean>() }
 
     var reloadTick by remember { mutableStateOf(0) }
+
+    // The AI master switch (Nastavení → AI). With it off nothing on this screen may
+    // reach the AI: the banner above the cards says so and every generate button is
+    // disabled. Read once per screen like the settings card reads it; a null profile
+    // (offline/test wiring) leaves generating exactly as it was before the switch.
+    var aiEnabled by remember { mutableStateOf(true) }
+    LaunchedEffect(deps) {
+        aiEnabled = withContext(Dispatchers.IO) { deps.profile?.load()?.aiEnabled ?: true }
+    }
 
     // One bring-into-view requester per card, keyed off ReportsState.TYPES, so the
     // notification deep link can scroll exactly the card it names.
@@ -199,8 +215,9 @@ fun ReportsScreen(
     val onGenerate: (String) -> Unit = { type ->
         val repository = deps.repository
         // One run per card: a second tap while the server is still writing is ignored
-        // rather than queueing another generation.
-        if (repository != null && generating[type] != true) {
+        // rather than queueing another generation. The master switch is checked here
+        // as well as on the button, so no path can reach the AI while it is off.
+        if (aiEnabled && repository != null && generating[type] != true) {
             generating[type] = true
             statuses.remove(type)
             scope.launch {
@@ -247,6 +264,13 @@ fun ReportsScreen(
     ) {
         ScreenSubtitle(text = ReportsState.SUBTITLE)
 
+        // The master switch off: a banner card above everything, and the generate
+        // buttons below disabled. Stored reports stay readable — only minting new
+        // ones is unavailable while the AI is off.
+        if (!aiEnabled) {
+            AiOffBanner()
+        }
+
         ReportsState.TYPES.forEach { type ->
             ReportCard(
                 type = type,
@@ -256,12 +280,34 @@ fun ReportsScreen(
                 detail = if (deps.online) details[type] else ReportsState.OFFLINE_MESSAGE,
                 status = statuses[type],
                 generating = generating[type] == true,
+                aiEnabled = aiEnabled,
                 onGenerate = { onGenerate(type) },
                 onRetry = { reloadTick++ },
                 focusRequester = requesters.getValue(type),
                 highlighted = highlightType == type,
             )
         }
+    }
+}
+
+/**
+ * The AI master switch is off (Nastavení → AI): one banner card above the report cards
+ * says so, and every generate button on the screen is disabled — nothing tapped here
+ * may reach the AI.
+ */
+@Composable
+private fun AiOffBanner() {
+    GlassCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(ReportsAiOffBannerTag),
+        accent = WarnColor,
+    ) {
+        Text(
+            text = ReportsState.AI_OFF_BANNER,
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextPrimary,
+        )
     }
 }
 
@@ -278,6 +324,8 @@ private fun ReportCard(
     detail: String?,
     status: String?,
     generating: Boolean,
+    /** The AI master switch: with it off the generate button is disabled. */
+    aiEnabled: Boolean,
     onGenerate: () -> Unit,
     onRetry: () -> Unit,
     focusRequester: BringIntoViewRequester,
@@ -364,7 +412,7 @@ private fun ReportCard(
                     haptics.light()
                     onGenerate()
                 },
-                enabled = !generating,
+                enabled = !generating && aiEnabled,
                 shape = RoundedCornerShape(Dimens.radiusCard),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Indigo,

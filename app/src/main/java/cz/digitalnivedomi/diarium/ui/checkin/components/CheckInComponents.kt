@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.animation.core.animateFloatAsState
@@ -139,6 +140,8 @@ fun GlassTextField(
     testTag: String? = null,
     /** Pass a masking transformation (e.g. `PasswordVisualTransformation()`) for secrets. */
     visualTransformation: VisualTransformation = VisualTransformation.None,
+    /** IME hints (e.g. a numeric keypad for digits-only fields). */
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
 ) {
     val shape = RoundedCornerShape(14.dp)
     Box(
@@ -164,6 +167,7 @@ fun GlassTextField(
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = TextPrimary),
             cursorBrush = SolidColor(Indigo),
             visualTransformation = visualTransformation,
+            keyboardOptions = keyboardOptions,
         )
     }
 }

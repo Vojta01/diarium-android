@@ -75,6 +75,102 @@ class ReportPromptBuilderTest {
         assertTrue(prompt.contains("2026-10-06: nálada null/5"))
     }
 
+    // ── personalisation: profile header + goals ─────────────────────────────
+
+    @Test
+    fun `a profile name and birth year prepend the user header`() {
+        val prompt = ReportPromptBuilder.buildPeriodPrompt(
+            entries = weeklyFixture(),
+            type = "weekly",
+            scaleNameMap = scaleNames,
+            habitMap = habitMap,
+            userName = "Vojta",
+            birthYear = 1990,
+        )
+
+        assertTrue(prompt.startsWith("👤 Uživatel: Vojta (narozen 1990)\n"))
+        assertTrue("the period line keeps its own trailing newline", prompt.contains("\nData za období: 2 dní\n"))
+    }
+
+    @Test
+    fun `the header omits the birth year when the profile has none`() {
+        val prompt = ReportPromptBuilder.buildPeriodPrompt(
+            entries = weeklyFixture(),
+            type = "weekly",
+            scaleNameMap = scaleNames,
+            habitMap = habitMap,
+            userName = "Vojta",
+        )
+
+        assertTrue(prompt.startsWith("👤 Uživatel: Vojta\n"))
+        assertFalse(prompt.contains("narozen"))
+    }
+
+    @Test
+    fun `a blank or missing name omits the header entirely`() {
+        val blank = ReportPromptBuilder.buildPeriodPrompt(
+            weeklyFixture(), "weekly", scaleNames, habitMap, userName = "   ",
+        )
+        val missing = ReportPromptBuilder.buildPeriodPrompt(
+            weeklyFixture(), "weekly", scaleNames, habitMap,
+        )
+
+        assertFalse(blank.contains("👤"))
+        assertFalse(missing.contains("👤"))
+        assertTrue(blank.startsWith("Data za období: 2 dní\n"))
+        assertTrue(missing.startsWith("Data za období: 2 dní\n"))
+    }
+
+    @Test
+    fun `goals render as a Czech section right after the habits`() {
+        val goals = listOf(
+            GoalProgress(
+                goal = Goal(
+                    id = "goal-1",
+                    activityKey = "beh",
+                    name = "Běhání",
+                    targetCount = 3,
+                    frequency = "weekly",
+                    isActive = true,
+                ),
+                count = 2,
+                streak = 4,
+            ),
+            GoalProgress(
+                goal = Goal(
+                    id = "goal-2",
+                    activityKey = "cteni",
+                    name = "Čtení",
+                    targetCount = 2,
+                    frequency = "daily",
+                    isActive = true,
+                ),
+                count = 2,
+                streak = 0,
+            ),
+        )
+
+        val prompt = ReportPromptBuilder.buildPeriodPrompt(
+            entries = weeklyFixture(),
+            type = "weekly",
+            scaleNameMap = scaleNames,
+            habitMap = habitMap,
+            goals = goals,
+        )
+
+        assertTrue(prompt.contains("\n🎯 Cíle:"))
+        // One line per goal: unmet goals count down, met ones get the check —
+        // and only a live streak carries the 🔥 suffix.
+        assertEquals(
+            listOf(
+                "- Běhání: 2/3 (týden) — zbývá 1; série 🔥4",
+                "- Čtení: 2/2 (den) — splněno ✅",
+            ),
+            prompt.lines().filter { it.startsWith("- ") },
+        )
+        assertTrue("goals follow the habits line", prompt.indexOf("Návyky:") < prompt.indexOf("🎯 Cíle:"))
+    }
+
     // ── system prompts + token budgets ──────────────────────────────────────
 
     @Test
@@ -209,7 +305,9 @@ class ReportPromptBuilderTest {
          *  Škály: Energie: průměr 3.5/5, Produktivita: průměr 2.0/5
          *  Průměrný screen time: 60 min/den   ← 3600 s / 60
          *  (blank) Nejčastější aktivity: sport (2×), práce (1×)
-         *  (blank) Návyky: Alkohol: 1d OK / 1d NE; Spánek: 2d OK / 0d NE
+         *  (blank) Návyky: Alkohol (nežádoucí): splněno 1d / nesplněno 1d; Spánek: splněno 2d / nesplněno 0d
+         *            ← true = "splněno" for EVERY habit (2026-10-13 decision); alkohol: false 10-05,
+         *              true 10-06 (the "(nežádoucí)" marker is polarity's only trace); spánek: true both days
          *  (blank) Vděčnost: rodina
          *  (blank) Poznámky: dobrý den      ← trimmed; the daily block keeps the raw note
          *  (blank) ─── Denní přehled ───
@@ -225,7 +323,7 @@ class ReportPromptBuilderTest {
             "Škály: Energie: průměr 3.5/5, Produktivita: průměr 2.0/5",
             "Průměrný screen time: 60 min/den",
             "\nNejčastější aktivity: sport (2×), práce (1×)",
-            "\nNávyky: Alkohol: 1d OK / 1d NE; Spánek: 2d OK / 0d NE",
+            "\nNávyky: Alkohol (nežádoucí): splněno 1d / nesplněno 1d; Spánek: splněno 2d / nesplněno 0d",
             "\nVděčnost: rodina",
             "\nPoznámky: dobrý den",
         )

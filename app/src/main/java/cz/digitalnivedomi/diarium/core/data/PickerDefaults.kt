@@ -152,15 +152,83 @@ object PickerDefaults {
         ActivityDef("zehleni", "Žehlení", "👕", "domácí práce"),
     )
 
-    /** Mirrors the web's `FALLBACK_HABIT_DEFS` — the DB normally supplies these. */
+    /**
+     * Mirrors the web's `FALLBACK_HABIT_DEFS` — the DB normally supplies these.
+     * The eight standard habits of `habit_catalog`, with that table's own colour
+     * and `source`; used only when the catalogue cannot be read, so a brand-new
+     * user (or an offline first run) still gets the full standard set.
+     */
     val HABIT_FALLBACK: List<HabitDef> = listOf(
         HabitDef(
             key = "alkohol",
             label = "Alkohol",
             icon = "🍺",
             category = "zdraví",
-            color = "#ef4444",
+            color = "#6366f1",
             isNegative = true,
+            source = "default",
+        ),
+        HabitDef(
+            key = "koureni",
+            label = "Kouření",
+            icon = "🚬",
+            category = "zdraví",
+            color = "#6366f1",
+            isNegative = true,
+            source = "default",
+        ),
+        HabitDef(
+            key = "sladkosti",
+            label = "Sladkosti",
+            icon = "🍬",
+            category = "zdraví",
+            color = "#6366f1",
+            isNegative = true,
+            source = "default",
+        ),
+        HabitDef(
+            key = "bez_kafe",
+            label = "Bez kávy",
+            icon = "☕",
+            category = "zdraví",
+            color = "#6366f1",
+            isNegative = true,
+            source = "default",
+        ),
+        HabitDef(
+            key = "cviceni",
+            label = "Cvičení",
+            icon = "🏋️",
+            category = "pohyb",
+            color = "#6366f1",
+            isNegative = false,
+            source = "default",
+        ),
+        HabitDef(
+            key = "pit_vodu",
+            label = "Pít vodu",
+            icon = "💧",
+            category = "zdraví",
+            color = "#6366f1",
+            isNegative = false,
+            source = "default",
+        ),
+        HabitDef(
+            key = "cteni",
+            label = "Čtení",
+            icon = "📖",
+            category = "mysl",
+            color = "#6366f1",
+            isNegative = false,
+            source = "default",
+        ),
+        HabitDef(
+            key = "meditace",
+            label = "Meditace",
+            icon = "🧘",
+            category = "mysl",
+            color = "#6366f1",
+            isNegative = false,
             source = "default",
         ),
     )
