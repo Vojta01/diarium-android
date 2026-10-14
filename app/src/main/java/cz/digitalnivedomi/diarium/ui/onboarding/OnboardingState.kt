@@ -3,6 +3,7 @@ package cz.digitalnivedomi.diarium.ui.onboarding
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import cz.digitalnivedomi.diarium.core.data.Goal
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 
 /**
@@ -86,11 +87,63 @@ class OnboardingState(
         habits = habits + choiceOf(def).copy(custom = true, checked = true)
     }
 
-    /** Rows the user left switched off — hidden on finish (`removeHabit`). */
-    fun habitsToHide(): List<HabitChoice> = habits.filter { !it.checked }
+    /** The „✏️ Upravit" dialog saved a name/icon change; reflect it in the row now. */
+    fun updateHabitDefinition(key: String, label: String, icon: String, isNegative: Boolean) {
+        habits = habits.map { choice ->
+            if (choice.key == key) choice.copy(label = label, icon = icon, isNegative = isNegative) else choice
+        }
+    }
 
-    /** Rows switched off and on again — restored on finish (`updateHabit`, active). */
-    fun habitsToRestore(): List<HabitChoice> = habits.filter { it.checked && it.toggledOff }
+    /**
+     * Rows switched off that were live — hidden on finish (`removeHabit`).
+     */
+    fun habitsToHide(): List<HabitChoice> = habits.filter { !it.checked && it.wasActive }
+
+    /**
+     * Rows ticked that were switched off when the wizard loaded — restored on finish
+     * (`updateHabit`, active). A live row that is flipped off and back on needs no
+     * write: nothing was persisted mid-wizard, so it never left the live state.
+     */
+    fun habitsToRestore(): List<HabitChoice> = habits.filter { it.checked && !it.wasActive }
+
+    /** What the wizard saw when it loaded — only these goals may later be deleted. */
+    private var seenGoals: List<Goal> = emptyList()
+
+    /**
+     * The account's goals arrived: a re-run must show what is already set up. A
+     * template whose activity already has a goal comes back ticked with the live
+     * count/frequency; every other goal becomes a removable „existing" custom row,
+     * so unchecking it in the wizard deletes it on finish.
+     */
+    fun loadExistingGoals(goals: List<Goal>) {
+        seenGoals = goals
+        val byKey = goals.associateBy { it.activityKey }
+        templates = templates.map { template ->
+            val existing = byKey[template.activityKey]
+            if (existing == null) {
+                template
+            } else {
+                template.copy(
+                    checked = true,
+                    targetCount = existing.targetCount,
+                    frequency = existing.frequency,
+                )
+            }
+        }
+        val templateKeys = templates.map { it.activityKey }.toSet()
+        val known = customGoals.map { it.activityKey }.toSet()
+        customGoals = customGoals + goals
+            .filter { it.activityKey !in templateKeys && it.activityKey !in known }
+            .map { goal ->
+                CustomGoal(
+                    name = goal.name,
+                    activityKey = goal.activityKey,
+                    targetCount = goal.targetCount,
+                    frequency = goal.frequency,
+                    existingId = goal.id,
+                )
+            }
+    }
 
     fun toggleTemplate(activityKey: String) {
         templates = templates.map { template ->
@@ -155,10 +208,42 @@ class OnboardingState(
      * one goal per activity — selecting a template and a custom goal on the same key
      * must not create two rows.
      */
-    fun goalsToCreate(existingKeys: Set<String>): List<PlannedGoal> =
+    fun goalsToCreate(existing: Map<String, Goal>): List<PlannedGoal> =
         plannedGoals()
-            .filter { it.activityKey !in existingKeys }
+            .filter { it.activityKey !in existing.keys }
             .distinctBy { it.activityKey }
+
+    /**
+     * Checked template rows that the account already has with different numbers: the
+     * finish step writes the new count/frequency onto the existing row.
+     */
+    fun goalsToUpdate(existing: Map<String, Goal>): List<PlannedGoalUpdate> =
+        templates.filter { it.checked }.mapNotNull { template ->
+            val row = existing[template.activityKey] ?: return@mapNotNull null
+            if (row.targetCount == template.targetCount && row.frequency == template.frequency) {
+                return@mapNotNull null
+            }
+            PlannedGoalUpdate(
+                id = row.id,
+                name = goalNameFor(template.baseName, template.targetCount, template.frequency),
+                activityKey = template.activityKey,
+                targetCount = template.targetCount,
+                frequency = template.frequency,
+            )
+        }
+
+    /**
+     * Goals that were shown at load (a template or an „existing" custom row) and are
+     * no longer selected — unchecked template, or a custom row removed with „✕". Only
+     * goals the wizard actually saw can be deleted: a failed load (empty [seenGoals])
+     * can therefore never wipe the account's goals.
+     */
+    fun goalsToDelete(existing: Map<String, Goal>): List<String> {
+        val kept = plannedGoals().map { it.activityKey }.toSet()
+        return seenGoals
+            .filter { it.activityKey !in kept }
+            .mapNotNull { seen -> existing[seen.activityKey]?.id }
+    }
 
     companion object {
         const val STEP_COUNT = 4
@@ -208,6 +293,8 @@ class OnboardingState(
             color = def.color,
             isNegative = def.isNegative,
             source = def.source,
+            checked = def.isActive,
+            wasActive = def.isActive,
         )
     }
 }
@@ -228,6 +315,11 @@ data class HabitChoice(
      * writes back as active (`updateHabit`).
      */
     val toggledOff: Boolean = false,
+    /**
+     * The live state when the wizard loaded (`def.isActive`). Unchecked + wasActive →
+     * hide on finish; checked + !wasActive → restore on finish.
+     */
+    val wasActive: Boolean = true,
     /** True for habits created in this wizard run; a catalogue reload keeps them. */
     val custom: Boolean = false,
 ) {
@@ -256,16 +348,27 @@ data class GoalTemplate(
     val checked: Boolean = false,
 )
 
-/** A goal built in the „＋ Vlastní cíl" dialog. */
+/** A goal built in the „＋ Vlastní cíl" dialog (or an existing one on a re-run). */
 data class CustomGoal(
+    val name: String,
+    val activityKey: String,
+    val targetCount: Int,
+    val frequency: String,
+    /** Set when the row mirrors a goal that already exists in the account. */
+    val existingId: String? = null,
+)
+
+/** One goal the finish step should create, in `GoalsRepository.create` shape. */
+data class PlannedGoal(
     val name: String,
     val activityKey: String,
     val targetCount: Int,
     val frequency: String,
 )
 
-/** One goal the finish step should create, in `GoalsRepository.create` shape. */
-data class PlannedGoal(
+/** One existing goal whose numbers changed in the wizard; written by `update`. */
+data class PlannedGoalUpdate(
+    val id: String,
     val name: String,
     val activityKey: String,
     val targetCount: Int,

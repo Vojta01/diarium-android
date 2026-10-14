@@ -298,8 +298,11 @@ class PickersRepositoryHabitsTest {
 
     @Test
     fun `addHabit suffixes a slug that is already taken`() = runTest {
+        // Same key, different label: only the key collides, so the newcomer is
+        // suffixed instead of merging onto the existing row. (A *label* collision is
+        // its own case — the table's case-insensitive label index would refuse it.)
         userRows = JSONArray()
-            .put(userRow("u1", "jit_behat", "Jít běhat", active = true))
+            .put(userRow("u1", "jit_behat", "Běh", active = true))
             .toString()
 
         val habit = requireNotNull(repository().addHabit(label = "Jít běhat", icon = "🏃")) {
@@ -310,6 +313,43 @@ class PickersRepositoryHabitsTest {
         assertEquals("jit_behat_2", habit.key)
         val body = JSONObject(sent.single { it.method == "POST" }.body!!)
         assertEquals("jit_behat_2", body.getString("key"))
+    }
+
+    @Test
+    fun `addHabit returns the existing row when the label is already taken`() = runTest {
+        userRows = JSONArray()
+            .put(userRow("u1", "porno", "Porno", active = true))
+            .toString()
+
+        val habit = requireNotNull(repository().addHabit(label = "  porno  ", icon = "")) {
+            "addHabit must resolve to the existing row instead of failing"
+        }
+
+        // The account's own row wins: its key and label, and nothing is written.
+        assertEquals("porno", habit.key)
+        assertEquals("Porno", habit.label)
+        assertEquals("user", habit.source)
+        assertTrue(habit.isActive)
+        assertFalse("no write may be sent for an already-live habit", sent.any { it.method == "POST" })
+    }
+
+    @Test
+    fun `addHabit switches a hidden habit back on and keeps its look`() = runTest {
+        userRows = JSONArray()
+            .put(userRow("u1", "masturb5", "masturb5", active = false))
+            .toString()
+
+        val habit = requireNotNull(repository().addHabit(label = "MASTURB5", icon = "✅"))
+
+        assertEquals("masturb5", habit.key)
+        assertTrue(habit.isActive)
+        // Reactivation is the same read-then-upsert every habit write uses.
+        val request = sent.single { it.method == "POST" }
+        assertTrue(request.url.startsWith("$BASE_URL/user_habits?"))
+        assertEquals("on_conflict=user_id,key", decoded(request))
+        val body = JSONObject(request.body!!)
+        assertEquals("masturb5", body.getString("key"))
+        assertTrue(body.getBoolean("is_active"))
     }
 
     @Test

@@ -56,6 +56,7 @@ import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassIconButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassTextField
+import cz.digitalnivedomi.diarium.ui.checkin.components.HabitEditorDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.checkin.components.SelectableChip
 import cz.digitalnivedomi.diarium.ui.checkin.components.TogglePill
@@ -114,8 +115,10 @@ fun OnboardingScreen(
 
     // Custom-habit dialog.
     var showHabitDialog by remember { mutableStateOf(false) }
-    var habitName by remember { mutableStateOf("") }
     var savingHabit by remember { mutableStateOf(false) }
+
+    /** The row being edited; null = the editor is in its „create" mode. */
+    var editingHabit by remember { mutableStateOf<HabitDef?>(null) }
 
     // Custom-goal dialog.
     var showGoalDialog by remember { mutableStateOf(false) }
@@ -147,16 +150,16 @@ fun OnboardingScreen(
         if (profile.name.isNotBlank()) state.name = profile.name
         profile.birthYear?.let { state.birthYear = it.toString() }
         aiEnabled = profile.aiEnabled
-        // Owner decision: the wizard only ever offers the catalogue's standard habits
-        // (`source == "default"`) — personal/custom habits are never offered as toggles
-        // here. Habits created in this wizard run are appended by `addCustomHabit`, so
-        // they stay visible.
-        state.loadHabits(
-            withContext(Dispatchers.IO) { deps.pickers.habits() }
-                .filter { it.source == "default" },
-        )
+        // The full habit picture for this account: the catalogue's standards AND the
+        // user's own habits, including the ones switched off — a re-run must be able to
+        // show what is off and switch it back on. The finish step then writes the
+        // complete state, so the diary shows exactly what the wizard shows.
+        state.loadHabits(withContext(Dispatchers.IO) { deps.pickers.habits(includeHidden = true) })
         hasStoredKey = withContext(Dispatchers.IO) { deps.aiKeys.hasKey() }
         habitsLoaded = true
+        // Existing goals prefill step 4 (ticked, live numbers); a failed read leaves
+        // the whole plan conservative — nothing gets deleted.
+        withContext(Dispatchers.IO) { deps.goals.list() }?.let { state.loadExistingGoals(it) }
     }
 
     // The goal dialog's activity and habit pickers read the catalogue each time it opens.
@@ -217,19 +220,40 @@ fun OnboardingScreen(
                 }.onFailure { Log.w(FINISH_TAG, "habits write failed", it) }
             }
 
-            val existingGoalKeys = withContext(Dispatchers.IO) {
-                runCatching { deps.goals.list()?.map { it.activityKey }?.toSet() }
+            val existingGoals = withContext(Dispatchers.IO) {
+                runCatching { deps.goals.list() }
                     .onFailure { Log.w(FINISH_TAG, "goals.list failed", it) }
                     .getOrNull()
             }
-            if (existingGoalKeys == null) {
+            if (existingGoals == null) {
                 finishError = "Nepodařilo se načíst cíle. Zkontroluj připojení a zkus to znovu."
                 finishing = false
                 return@launch
             }
-            val toCreate = state.goalsToCreate(existingGoalKeys)
+            val existingByKey = existingGoals.associateBy { it.activityKey }
+            val toCreate = state.goalsToCreate(existingByKey)
+            val toUpdate = state.goalsToUpdate(existingByKey)
+            val toDelete = state.goalsToDelete(existingByKey)
             var goalFailures = 0
             withContext(Dispatchers.IO) {
+                // Deletes first, then updates, then creates: a goal the user dropped
+                // disappears before new ones land, and nothing is ever double-created.
+                toDelete.forEach { id ->
+                    runCatching { deps.goals.delete(id) }
+                        .onSuccess { Log.i(FINISH_TAG, "goal deleted: $id") }
+                        .onFailure {
+                            goalFailures++
+                            Log.w(FINISH_TAG, "goal delete failed: $id", it)
+                        }
+                }
+                toUpdate.forEach { goal ->
+                    runCatching { deps.goals.update(goal.id, goal.name, goal.activityKey, goal.targetCount, goal.frequency) }
+                        .onSuccess { Log.i(FINISH_TAG, "goal updated: ${goal.name}") }
+                        .onFailure {
+                            goalFailures++
+                            Log.w(FINISH_TAG, "goal update failed: ${goal.name}", it)
+                        }
+                }
                 toCreate.forEach { goal ->
                     runCatching { deps.goals.create(goal.name, goal.activityKey, goal.targetCount, goal.frequency) }
                         .onSuccess { Log.i(FINISH_TAG, "goal created: ${goal.name}") }
@@ -509,6 +533,17 @@ fun OnboardingScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = TextPrimary,
                                 )
+                                Text(
+                                    text = "✏️",
+                                    fontSize = 14.sp,
+                                    modifier = Modifier
+                                        .clickable {
+                                            editingHabit = choice.toHabitDef()
+                                            habitError = null
+                                            showHabitDialog = true
+                                        }
+                                        .padding(6.dp),
+                                )
                                 TogglePill(
                                     checked = choice.checked,
                                     testTag = "onboarding_habit_${choice.key}",
@@ -519,7 +554,7 @@ fun OnboardingScreen(
                     Spacer(Modifier.height(12.dp))
                     OutlinedButton(
                         onClick = {
-                            habitName = ""
+                            editingHabit = null
                             habitError = null
                             showHabitDialog = true
                         },
@@ -688,74 +723,55 @@ fun OnboardingScreen(
         }
     }
 
-    // ── „＋ Vlastní návyk" dialog ────────────────────────────────────────────────
+    // ── „＋ Vlastní návyk" / „✏️ Upravit návyk": the shared check-in editor ──────
     if (showHabitDialog) {
-        Dialog(onDismissRequest = { if (!savingHabit) showHabitDialog = false }) {
-            GlassCard(
-                modifier = Modifier.fillMaxWidth(),
-                accent = Indigo,
-                // Opaque: the window opens over the wizard and must not let it shine through.
-                opaque = true,
-            ) {
-                Text(
-                    text = "Nový návyk",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary,
-                )
-                Spacer(Modifier.height(6.dp))
-                SectionHint("Návyk se uloží k účtu, takže ho uvidíš i na webu.")
-                Spacer(Modifier.height(14.dp))
-                GlassTextField(
-                    value = habitName,
-                    onValueChange = { habitName = it },
-                    placeholder = "Název návyku",
-                    testTag = "onboarding_custom_habit_name",
-                )
-                habitError?.let { message ->
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = message,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = ErrorRed,
-                    )
+        HabitEditorDialog(
+            habit = editingHabit,
+            saving = savingHabit,
+            error = habitError,
+            onDismiss = {
+                if (!savingHabit) {
+                    showHabitDialog = false
+                    editingHabit = null
                 }
-                Spacer(Modifier.height(16.dp))
-                Button(
-                    onClick = {
-                        val name = habitName
-                        savingHabit = true
-                        habitError = null
-                        scope.launch {
-                            val def = withContext(Dispatchers.IO) { deps.pickers.addHabit(name, "✅") }
-                            if (def != null) {
-                                state.addCustomHabit(def)
-                                // The row is in memory even if the initial load failed —
-                                // lift the „Načítám" gate so it is visible right away.
-                                habitsLoaded = true
-                                savingHabit = false
-                                showHabitDialog = false
-                            } else {
-                                habitError = "Návyk se nepodařilo uložit. Zkontroluj připojení a zkus to znovu."
-                                savingHabit = false
-                            }
+            },
+            onSave = { label, icon, isNegative ->
+                val editing = editingHabit
+                savingHabit = true
+                habitError = null
+                scope.launch {
+                    if (editing == null) {
+                        val def = withContext(Dispatchers.IO) {
+                            deps.pickers.addHabit(label, icon, isNegative)
                         }
-                    },
-                    enabled = habitName.isNotBlank() && !savingHabit,
-                    colors = ButtonDefaults.buttonColors(containerColor = Indigo),
-                    modifier = Modifier.fillMaxWidth().testTag("onboarding_custom_habit_save"),
-                ) {
-                    Text(if (savingHabit) "Ukládám…" else "Přidat")
+                        if (def != null) {
+                            state.addCustomHabit(def)
+                            // The row is in memory even if the initial load failed —
+                            // lift the „Načítám" gate so it is visible right away.
+                            habitsLoaded = true
+                            savingHabit = false
+                            showHabitDialog = false
+                        } else {
+                            habitError = "Návyk se nepodařilo uložit. Zkontroluj připojení a zkus to znovu."
+                            savingHabit = false
+                        }
+                    } else {
+                        val saved = withContext(Dispatchers.IO) {
+                            deps.pickers.updateHabit(editing.key, label, icon, isNegative)
+                        }
+                        if (saved) {
+                            state.updateHabitDefinition(editing.key, label, icon, isNegative)
+                            savingHabit = false
+                            showHabitDialog = false
+                            editingHabit = null
+                        } else {
+                            habitError = "Změnu se nepodařilo uložit — název možná už používá jiný návyk."
+                            savingHabit = false
+                        }
+                    }
                 }
-                Spacer(Modifier.height(8.dp))
-                TextButton(
-                    onClick = { showHabitDialog = false },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Zrušit")
-                }
-            }
-        }
+            },
+        )
     }
 
     // ── „＋ Vlastní cíl" dialog ─────────────────────────────────────────────────

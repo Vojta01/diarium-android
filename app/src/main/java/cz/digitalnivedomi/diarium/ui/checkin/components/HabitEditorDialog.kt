@@ -66,6 +66,8 @@ fun HabitEditorDialog(
     onDismiss: () -> Unit,
     onSave: (label: String, icon: String, isNegative: Boolean) -> Unit,
     onRemove: (() -> Unit)? = null,
+    /** A failed save, reported by the owning screen; shown above the buttons. */
+    error: String? = null,
 ) {
     // Seeded per habit, so opening the editor on another row never shows the previous
     // row's values; in create mode the icon starts at the ✅ the repository defaults to.
@@ -176,6 +178,14 @@ fun HabitEditorDialog(
                 ) { isNegative = !isNegative }
             }
 
+            error?.let { message ->
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = ErrorRed,
+                )
+            }
             Spacer(Modifier.height(16.dp))
             PrimaryButton(
                 text = when {

@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.onboarding
 
+import cz.digitalnivedomi.diarium.core.data.Goal
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -67,7 +68,7 @@ class OnboardingStateTest {
     }
 
     @Test
-    fun `a habit switched off is hidden on finish, switched back on it is a restore`() {
+    fun `a habit switched off is hidden on finish, switched back on it writes nothing`() {
         val state = stateWithHabits()
 
         state.toggleHabit("sport")
@@ -75,14 +76,39 @@ class OnboardingStateTest {
         assertTrue(state.habitsToRestore().isEmpty())
 
         state.toggleHabit("sport")
-        // Off and on again: not hidden, but written back as active (a restore).
+        // Off and on again: the habit never left its live state (nothing is written
+        // mid-wizard), so the plan is empty — no write, no stale restore.
         assertTrue(state.habitsToHide().isEmpty())
-        assertEquals(listOf("sport"), state.habitsToRestore().map { it.key })
+        assertTrue(state.habitsToRestore().isEmpty())
 
-        // And off once more: hidden again — the toggledOff flag does not rescue it.
+        // And off once more: hidden again.
         state.toggleHabit("sport")
         assertEquals(listOf("sport"), state.habitsToHide().map { it.key })
         assertTrue(state.habitsToRestore().isEmpty())
+    }
+
+    @Test
+    fun `a hidden habit switched on is restored, left alone it writes nothing`() {
+        val state = OnboardingState(
+            habits = listOf(
+                HabitDef(key = "koureni", label = "Kouření", isActive = true),
+                HabitDef(key = "cteni", label = "Čtení", isActive = false),
+            ),
+        )
+
+        // The prefilled ticks mirror the live state — a re-run shows what is on.
+        assertEquals(listOf(true, false), state.habits.map { it.checked })
+
+        // Untouched: nothing in the plan.
+        assertTrue(state.habitsToHide().isEmpty())
+        assertTrue(state.habitsToRestore().isEmpty())
+
+        state.toggleHabit("cteni")
+        assertEquals(listOf("cteni"), state.habitsToRestore().map { it.key })
+
+        state.toggleHabit("koureni")
+        assertEquals(listOf("koureni"), state.habitsToHide().map { it.key })
+        assertEquals(listOf("cteni"), state.habitsToRestore().map { it.key })
     }
 
     @Test
@@ -191,7 +217,7 @@ class OnboardingStateTest {
         state.updateTemplateCount("trenink", 5)
         state.updateTemplateFrequency("trenink", "monthly")
 
-        val fresh = state.goalsToCreate(emptySet())
+        val fresh = state.goalsToCreate(emptyMap())
         assertEquals(listOf("trenink"), fresh.map { it.activityKey })
         assertEquals("Cvičit 5× měsíčně", fresh[0].name)
         assertEquals(5, fresh[0].targetCount)
@@ -223,14 +249,19 @@ class OnboardingStateTest {
         state.addCustomGoal("Ranní běh", "trenink", 5, "weekly")
         state.addCustomGoal("Spaní 8h", "spanek", 7, "weekly")
 
-        val fresh = state.goalsToCreate(emptySet())
+        val fresh = state.goalsToCreate(emptyMap())
         // Templates first, and the duplicate trenink keeps the template's shape.
         assertEquals(listOf("trenink", "spanek"), fresh.map { it.activityKey })
         assertEquals("Cvičit 3× týdně", fresh[0].name)
         assertEquals("Spaní 8h", fresh[1].name)
 
-        assertEquals(listOf("trenink"), state.goalsToCreate(setOf("spanek")).map { it.activityKey })
-        assertTrue(state.goalsToCreate(setOf("trenink", "spanek")).isEmpty())
+        val spanek = mapOf("spanek" to goal("g9", "spanek", "Spaní 8h", 7, "weekly"))
+        assertEquals(listOf("trenink"), state.goalsToCreate(spanek).map { it.activityKey })
+        val both = mapOf(
+            "trenink" to goal("g8", "trenink", "Cvičit 3× týdně", 3, "weekly"),
+            "spanek" to goal("g9", "spanek", "Spaní 8h", 7, "weekly"),
+        )
+        assertTrue(state.goalsToCreate(both).isEmpty())
     }
 
     @Test
@@ -297,5 +328,93 @@ class OnboardingStateTest {
         assertEquals("Vojta", state.name)
         assertEquals("1995", state.birthYear)
         assertEquals(1995, state.birthYearValue())
+    }
+
+    // ── existing goals (a re-run) ────────────────────────────────────────────
+
+    private fun goal(
+        id: String,
+        activityKey: String,
+        name: String,
+        targetCount: Int,
+        frequency: String,
+    ) = Goal(
+        id = id,
+        activityKey = activityKey,
+        name = name,
+        targetCount = targetCount,
+        frequency = frequency,
+        isActive = true,
+    )
+
+    @Test
+    fun `existing goals prefill the templates and become removable customs`() {
+        val state = OnboardingState()
+        state.loadExistingGoals(
+            listOf(
+                goal("g1", "trenink", "Cvičit 10× měsíčně", 10, "monthly"),
+                goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly"),
+            ),
+        )
+
+        val trenink = state.template("trenink")
+        assertTrue("an existing goal comes back ticked", trenink.checked)
+        assertEquals(10, trenink.targetCount)
+        assertEquals("monthly", trenink.frequency)
+        assertEquals(listOf("studena_sprcha"), state.customGoals.map { it.activityKey })
+
+        // Nothing changed -> the plan is empty; finish writes nothing.
+        val existing = mapOf(
+            "trenink" to goal("g1", "trenink", "Cvičit 10× měsíčně", 10, "monthly"),
+            "studena_sprcha" to goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly"),
+        )
+        assertTrue(state.goalsToCreate(existing).isEmpty())
+        assertTrue(state.goalsToUpdate(existing).isEmpty())
+        assertTrue(state.goalsToDelete(existing).isEmpty())
+    }
+
+    @Test
+    fun `an unchecked template deletes its existing goal`() {
+        val state = OnboardingState()
+        state.loadExistingGoals(listOf(goal("g1", "trenink", "Cvičit 10× měsíčně", 10, "monthly")))
+        state.toggleTemplate("trenink") // prefilled as checked -> off
+
+        val existing = mapOf("trenink" to goal("g1", "trenink", "Cvičit 10× měsíčně", 10, "monthly"))
+        assertEquals(listOf("g1"), state.goalsToDelete(existing))
+        assertTrue(state.goalsToCreate(existing).isEmpty())
+    }
+
+    @Test
+    fun `changed numbers update the existing goal instead of creating a second one`() {
+        val state = OnboardingState()
+        state.loadExistingGoals(listOf(goal("g1", "trenink", "Cvičit 3× týdně", 3, "weekly")))
+        state.updateTemplateCount("trenink", 5)
+        state.updateTemplateFrequency("trenink", "monthly")
+
+        val existing = mapOf("trenink" to goal("g1", "trenink", "Cvičit 3× týdně", 3, "weekly"))
+        assertTrue(state.goalsToCreate(existing).isEmpty())
+        val update = state.goalsToUpdate(existing).single()
+        assertEquals("g1", update.id)
+        assertEquals(5, update.targetCount)
+        assertEquals("monthly", update.frequency)
+        assertEquals("Cvičit 5× měsíčně", update.name)
+    }
+
+    @Test
+    fun `a goal the wizard never saw can never be deleted`() {
+        val state = OnboardingState() // load never happened
+        val existing = mapOf("trenink" to goal("g1", "trenink", "Cvičit", 3, "weekly"))
+
+        assertTrue("an unloaded wizard must not delete anything", state.goalsToDelete(existing).isEmpty())
+    }
+
+    @Test
+    fun `a custom goal removed with the cross is deleted on finish`() {
+        val state = OnboardingState()
+        state.loadExistingGoals(listOf(goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly")))
+        state.removeCustomGoal(0)
+
+        val existing = mapOf("studena_sprcha" to goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly"))
+        assertEquals(listOf("g2"), state.goalsToDelete(existing))
     }
 }

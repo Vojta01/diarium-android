@@ -76,7 +76,7 @@ class PickersRepository(
      * one), so the web's separate hidden-habit read (`user_habits` where
      * `is_active=false`) has no consumer here and is intentionally not made.
      */
-    suspend fun habits(): List<HabitDef> = withContext(Dispatchers.IO) {
+    suspend fun habits(includeHidden: Boolean = false): List<HabitDef> = withContext(Dispatchers.IO) {
         val defaults = read("habit_catalog", mapOf("is_default" to "eq.true"))
             .filter { it.optBoolean("is_default", false) }
             .sortedBy { it.optInt("sort_order", 0) }
@@ -125,13 +125,19 @@ class PickersRepository(
         val defaultKeys = defaults.map { it.key }.toSet()
         // A habit the wizard switched off must vanish from every picker (check-in, goals
         // editor, settings): without this, unchecking a standard habit in the guide
-        // looked like it worked, yet the habit kept showing everywhere.
-        val hiddenDefaultKeys = userHabits
-            .filter { !it.isActive && it.key in defaultKeys }
-            .map { it.key }
-            .toSet()
+        // looked like it worked, yet the habit kept showing everywhere. The wizard's own
+        // run reads with [includeHidden] so it can show what is switched off and offer
+        // to switch it back on.
+        val hiddenDefaultKeys = if (includeHidden) {
+            emptySet()
+        } else {
+            userHabits
+                .filter { !it.isActive && it.key in defaultKeys }
+                .map { it.key }
+                .toSet()
+        }
         val overrides = userHabits
-            .filter { it.isActive && it.key in defaultKeys }
+            .filter { it.key in defaultKeys && (includeHidden || it.isActive) }
             .associateBy { it.key }
         val mergedDefaults = defaults
             .filter { it.key !in hiddenDefaultKeys }
@@ -144,10 +150,15 @@ class PickersRepository(
                     label = override.label.ifBlank { row.label },
                     icon = override.icon.ifBlank { row.icon },
                     isNegative = override.isNegative,
+                    // With [includeHidden] a switched-off default comes back as a
+                    // readable, unchecked row instead of disappearing.
+                    isActive = if (includeHidden) override.isActive else true,
                 )
             }
         }
-        val customs = userHabits.filter { it.isActive && it.key !in defaultKeys }
+        val customs = userHabits.filter {
+            it.key !in defaultKeys && (includeHidden || it.isActive)
+        }
 
         val visible = dedupeHabits(mergedDefaults + customs)
         if (visible.isEmpty()) dedupeHabits(PickerDefaults.HABIT_FALLBACK) else visible
@@ -305,11 +316,40 @@ class PickersRepository(
      * Returns the row as written (so the caller can show it at once), or null for a
      * blank label, no signed-in user or a failed request.
      */
-    suspend fun addHabit(label: String, icon: String): HabitDef? = withContext(Dispatchers.IO) {
+    suspend fun addHabit(label: String, icon: String, isNegative: Boolean = false): HabitDef? = withContext(Dispatchers.IO) {
         val userId = session.userId() ?: return@withContext null
         val clean = label.trim()
         if (clean.isBlank()) return@withContext null
         val cleanIcon = icon.ifBlank { "✅" }
+        // The table carries a case-insensitive unique label (`user_id, lower(btrim(label))`),
+        // so a name the account already has cannot become a second row: return the
+        // existing row instead (its own label and icon win) and switch a hidden one back
+        // on. Without this, re-adding a habit the user already tracks (typing „porno"
+        // while „Porno" exists) failed with a bare 409 the dialog could only report as
+        // "could not save".
+        val rows = read("user_habits", mapOf("user_id" to "eq.$userId"))
+        val existing = rows.firstOrNull {
+            it.plainString("label").trim().equals(clean, ignoreCase = true)
+        }
+        if (existing != null) {
+            val key = existing.plainString("key")
+            if (key.isBlank()) return@withContext null
+            val def = HabitDef(
+                key = key,
+                label = existing.plainString("label").ifBlank { clean },
+                icon = existing.plainString("icon"),
+                category = existing.plainString("category").ifBlank { "vlastní" },
+                color = existing.plainString("color").ifBlank { DEFAULT_COLOR },
+                isNegative = existing.optBoolean("is_negative", false),
+                source = "user",
+                isActive = true,
+            )
+            if (!existing.optBoolean("is_active", true)) {
+                // Switched back on, keeping the row's own look.
+                updateHabit(def.key, def.label, def.icon, def.isNegative)
+            }
+            return@withContext def
+        }
         // Uniqueness against what the picker would show: an existing key keeps its
         // rows, so the newcomer is suffixed rather than allowed to merge onto it.
         val taken = habits().map { it.key }.toSet()
@@ -327,7 +367,7 @@ class PickersRepository(
             put("icon", cleanIcon)
             put("category", "vlastní")
             put("color", DEFAULT_COLOR)
-            put("is_negative", false)
+            put("is_negative", isNegative)
             put("is_active", true)
         }
         val created = client.post(
@@ -343,7 +383,7 @@ class PickersRepository(
             icon = cleanIcon,
             category = "vlastní",
             color = DEFAULT_COLOR,
-            isNegative = false,
+            isNegative = isNegative,
             source = "user",
             isActive = true,
         )
