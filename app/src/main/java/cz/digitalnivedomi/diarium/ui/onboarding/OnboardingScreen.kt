@@ -639,14 +639,20 @@ fun OnboardingScreen(
                     if (state.customGoals.isNotEmpty()) {
                         Spacer(Modifier.height(12.dp))
                         state.customGoals.forEachIndexed { index, goal ->
-                            if (index > 0) Spacer(Modifier.height(6.dp))
+                            if (index > 0) Spacer(Modifier.height(8.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                // The name and the ✏️ both open the editor dialog: the
-                                // owner asked for the custom goal's name to be editable
-                                // like the rest of the row.
+                                // The pencil stands in the icon column every template row
+                                // fills with its emoji, so all names start on the same x —
+                                // and it doubles as the edit affordance (the name does too).
+                                Text(
+                                    text = "✏️",
+                                    fontSize = 18.sp,
+                                    modifier = Modifier.clickable { openGoalEditor(index) },
+                                )
+                                Spacer(Modifier.width(10.dp))
                                 Text(
                                     text = goal.name,
                                     modifier = Modifier
@@ -655,12 +661,6 @@ fun OnboardingScreen(
                                         .testTag("onboarding_custom_edit_$index"),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = TextPrimary,
-                                )
-                                Text(
-                                    text = "✏️",
-                                    modifier = Modifier
-                                        .clickable { openGoalEditor(index) }
-                                        .padding(horizontal = 4.dp),
                                 )
                                 GlassTextField(
                                     value = goal.targetCount.toString(),
@@ -682,13 +682,21 @@ fun OnboardingScreen(
                                     testTag = "onboarding_custom_frequency_$index",
                                 )
                                 Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = "✕",
-                                    modifier = Modifier
-                                        .clickable { state.removeCustomGoal(index) }
-                                        .padding(6.dp),
-                                    color = TextSecondary,
-                                )
+                                // The cross sits centred in a slot exactly as wide as the
+                                // template rows' TogglePill (44.dp), so the right edge of
+                                // every row lines up.
+                                Box(
+                                    modifier = Modifier.width(44.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = "✕",
+                                        modifier = Modifier
+                                            .clickable { state.removeCustomGoal(index) }
+                                            .padding(6.dp),
+                                        color = TextSecondary,
+                                    )
+                                }
                             }
                         }
                     }
