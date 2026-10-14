@@ -1,9 +1,11 @@
 name: Build APK
 
+# Automatic runs are OFF on purpose: every release pushes main AND a tag, so this
+# workflow fired twice per release and each run failed at "Set up Android SDK" —
+# mailing two failure notifications per release. The APK is produced and
+# published locally by tools/publish-apk.sh, never by CI. Run this workflow by
+# hand from the Actions tab if a CI-built artifact is ever wanted.
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
   workflow_dispatch:
 
 permissions:
