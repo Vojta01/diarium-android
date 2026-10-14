@@ -1,8 +1,8 @@
 # Diarium Android — buildy
 
-Nejnovější: **2.0.0-alpha31**
+Nejnovější: **2.0.0-alpha32**
 
-* `diarium-2.0.0-alpha31.apk` — tato verze (odkaz pro stažení)
+* `diarium-2.0.0-alpha32.apk` — tato verze (odkaz pro stažení)
 * `diarium.apk` — vždy nejnovější (GitHub u raw odkazů cachuje, proto mají
   jednotlivé verze vlastní soubor)
 
