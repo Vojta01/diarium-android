@@ -163,10 +163,9 @@ data class HttpResponse(val code: Int, val body: String) {
 
 /** OkHttp-backed transport (the only Android/network-coupled part of the client). */
 class OkHttpTransport(
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build(),
+    // Defaults to the process-wide client (see AppClients): a per-instance client
+    // would give every SupabaseClient its own connection pool and threads.
+    private val client: OkHttpClient = AppClients.defaultHttpClient,
 ) : HttpTransport {
 
     override fun execute(request: HttpRequest): HttpResponse {

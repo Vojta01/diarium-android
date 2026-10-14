@@ -30,27 +30,27 @@ class DashboardInsightsTest {
     // ── Top apps ───────────────────────────────────────────────────────────────
 
     /**
-     * The 2026-09-10 `phone_top_apps` array exactly as it is stored, in its raw
-     * database order. The trailing comment is the value the worker actually
-     * recorded; the model holds whole minutes (`JSONObject.optInt`), so the
-     * fractional ones arrive truncated — 36.92 → 36, 0.5 → 0.
+     * The 2026-09-10 `phone_top_apps` array as the worker recorded it — fractional
+     * minutes are real (`seconds / 60.0`). The old Int parse truncated them
+     * (36.92 → 36, 0.5 → 0) before ranking; that is what the fractional pipeline
+     * pins down now.
      */
     private fun realTopApps(): List<PhoneTopApp> = listOf(
-        PhoneTopApp("Hermes WebUI", 8), // 8.38
-        PhoneTopApp("Telegram", 0), // 0.50
-        PhoneTopApp("Zpravy", 0), // 0.72
-        PhoneTopApp("Gmail", 3), // 3.10
-        PhoneTopApp("Signal", 1), // 1.53
-        PhoneTopApp("Home Assistant", 2), // 2.02
-        PhoneTopApp("Netatmo", 1), // 1.25
-        PhoneTopApp("Brave", 7), // 7.15
-        PhoneTopApp("Mini Metro", 9), // 9.27
-        PhoneTopApp("Instagram", 22), // 22.72
-        PhoneTopApp("WhatsApp", 23), // 23.27
-        PhoneTopApp("Bakalari OnLine", 2), // 2.63
-        PhoneTopApp("Snooker", 36), // 36.92
-        PhoneTopApp("Telefon", 3), // 3.85
-        PhoneTopApp("Chrome", 0), // 0.97
+        PhoneTopApp("Hermes WebUI", 8.38),
+        PhoneTopApp("Telegram", 0.50),
+        PhoneTopApp("Zpravy", 0.72),
+        PhoneTopApp("Gmail", 3.10),
+        PhoneTopApp("Signal", 1.53),
+        PhoneTopApp("Home Assistant", 2.02),
+        PhoneTopApp("Netatmo", 1.25),
+        PhoneTopApp("Brave", 7.15),
+        PhoneTopApp("Mini Metro", 9.27),
+        PhoneTopApp("Instagram", 22.72),
+        PhoneTopApp("WhatsApp", 23.27),
+        PhoneTopApp("Bakalari OnLine", 2.63),
+        PhoneTopApp("Snooker", 36.92),
+        PhoneTopApp("Telefon", 3.85),
+        PhoneTopApp("Chrome", 0.97),
     )
 
     @Test
@@ -117,7 +117,23 @@ class DashboardInsightsTest {
         val top = rankTopApps(realTopApps()).first()
 
         assertEquals("Snooker", top.app)
-        assertEquals(36, top.minutes)
+        assertEquals(36.92, top.minutes, 0.001)
+    }
+
+    @Test
+    fun `fractional minutes survive the parse, sub-minute rows still drop`() {
+        // The old Int parse truncated 0.5/0.97 to 0, so truncation — not the
+        // filter — was what hid them. Now the values survive and the >= 1 min
+        // filter is the sole, deliberate reason sub-minute rows stay out.
+        val apps = listOf(
+            PhoneTopApp("Telegram", 0.5),
+            PhoneTopApp("Chrome", 0.97),
+            PhoneTopApp("Gmail", 3.2),
+            PhoneTopApp("Maps", 0.8),
+        )
+
+        assertEquals(listOf("Gmail"), rankTopApps(apps).map { it.app })
+        assertEquals(3.2, rankTopApps(apps).single().minutes, 0.001)
     }
 
     // ── Duration format ────────────────────────────────────────────────────────
@@ -125,6 +141,8 @@ class DashboardInsightsTest {
     @Test
     fun `a duration under a minute never reads as zero minutes`() {
         assertEquals("<1 min", formatTopAppDuration(0))
+        assertEquals("<1 min", formatTopAppDuration(0.5))
+        assertEquals("<1 min", formatTopAppDuration(0.97))
     }
 
     @Test
@@ -132,6 +150,8 @@ class DashboardInsightsTest {
         assertEquals("23 min", formatTopAppDuration(23))
         assertEquals("1 h", formatTopAppDuration(60))
         assertEquals("1 h 15 min", formatTopAppDuration(75))
+        assertEquals("1 min", formatTopAppDuration(1.2))
+        assertEquals("1 h 30 min", formatTopAppDuration(90.4))
     }
 
     // ── A day is a record only when the mood is filled ──────────────────────────

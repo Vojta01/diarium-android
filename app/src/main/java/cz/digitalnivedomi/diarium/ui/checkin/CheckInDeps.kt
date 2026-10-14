@@ -2,10 +2,13 @@ package cz.digitalnivedomi.diarium.ui.checkin
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DraftStore
+import cz.digitalnivedomi.diarium.core.data.EntriesCacheStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
+import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
 import cz.digitalnivedomi.diarium.core.data.PickersRepository
 import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
@@ -48,11 +51,18 @@ class CheckInDeps(
         fun offline(): CheckInDeps = CheckInDeps()
 
         fun forContext(context: Context): CheckInDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
             return CheckInDeps(
-                entries = EntriesRepository(client, session),
+                entries = EntriesRepository(
+                    client,
+                    session,
+                    // The offline outbox keeps a check-in saved without network;
+                    // the snapshot feeds the dashboard's instant cold-start render.
+                    cache = EntriesCacheStore.from(context),
+                    pending = PendingSaveStore.from(context),
+                ),
                 pickers = PickersRepository(client, session),
                 drafts = DraftStore.from(context),
                 goals = GoalsRepository(client, session),

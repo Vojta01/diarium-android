@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.templates
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 import cz.digitalnivedomi.diarium.core.data.TemplatesRepository
@@ -32,8 +33,8 @@ class TemplatesDeps(
 
         /** The real thing, built from the current context like `DashboardDeps.forContext`. */
         fun forContext(context: Context): TemplatesDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             return TemplatesDeps(
                 templates = TemplatesRepository(client, SessionContext(sessionStore)),
             )

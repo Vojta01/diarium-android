@@ -2,8 +2,11 @@ package cz.digitalnivedomi.diarium.ui.history
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
+import cz.digitalnivedomi.diarium.core.data.EntriesCacheStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.HistoryRepository
+import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
 import cz.digitalnivedomi.diarium.core.data.PickersRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
@@ -40,11 +43,21 @@ class HistoryDeps(
 
         /** The real thing, built from the current context like `DashboardDeps.forContext`. */
         fun forContext(context: Context): HistoryDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
             return HistoryDeps(
-                history = HistoryRepository(EntriesRepository(client, session)),
+                history = HistoryRepository(
+                    EntriesRepository(
+                        client,
+                        session,
+                        // History reads days straight from the server and may delete
+                        // them; the snapshot keeps cold starts consistent, the outbox
+                        // keeps a just-saved offline day from looking lost.
+                        cache = EntriesCacheStore.from(context),
+                        pending = PendingSaveStore.from(context),
+                    ),
+                ),
                 pickers = PickersRepository(client, session),
             )
         }

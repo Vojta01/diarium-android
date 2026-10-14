@@ -12,6 +12,7 @@ import androidx.work.WorkerParameters
 import cz.digitalnivedomi.diarium.BuildConfig
 import cz.digitalnivedomi.diarium.R
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.AiKeyStore
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.ProfileStore
@@ -68,8 +69,8 @@ class NotificationWorker(
 ) : CoroutineWorker(appContext, params) {
 
     private val prefsStore = NotificationPrefsStore(appContext)
-    private val session = SessionStore(appContext)
-    private val supabase = SupabaseClient(session)
+    private val session = AppClients.sessionStore(appContext)
+    private val supabase = AppClients.supabaseClient(appContext)
 
     /** The user's own DeepSeek key, if they added one (encrypted at rest). */
     private val aiKeys = AiKeyStore.forContext(appContext)

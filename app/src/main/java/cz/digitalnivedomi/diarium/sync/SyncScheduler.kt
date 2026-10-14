@@ -9,6 +9,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import cz.digitalnivedomi.diarium.BuildConfig
+import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
 import java.util.Calendar
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
@@ -32,6 +33,13 @@ class SyncScheduler {
         fun ensureScheduled(context: Context) {
             val wm = WorkManager.getInstance(context)
             val notifPrefs = cz.digitalnivedomi.diarium.notifications.NotificationPrefsStore(context).load()
+
+            // The offline outbox flushes regardless of the screen-sync toggle: a
+            // queued check-in must reach the server even when usage sync is off.
+            // (App-driven timing — the app schedules this, no server cron exists.)
+            if (PendingSaveStore.from(context).hasAny()) {
+                PendingSaveWorker.enqueue(context)
+            }
 
             if (!notifPrefs.screenSyncEnabled) {
                 // Sync disabled by the user in app settings — cancel both jobs

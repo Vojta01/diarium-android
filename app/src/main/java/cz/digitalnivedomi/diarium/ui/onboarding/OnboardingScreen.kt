@@ -132,6 +132,22 @@ fun OnboardingScreen(
     var showingNewActivity by remember { mutableStateOf(false) }
     var addingActivity by remember { mutableStateOf(false) }
 
+    /** Index of the custom goal being edited; null = the dialog is in „create" mode. */
+    var editingGoalIndex by remember { mutableStateOf<Int?>(null) }
+
+    /** Loads a custom row into the shared goal dialog: name, count and frequency. */
+    fun openGoalEditor(index: Int) {
+        val goal = state.customGoals.getOrNull(index) ?: return
+        editingGoalIndex = index
+        goalName = goal.name
+        goalTarget = goal.targetCount.toString()
+        goalFrequency = goal.frequency
+        goalActivityKey = goal.activityKey
+        showingNewActivity = false
+        newActivityName = ""
+        showGoalDialog = true
+    }
+
     /** Shown above „Dokončit" when the goal writes fail; never a silent empty dashboard. */
     var finishError by remember { mutableStateOf<String?>(null) }
 
@@ -628,16 +644,42 @@ fun OnboardingScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                // The name and the ✏️ both open the editor dialog: the
+                                // owner asked for the custom goal's name to be editable
+                                // like the rest of the row.
                                 Text(
                                     text = goal.name,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable { openGoalEditor(index) }
+                                        .testTag("onboarding_custom_edit_$index"),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = TextPrimary,
                                 )
                                 Text(
-                                    text = "${goal.targetCount}× ${frequencyLabel(goal.frequency)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary,
+                                    text = "✏️",
+                                    modifier = Modifier
+                                        .clickable { openGoalEditor(index) }
+                                        .padding(horizontal = 4.dp),
+                                )
+                                GlassTextField(
+                                    value = goal.targetCount.toString(),
+                                    onValueChange = { raw ->
+                                        // Same guard as the template rows: empty or
+                                        // non-numeric input snaps back to the last count.
+                                        raw.filter { it.isDigit() }.take(2).toIntOrNull()?.let { count ->
+                                            state.updateCustomGoalCount(index, count)
+                                        }
+                                    },
+                                    placeholder = "3",
+                                    modifier = Modifier.width(56.dp),
+                                    testTag = "onboarding_custom_count_$index",
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                FrequencyDropdown(
+                                    value = goal.frequency,
+                                    onValueChange = { state.updateCustomGoalFrequency(index, it) },
+                                    testTag = "onboarding_custom_frequency_$index",
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
@@ -659,6 +701,7 @@ fun OnboardingScreen(
                             goalActivityKey = null
                             showingNewActivity = false
                             newActivityName = ""
+                            editingGoalIndex = null
                             showGoalDialog = true
                         },
                         modifier = Modifier.testTag("onboarding_add_goal"),
@@ -789,9 +832,12 @@ fun OnboardingScreen(
         )
     }
 
-    // ── „＋ Vlastní cíl" dialog ─────────────────────────────────────────────────
+    // ── „＋ Vlastní cíl" / „✏️ Upravit cíl" dialog ───────────────────────────────
     if (showGoalDialog) {
-        Dialog(onDismissRequest = { showGoalDialog = false }) {
+        Dialog(onDismissRequest = {
+            editingGoalIndex = null
+            showGoalDialog = false
+        }) {
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
                 accent = Indigo,
@@ -804,13 +850,19 @@ fun OnboardingScreen(
                         .verticalScroll(rememberScrollState()),
                 ) {
                     Text(
-                        text = "Vlastní cíl",
+                        text = if (editingGoalIndex != null) "Upravit cíl" else "Vlastní cíl",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary,
                     )
                     Spacer(Modifier.height(6.dp))
-                    SectionHint("Název, aktivita, období a kolikrát ji chceš stihnout.")
+                    SectionHint(
+                        if (editingGoalIndex != null) {
+                            "Název, období a kolikrát ji chceš stihnout. Aktivita zůstává."
+                        } else {
+                            "Název, aktivita, období a kolikrát ji chceš stihnout."
+                        },
+                    )
                     Spacer(Modifier.height(14.dp))
                     GlassTextField(
                         value = goalName,
@@ -819,6 +871,10 @@ fun OnboardingScreen(
                         testTag = "onboarding_goal_name",
                     )
                     Spacer(Modifier.height(12.dp))
+                    // The activity picker only exists in „create" mode: retargeting a
+                    // stored goal would silently make it a different goal, so an edit
+                    // keeps the original key and only shows it.
+                    if (editingGoalIndex == null) {
                     SectionHint("Aktivita")
                     Spacer(Modifier.height(6.dp))
                     Column(
@@ -913,6 +969,18 @@ fun OnboardingScreen(
                             }
                         }
                     }
+                    } else {
+                        SectionHint("Aktivita")
+                        Spacer(Modifier.height(6.dp))
+                        val lockedLabel = activities.firstOrNull { it.key == goalActivityKey }?.label
+                            ?: goalHabits.firstOrNull { it.key == goalActivityKey }?.label
+                            ?: goalActivityKey.orEmpty()
+                        Text(
+                            text = lockedLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextPrimary,
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
                     SectionHint("Jak často")
                     Spacer(Modifier.height(6.dp))
@@ -934,8 +1002,11 @@ fun OnboardingScreen(
                     Button(
                         onClick = {
                             val target = goalTarget.toIntOrNull()?.coerceAtLeast(1) ?: 3
+                            val editing = editingGoalIndex
                             val activityKey = goalActivityKey
-                            if (activityKey != null) {
+                            if (editing != null) {
+                                state.updateCustomGoal(editing, goalName, target, goalFrequency)
+                            } else if (activityKey != null) {
                                 state.addCustomGoal(goalName, activityKey, target, goalFrequency)
                             }
                             goalName = ""
@@ -944,17 +1015,21 @@ fun OnboardingScreen(
                             goalActivityKey = null
                             showingNewActivity = false
                             newActivityName = ""
+                            editingGoalIndex = null
                             showGoalDialog = false
                         },
-                        enabled = goalName.isNotBlank() && goalActivityKey != null,
+                        enabled = goalName.isNotBlank() && (editingGoalIndex != null || goalActivityKey != null),
                         colors = ButtonDefaults.buttonColors(containerColor = Indigo),
                         modifier = Modifier.fillMaxWidth().testTag("onboarding_goal_save"),
                     ) {
-                        Text("Přidat cíl")
+                        Text(if (editingGoalIndex != null) "Uložit změny" else "Přidat cíl")
                     }
                     Spacer(Modifier.height(8.dp))
                     TextButton(
-                        onClick = { showGoalDialog = false },
+                        onClick = {
+                            editingGoalIndex = null
+                            showGoalDialog = false
+                        },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("Zrušit")

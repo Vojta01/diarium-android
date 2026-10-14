@@ -231,7 +231,7 @@ fun DayDetail(
                     SectionHint("Nejpoužívanější aplikace")
                     topApps.take(5).forEach { app ->
                         Text(
-                            text = "• ${app.app} — ${formatMinutes(app.minutes)}",
+                            text = "• ${app.app} — ${formatMinutes(Math.round(app.minutes).toInt())}",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
                             modifier = Modifier.padding(vertical = 1.dp),

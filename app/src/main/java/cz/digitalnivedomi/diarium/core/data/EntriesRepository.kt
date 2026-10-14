@@ -20,6 +20,21 @@ import java.io.IOException
 class EntriesRepository(
     private val client: SupabaseClient,
     private val session: SessionContext = SessionContext(),
+    /**
+     * Local snapshot of the range reads (file-backed, see [EntriesCacheStore]).
+     * Optional on purpose: with null — as in every test that builds the
+     * repository by hand — reads and writes behave exactly as before, and a
+     * cache that cannot be written degrades to „no cache", never an error.
+     */
+    private val cache: EntriesCacheStore? = null,
+    /**
+     * Offline outbox (see [PendingSaveStore]): a save that never reached the
+     * server lands here and `PendingSaveWorker` flushes it later. Null keeps
+     * the old behaviour — a transport failure on save is reported straight to
+     * the caller. When wired, the store also overlays every read, because a
+     * queued day is the newest state the user has seen.
+     */
+    private val pending: PendingSaveStore? = null,
 ) {
 
     suspend fun currentUserId(): String? = session.userId()
@@ -32,6 +47,9 @@ class EntriesRepository(
      * the draft and an empty form. Throwing here would crash that screen instead.
      */
     suspend fun loadEntry(date: String): DiaryEntry? = withContext(Dispatchers.IO) {
+        // A queued offline save is the newest state of that day: it beats the
+        // server's row (older, or not there yet) and survives a failed read.
+        pending?.peek(date)?.let { return@withContext it }
         try {
             readEntry(date)
         } catch (e: CancellationException) {
@@ -79,7 +97,7 @@ class EntriesRepository(
         limit: Int = RANGE_LIMIT,
     ): Result<List<DatedEntry>> = withContext(Dispatchers.IO) {
         try {
-            Result.success(readRange(from, to, limit))
+            Result.success(withPendingOverlay(readRange(from, to, limit), from, to))
         } catch (e: CancellationException) {
             // Cancellation is the caller walking away, not a failure to report.
             throw e
@@ -118,10 +136,61 @@ class EntriesRepository(
             throw IllegalStateException(resp.errorMessage ?: "Načtení přehledu se nezdařilo (${resp.code})")
         }
         val rows = resp.asJsonArray() ?: throw IllegalStateException("Server vrátil neplatnou odpověď.")
-        return (0 until rows.length()).map { index ->
-            val row = rows.getJSONObject(index)
-            DatedEntry(row.plainString("date"), fromRow(row))
+        val raw = (0 until rows.length()).map { index -> rows.getJSONObject(index) }
+        // Feed the local snapshot — best effort: a cache that cannot be written
+        // must never fail a read that succeeded.
+        runCatching { cache?.upsertRows(raw) }
+        return raw.map { row -> DatedEntry(row.plainString("date"), fromRow(row)) }
+    }
+
+    /**
+     * The cached snapshot of `[from, to]`, or null when nothing was ever cached.
+     * Pending offline saves are overlaid exactly like on a live read, so the
+     * instant render shows the same day the fresh read is about to.
+     */
+    suspend fun loadRangeCachedFirst(from: String, to: String): List<DatedEntry>? {
+        val rows = cache?.readRange(from, to) ?: return null
+        return withPendingOverlay(rows, from, to)
+    }
+
+    /**
+     * Best-effort read of specific days — the memory lane asks for the dates a
+     * year, half a year and a month back. Any failure (offline phone, HTTP
+     * error, a bad body) yields an empty map: the caller treats it as „no
+     * memory today" and the card simply stays off.
+     */
+    suspend fun loadDates(dates: List<String>): Map<String, DiaryEntry> =
+        withContext(Dispatchers.IO) {
+            if (dates.isEmpty()) return@withContext emptyMap()
+            try {
+                val userId = session.userId() ?: return@withContext emptyMap()
+                val resp = client.get(
+                    "entries",
+                    mapOf(
+                        "user_id" to "eq.$userId",
+                        "date" to "in.(${dates.joinToString(",")})",
+                        "select" to "*",
+                    ),
+                )
+                val rows = resp.asJsonArray() ?: return@withContext emptyMap()
+                val raw = (0 until rows.length()).map { index -> rows.getJSONObject(index) }
+                runCatching { cache?.upsertRows(raw) }
+                raw.associate { row -> row.plainString("date") to fromRow(row) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                emptyMap()
+            }
         }
+
+    /** A queued offline save replaces the server's row for the same date. */
+    private fun withPendingOverlay(rows: List<DatedEntry>, from: String, to: String): List<DatedEntry> {
+        val store = pending ?: return rows
+        val queued = store.peekAll().filter { it.date in from..to }
+        if (queued.isEmpty()) return rows
+        val byDate = rows.associateBy { it.date }.toMutableMap()
+        for (save in queued) byDate[save.date] = DatedEntry(save.date, save.entry)
+        return byDate.values.sortedByDescending { it.date }
     }
 
     /**
@@ -134,12 +203,38 @@ class EntriesRepository(
             val userId = session.userId()
                 ?: return@withContext Result.failure(IllegalStateException("Přihlášení vypršelo, přihlas se znovu."))
             val payload = buildPayload(entry, userId, date)
-            val resp = client.post("rpc/save_daily_entry", JSONObject().put("p_payload", payload))
+            val resp = try {
+                client.post("rpc/save_daily_entry", JSONObject().put("p_payload", payload))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: IOException) {
+                // The phone lost the network. With an outbox wired the day is kept
+                // locally and flushed by `PendingSaveWorker`; the caller shows the
+                // „Uloženo v telefonu…" card for [QueuedOfflineException]. Without
+                // an outbox the failure reaches the screen as the same retryable
+                // sentence a failed range read uses — never as a thrown exception
+                // that kills the coroutine.
+                val outbox = pending
+                if (outbox == null) {
+                    return@withContext Result.failure(IllegalStateException(CONNECT_FAILED))
+                }
+                runCatching {
+                    outbox.enqueue(date, entry)
+                    // The payload doubles as the snapshot row, so the dashboard
+                    // cache shows the new numbers before the flush.
+                    cache?.upsertRows(listOf(payload))
+                }
+                return@withContext Result.failure(QueuedOfflineException())
+            }
             if (!resp.isSuccessful) {
                 return@withContext Result.failure(
                     IllegalStateException(resp.errorMessage ?: "Uložení se nezdařilo (${resp.code})"),
                 )
             }
+            // Keep the local snapshot in step: the payload carries exactly the keys
+            // this save touched, and the overlay keeps the worker-owned ones
+            // (phone_screen_time, ai_reflection).
+            runCatching { cache?.upsertRows(listOf(payload)) }
             // Achievements are a side effect — never lose the entry over them.
             runCatching { client.post("rpc/check_achievements", buildAchievementsPayload(entry, userId)) }
             Result.success(Unit)
@@ -167,6 +262,13 @@ class EntriesRepository(
                     resp.errorMessage ?: "Původní den se nepodařilo smazat (${resp.code}).",
                 ),
             )
+        }
+        // The day is gone everywhere it was visible: the snapshot must not
+        // resurrect it on the next cold start, and a queued copy must not
+        // overwrite the delete.
+        runCatching {
+            cache?.removeDate(date)
+            pending?.remove(date)
         }
         Result.success(Unit)
     }
@@ -270,3 +372,12 @@ class EntriesRepository(
  * carries the row's date alongside the model instead of widening the form's shape.
  */
 data class DatedEntry(val date: String, val entry: DiaryEntry)
+
+/**
+ * The save went to the offline outbox instead of the server — not an error
+ * state. [EntriesRepository.save] reports it as a failed [Result] on purpose:
+ * callers that only know success/failure still keep the day, and the check-in
+ * screen keys its „Uloženo v telefonu…" card off this exact type.
+ */
+class QueuedOfflineException :
+    Exception("Uloženo v telefonu — odešle se, jakmile budeš online.")

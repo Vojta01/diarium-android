@@ -4,7 +4,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** One app used most on the phone that day (mirrored read-only from the worker). */
-data class PhoneTopApp(val app: String, val minutes: Int)
+data class PhoneTopApp(val app: String, val minutes: Double) {
+    /**
+     * Whole-minute convenience for callers that think in minutes (tests, call
+     * sites that carry ints). The model keeps fractions on purpose: the worker
+     * stores `seconds / 60.0` and a 30–59 s app must not silently read as 0.
+     */
+    constructor(app: String, minutes: Int) : this(app, minutes.toDouble())
+}
 
 /**
  * [DiaryEntry.phoneScreenTime] in whole minutes — the unit every screen shows.

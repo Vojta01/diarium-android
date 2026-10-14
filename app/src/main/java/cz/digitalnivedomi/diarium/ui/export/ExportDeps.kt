@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.export
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.ExportRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
@@ -32,8 +33,8 @@ class ExportDeps(
 
         /** The real thing, built from the current context like `GoalsDeps.forContext`. */
         fun forContext(context: Context): ExportDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             return ExportDeps(
                 repository = ExportRepository(client, SessionContext(sessionStore)),
             )

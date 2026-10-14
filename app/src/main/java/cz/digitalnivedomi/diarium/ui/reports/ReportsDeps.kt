@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.reports
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.AiReportsRepository
 import cz.digitalnivedomi.diarium.core.data.HttpReportRequester
 import cz.digitalnivedomi.diarium.core.data.ProfileStore
@@ -45,8 +46,8 @@ class ReportsDeps(
 
         /** The real thing, built from the current context like `ExportDeps.forContext`. */
         fun forContext(context: Context): ReportsDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
             return ReportsDeps(
                 repository = AiReportsRepository(

@@ -430,4 +430,68 @@ class OnboardingStateTest {
         val existing = mapOf("studena_sprcha" to goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly"))
         assertEquals(listOf("g2"), state.goalsToDelete(existing))
     }
+
+    // ── item 22: the custom goal is editable like the templates ───────────────
+
+    @Test
+    fun `a custom goal's count and frequency are editable inline`() {
+        val state = OnboardingState()
+        state.addCustomGoal("Běhat", "beh", 3, "weekly")
+
+        state.updateCustomGoalCount(0, 0)            // floored at 1
+        state.updateCustomGoalFrequency(0, "daily")
+        state.updateCustomGoalFrequency(0, "nikdy")  // unknown -> ignored
+        state.updateCustomGoalCount(9, 7)            // unknown index -> ignored
+
+        val goal = state.customGoals.single()
+        assertEquals(1, goal.targetCount)
+        assertEquals("daily", goal.frequency)
+    }
+
+    @Test
+    fun `a custom goal's name is editable via the dialog`() {
+        val state = OnboardingState()
+        state.addCustomGoal("Běhat", "beh", 3, "weekly")
+
+        state.updateCustomGoal(0, "  Běhat venku ", 5, "monthly")
+
+        val goal = state.customGoals.single()
+        assertEquals("Běhat venku", goal.name)
+        assertEquals(5, goal.targetCount)
+        assertEquals("monthly", goal.frequency)
+        assertEquals("beh", goal.activityKey) // retargeting is not a thing
+
+        state.updateCustomGoal(0, "   ", 5, "monthly") // blank name -> no change
+        assertEquals("Běhat venku", state.customGoals.single().name)
+        state.updateCustomGoal(9, "X", 1, "daily")     // unknown index -> no change
+        assertEquals("Běhat venku", state.customGoals.single().name)
+    }
+
+    @Test
+    fun `an edited existing custom goal updates its stored row on finish`() {
+        val state = OnboardingState()
+        state.loadExistingGoals(listOf(goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly")))
+        state.updateCustomGoalCount(0, 6)
+        state.updateCustomGoal(0, "Studená sprcha 6×", 6, "weekly")
+
+        val existing = mapOf("studena_sprcha" to goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly"))
+        assertTrue("a change never creates a second goal", state.goalsToCreate(existing).isEmpty())
+
+        val update = state.goalsToUpdate(existing).single()
+        assertEquals("g2", update.id)
+        assertEquals("Studená sprcha 6×", update.name)
+        assertEquals(6, update.targetCount)
+        assertEquals("weekly", update.frequency)
+    }
+
+    @Test
+    fun `a goal created in this run is never an update, only a create`() {
+        val state = OnboardingState()
+        state.addCustomGoal("Běhat", "beh", 3, "weekly")
+
+        // Even if a row with the same key exists (a race), a fresh wizard row is
+        // not a mirror of it — updates only ever come from loaded existing rows.
+        val existing = mapOf("beh" to goal("g9", "beh", "Běhat", 3, "weekly"))
+        assertTrue(state.goalsToUpdate(existing).isEmpty())
+    }
 }

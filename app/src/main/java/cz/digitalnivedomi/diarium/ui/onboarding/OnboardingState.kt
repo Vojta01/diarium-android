@@ -205,6 +205,53 @@ class OnboardingState(
         }
     }
 
+    /**
+     * Step-4 editing: the count stepper on a custom row. Unknown indexes are
+     * ignored; the count is floored at 1 so a goal never targets zero days.
+     */
+    fun updateCustomGoalCount(index: Int, count: Int) {
+        if (index !in customGoals.indices) return
+        customGoals = customGoals.mapIndexed { position, goal ->
+            if (position == index) goal.copy(targetCount = count.coerceAtLeast(1)) else goal
+        }
+    }
+
+    /**
+     * Step-4 editing: the frequency chip on a custom row. Only „daily", „weekly"
+     * and „monthly" are accepted — anything else, or an unknown index, changes
+     * nothing.
+     */
+    fun updateCustomGoalFrequency(index: Int, frequency: String) {
+        if (frequency !in KNOWN_FREQUENCIES) return
+        if (index !in customGoals.indices) return
+        customGoals = customGoals.mapIndexed { position, goal ->
+            if (position == index) goal.copy(frequency = frequency) else goal
+        }
+    }
+
+    /**
+     * The „✏️ Upravit" dialog saved: name (required, trimmed), count (floored at
+     * 1) and frequency (known values only). A blank name, unknown frequency or
+     * unknown index changes nothing. The activity key stays as it was — pointing
+     * a stored goal at another activity would silently make it a different goal.
+     */
+    fun updateCustomGoal(index: Int, name: String, targetCount: Int, frequency: String) {
+        if (index !in customGoals.indices) return
+        val cleanName = name.trim()
+        if (cleanName.isBlank() || frequency !in KNOWN_FREQUENCIES) return
+        customGoals = customGoals.mapIndexed { position, goal ->
+            if (position == index) {
+                goal.copy(
+                    name = cleanName,
+                    targetCount = targetCount.coerceAtLeast(1),
+                    frequency = frequency,
+                )
+            } else {
+                goal
+            }
+        }
+    }
+
     /** The typed year, or null when blank / outside the plausible range. */
     fun birthYearValue(): Int? = birthYear.trim().toIntOrNull()?.takeIf { it in MIN_YEAR..MAX_YEAR }
 
@@ -228,8 +275,13 @@ class OnboardingState(
             .distinctBy { it.activityKey }
 
     /**
-     * Checked template rows that the account already has with different numbers: the
-     * finish step writes the new count/frequency onto the existing row.
+     * Checked template rows **and edited custom rows** whose numbers differ from
+     * the stored goal: the finish step writes the new name/count/frequency onto
+     * the existing row. (The wizard used to drop edits on „existing" custom rows
+     * entirely — the finish plan only knew templates.)
+     *
+     * Only a row that mirrors a stored goal ([CustomGoal.existingId] != null) can
+     * be an update; a goal created in this run is handled by [goalsToCreate].
      */
     fun goalsToUpdate(existing: Map<String, Goal>): List<PlannedGoalUpdate> =
         templates.filter { it.checked }.mapNotNull { template ->
@@ -243,6 +295,19 @@ class OnboardingState(
                 activityKey = template.activityKey,
                 targetCount = template.targetCount,
                 frequency = template.frequency,
+            )
+        } + customGoals.mapNotNull { goal ->
+            val row = existing[goal.activityKey] ?: return@mapNotNull null
+            if (goal.existingId == null) return@mapNotNull null
+            if (row.name == goal.name && row.targetCount == goal.targetCount && row.frequency == goal.frequency) {
+                return@mapNotNull null
+            }
+            PlannedGoalUpdate(
+                id = row.id,
+                name = goal.name,
+                activityKey = goal.activityKey,
+                targetCount = goal.targetCount,
+                frequency = goal.frequency,
             )
         }
 

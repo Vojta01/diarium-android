@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.goals
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.PickersRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
@@ -37,8 +38,8 @@ class GoalsDeps(
 
         /** The real thing, built from the current context like `DashboardDeps.forContext`. */
         fun forContext(context: Context): GoalsDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
             return GoalsDeps(
                 goals = GoalsRepository(client, session),

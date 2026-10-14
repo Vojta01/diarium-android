@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.core.data
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.stats.DayUsage
 import cz.digitalnivedomi.diarium.stats.UsageStatsProvider
 import kotlinx.coroutines.Dispatchers
@@ -29,9 +30,9 @@ import java.io.IOException
  */
 class UsageSyncRepository(private val context: Context) {
 
-    private val store = SessionStore(context)
+    private val store = AppClients.sessionStore(context)
     private val session = SessionContext(store)
-    private val client = SupabaseClient(store)
+    private val client = AppClients.supabaseClient(context)
     private val usageStats = UsageStatsProvider(context)
 
     /**

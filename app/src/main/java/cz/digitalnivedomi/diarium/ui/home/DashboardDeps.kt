@@ -2,10 +2,13 @@ package cz.digitalnivedomi.diarium.ui.home
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
+import cz.digitalnivedomi.diarium.core.data.EntriesCacheStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
+import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
 import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
@@ -52,11 +55,18 @@ class DashboardDeps(
 
         /** The real thing, built from the current context like `CheckInDeps.forContext`. */
         fun forContext(context: Context): DashboardDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             return DashboardDeps(
                 dashboard = DashboardRepository(
-                    EntriesRepository(client, SessionContext(sessionStore)),
+                    EntriesRepository(
+                        client,
+                        SessionContext(sessionStore),
+                        // Snapshot for the instant cold-start paint, outbox for
+                        // offline saves — see DashboardScreen's load effect.
+                        cache = EntriesCacheStore.from(context),
+                        pending = PendingSaveStore.from(context),
+                    ),
                 ),
                 reflection = AiReflectionRepository(sessionStore),
                 goals = GoalsRepository(client, SessionContext(sessionStore)),

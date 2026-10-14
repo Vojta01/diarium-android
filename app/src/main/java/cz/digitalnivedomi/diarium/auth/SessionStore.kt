@@ -2,12 +2,11 @@ package cz.digitalnivedomi.diarium.auth
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.BuildConfig
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 /**
  * Stores the Supabase session locally (SharedPreferences) so the native side
@@ -49,11 +48,22 @@ class SessionStore(context: Context) {
      * transparently refreshing it via Supabase when it has expired. Background
      * sync jobs MUST use this instead of [accessToken] — a raw stored token is
      * dead after ~1 h and every push would fail with 401 forever.
+     *
+     * One refresh at a time for the whole process: 12+ SessionStore instances
+     * share this session file, and GoTrue rotates the refresh token — two
+     * parallel refreshes would race, and whoever persists last could store a
+     * token the other side already invalidated. The lock lives on the companion
+     * so it covers every instance; inside it the expiry is re-checked, because
+     * whoever waited on the lock may find the token already refreshed.
      */
     fun validAccessToken(): String? {
         val token = accessToken() ?: return null
         if (expiresAt() > System.currentTimeMillis() / 1000 + 60) return token
-        return refreshAccessToken()
+        synchronized(refreshLock) {
+            val current = accessToken() ?: return null
+            if (expiresAt() > System.currentTimeMillis() / 1000 + 60) return current
+            return refreshAccessToken()
+        }
     }
 
     /**
@@ -70,10 +80,9 @@ class SessionStore(context: Context) {
         }
         if (refreshToken.isBlank()) return null
         return try {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-                .build()
+            // The shared, process-wide client (AppClients) — a fresh OkHttpClient
+            // per refresh leaked a thread pool per call.
+            val client = AppClients.defaultHttpClient
             val body = JSONObject().put("refresh_token", refreshToken).toString()
                 .toRequestBody("application/json".toMediaType())
             val req = Request.Builder()
@@ -108,5 +117,13 @@ class SessionStore(context: Context) {
 
     fun clear() {
         prefs.edit().remove("session").apply()
+    }
+
+    companion object {
+        /**
+         * One refresh lock for every instance — they all share the same
+         * "diarium_session" file, so the lock must not live on an instance.
+         */
+        private val refreshLock = Any()
     }
 }

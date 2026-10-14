@@ -11,6 +11,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 
 /**
  * Pure JVM tests for what the achievements repository adds on top of the domain
@@ -132,5 +133,22 @@ class AchievementsRepositoryTest {
         assertEquals(17, data.statuses.size)
         assertEquals(0, data.unlockedCount)
         assertTrue(data.statuses.none { it.unlocked })
+    }
+
+    // ── row mapping feeds complete_goal ───────────────────────────────────────
+
+    @Test
+    fun `an entries row maps its fulfilled habits for complete_goal`() {
+        val row = JSONObject(
+            """{"date":"2026-10-05","mood":4,"activities":["Trénink"],""" +
+                """"habits":{"studena_sprcha":true,"kafe":false,"sprcha":"true","pocit":1,"prazdny":0}}""",
+        )
+
+        val mapped = achievementEntryFromRow(row)
+
+        // Only truthy values count (boolean true, "true", non-zero), like the
+        // goals side of the same column.
+        assertEquals(setOf("studena_sprcha", "sprcha", "pocit"), mapped.habitKeys.toSet())
+        assertEquals(listOf("Trénink"), mapped.activities)
     }
 }

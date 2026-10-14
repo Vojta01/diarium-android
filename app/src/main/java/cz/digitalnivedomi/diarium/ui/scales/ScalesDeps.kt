@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.scales
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.ScalesRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
@@ -32,10 +33,10 @@ class ScalesDeps(
 
         /** The real thing, built from the current context like `DashboardDeps.forContext`. */
         fun forContext(context: Context): ScalesDeps {
-            val sessionStore = SessionStore(context)
+            val sessionStore = AppClients.sessionStore(context)
             return ScalesDeps(
                 scales = ScalesRepository(
-                    client = SupabaseClient(sessionStore),
+                    client = AppClients.supabaseClient(context),
                     session = SessionContext(sessionStore),
                 ),
             )

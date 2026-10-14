@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.core.achievements
 
+import cz.digitalnivedomi.diarium.core.data.normalizeActivityValue
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -90,6 +91,12 @@ data class AchievementEntry(
     val hasPhoto: Boolean = false,
     val scaleValues: Map<String, Int> = emptyMap(),
     val activities: List<String> = emptyList(),
+    /**
+     * Habit keys the day's `habits` map held as fulfilled (`true`). A goal may
+     * key off a habit („studena_sprcha") that never appears under `activities`,
+     * so `complete_goal` must look at both lists.
+     */
+    val habitKeys: List<String> = emptyList(),
 ) {
     /** The web's `Object.values(sv).some(v => Number(v) > 0)`. */
     val hasPositiveScale: Boolean get() = scaleValues.values.any { it > 0 }
@@ -257,9 +264,24 @@ fun goalWindowDays(frequency: String): Int = when (frequency) {
     else -> 30
 }
 
-/** Was [goal]'s target ever reached inside one window? — the web's `goalEverCompleted`. */
+/**
+ * Was [goal]'s target ever reached inside one window? — the web's
+ * `goalEverCompleted`, with two corrections for rows the raw `contains` missed:
+ *
+ *  * both sides are compared through [normalizeActivityValue], so a goal key
+ *    („trenink") matches a stored label in any case/diacritics („Trénink") —
+ *    the old raw comparison could never unlock `complete_goal` for those days; and
+ *  * a day's fulfilled **habits** count as well: goals may live only in the
+ *    habits map („studena_sprcha"), which `activities` alone can never see.
+ */
 fun goalEverCompleted(goal: AchievementGoal, entries: List<AchievementEntry>): Boolean {
-    val dates = entries.filter { it.activities.contains(goal.activityKey) }.map { it.date }
+    val target = normalizeActivityValue(goal.activityKey)
+    val dates = entries
+        .filter { entry ->
+            entry.activities.any { normalizeActivityValue(it) == target } ||
+                entry.habitKeys.any { normalizeActivityValue(it) == target }
+        }
+        .map { it.date }
     return maxCountInWindow(dates, goalWindowDays(goal.frequency)) >= goal.targetCount
 }
 

@@ -18,8 +18,8 @@ import java.io.IOException
 import java.net.URLDecoder
 
 /**
- * The dashboard's one round-trip: which rows it asks for, under whose token, and what
- * a failure does to the screen.
+ * The dashboard's reads (the window range plus the best-effort memory lane): which
+ * rows it asks for, under whose token, and what a failure does to the screen.
  *
  * The transport is faked (no network) and the session is a real Robolectric-backed
  * [SessionStore], so the request asserted here is the one the app would send. The
@@ -43,12 +43,15 @@ class DashboardRepositoryRangeTest {
     }
 
     @Test
-    fun `the dashboard reads thirty days ending today in one request`() = runTest {
+    fun `the dashboard reads thirty days ending today in one range request`() = runTest {
         val result = repository().load(TODAY)
 
         assertTrue(result.isSuccess)
 
-        val request = sent.single()
+        // Two reads: the 30-day window first, then the best-effort memory lane
+        // for its three lookback dates (see DashboardRepository.load).
+        assertEquals(2, sent.size)
+        val request = sent.first()
         assertEquals("GET", request.method)
         assertTrue(request.url.startsWith("$BASE_URL/entries?"))
 
@@ -64,6 +67,11 @@ class DashboardRepositoryRangeTest {
         // The same RLS story as the check-in: the user's own JWT, never a server key.
         assertEquals("Bearer jwt-access-token", request.headers["Authorization"])
         assertEquals("anon-test-key", request.headers["apikey"])
+
+        // The memory lane asks for exactly its three lookback dates, in one call.
+        val memoryQuery = URLDecoder.decode(sent.last().url.substringAfter('?'), Charsets.UTF_8.name())
+        assertTrue(memoryQuery.contains("date=in.(2025-09-10,2026-03-10,2026-08-10)"))
+        assertEquals("Bearer jwt-access-token", sent.last().headers["Authorization"])
     }
 
     @Test
@@ -201,7 +209,8 @@ class DashboardRepositoryRangeTest {
 
         // The service_role key and any AI key stay on the server; the app reads its own
         // rows with the anon key plus the user's JWT, exactly like the browser does.
-        val flat = sent.single().let { "${it.url} ${it.headers} ${it.body}" }.lowercase()
+        // Both reads are checked — the window range and the memory lane.
+        val flat = sent.joinToString(" ") { "${it.url} ${it.headers} ${it.body}" }.lowercase()
         assertFalse(flat.contains("service_role"))
         assertFalse(flat.contains("sb_secret"))
         assertFalse(flat.contains("deepseek"))

@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.core.data
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -50,8 +51,8 @@ class PushTokensRepository internal constructor(
      * constructor callers need.
      */
     constructor(context: Context) : this(
-        sessionStore = SessionStore(context.applicationContext),
-        client = SupabaseClient(SessionStore(context.applicationContext)),
+        sessionStore = AppClients.sessionStore(context),
+        client = AppClients.supabaseClient(context),
         tokens = PrefsLastTokenStore(context.applicationContext),
     )
 

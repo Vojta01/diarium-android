@@ -397,6 +397,18 @@ class StatsMathTest {
     }
 
     @Test
+    fun `top apps keep fractional minutes instead of truncating them to zero`() {
+        val days = listOf(
+            day("2026-09-09", screenTime = 3600, topApps = listOf(PhoneTopApp("Maps", 0.5))),
+            day("2026-09-10", screenTime = 3600, topApps = listOf(PhoneTopApp("Maps", 0.5))),
+        )
+
+        // 0.5 min × 60 = 30 s per day; the old Int parse read both as 0 and the
+        // window's sum silently lost a whole minute.
+        assertEquals(60, StatsMath.topApps(days)!!.apps.single().seconds)
+    }
+
+    @Test
     fun `top apps is null when no day captured an app`() {
         assertNull(StatsMath.topApps(emptyList()))
         assertNull(StatsMath.topApps(listOf(day("2026-09-10", screenTime = 3600))))

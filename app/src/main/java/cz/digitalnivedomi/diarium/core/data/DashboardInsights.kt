@@ -52,41 +52,52 @@ fun moodDiscState(mood: Int?): MoodDiscState =
 const val TOP_APPS_LIMIT = 5
 
 /**
- * Minutes an app must exceed to count as "most used". Below this the row is
- * launch noise — a `<1 min` line would only push a real leader off the list.
+ * Minutes an app must reach to count as "most used". Sub-minute rows are launch
+ * noise — a `<1 min` line would only push a real leader off the list. (Not 0.25
+ * anymore: now that the parse keeps fractional minutes, 0.25 would have let the
+ * 0.5–0.97 min rows back in the moment truncation stopped hiding them.)
  */
-const val TOP_APPS_MIN_MINUTES = 0.25
+const val TOP_APPS_MIN_MINUTES = 1.0
 
 /**
- * The apps actually worth ranking: drops the sub-quarter-minute noise, sorts the
- * rest by minutes descending and keeps the top [limit].
+ * The apps actually worth ranking: drops the sub-minute noise (see
+ * [TOP_APPS_MIN_MINUTES]), sorts the rest by minutes descending and keeps the
+ * top [limit].
  *
  * The screen used to render `apps.take(5)` — the raw database order — so the real
  * leaders never appeared: five rows the query happened to return first hid
  * Snooker 37 min behind Hermes WebUI 8 min.
  *
- * The model carries whole minutes (`JSONObject.optInt`), so "more than
- * [TOP_APPS_MIN_MINUTES]" is what drops the sub-minute rows the worker recorded
- * (0.5, 0.72, 0.97) and the parser read back as 0.
+ * The model keeps fractional minutes (the worker records seconds); the numbers
+ * still sum in full in the stats breakdown, while this display list drops the
+ * sub-minute rows that would only crowd out a real leader.
  *
  * Ties are broken by name so the output is deterministic.
  */
 fun rankTopApps(apps: List<PhoneTopApp>, limit: Int = TOP_APPS_LIMIT): List<PhoneTopApp> =
     apps
-        .filter { it.minutes > TOP_APPS_MIN_MINUTES }
+        .filter { it.minutes >= TOP_APPS_MIN_MINUTES }
         .sortedWith(compareByDescending<PhoneTopApp> { it.minutes }.thenBy { it.app })
         .take(limit)
 
 /**
  * A top-app duration in the app's short Czech format: `23 min`, `1 h 15 min`.
- * A value under a minute reads `<1 min`, never the ambiguous `0 min`.
+ * A value under a minute reads `<1 min`, never the ambiguous `0 min`; fractions
+ * round to the nearest minute for display (`Math.round`), never truncate.
  */
-fun formatTopAppDuration(minutes: Int): String = when {
-    minutes < 1 -> "<1 min"
-    minutes < 60 -> "$minutes min"
+fun formatTopAppDuration(minutes: Double): String = when {
+    minutes < 1.0 -> "<1 min"
     else -> {
-        val hours = minutes / 60
-        val rest = minutes % 60
-        if (rest == 0) "$hours h" else "$hours h $rest min"
+        val total = Math.round(minutes).toInt()
+        val hours = total / 60
+        val rest = total % 60
+        when {
+            hours == 0 -> "$total min"
+            rest == 0 -> "$hours h"
+            else -> "$hours h $rest min"
+        }
     }
 }
+
+/** Whole-minute overload for callers that carry ints (kept so no caller needs a cast). */
+fun formatTopAppDuration(minutes: Int): String = formatTopAppDuration(minutes.toDouble())

@@ -2,8 +2,11 @@ package cz.digitalnivedomi.diarium.ui.stats
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
+import cz.digitalnivedomi.diarium.core.data.EntriesCacheStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
+import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.StatsRepository
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
@@ -39,12 +42,20 @@ class StatsDeps(
 
         /** The real thing, built from the current context like `DashboardDeps.forContext`. */
         fun forContext(context: Context): StatsDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
             return StatsDeps(
                 stats = StatsRepository(
-                    EntriesRepository(client, session),
+                    EntriesRepository(
+                        client,
+                        session,
+                        // Stats read the same window as the dashboard: the snapshot
+                        // renders them instantly, the outbox keeps offline saves
+                        // visible to them too.
+                        cache = EntriesCacheStore.from(context),
+                        pending = PendingSaveStore.from(context),
+                    ),
                 ),
                 goals = GoalsRepository(client, session),
             )

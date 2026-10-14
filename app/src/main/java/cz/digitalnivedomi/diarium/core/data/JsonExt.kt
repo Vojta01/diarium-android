@@ -76,7 +76,10 @@ internal fun JSONArray?.topApps(): List<PhoneTopApp> {
     for (i in 0 until length()) {
         val row = optJSONObject(i) ?: continue
         val app = row.plainString("app").takeIf { it.isNotBlank() } ?: continue
-        out.add(PhoneTopApp(app, row.optInt("minutes", 0)))
+        // optDouble, not optInt: the sync worker stores `seconds / 60.0`, and the
+        // old Int read truncated 30–59 s apps to 0 minutes (under-counting sums).
+        val minutes = row.optDouble("minutes", 0.0).let { if (it.isFinite() && it >= 0) it else 0.0 }
+        out.add(PhoneTopApp(app, minutes))
     }
     return out
 }

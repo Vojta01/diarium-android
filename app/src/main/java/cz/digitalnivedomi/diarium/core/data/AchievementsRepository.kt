@@ -113,10 +113,11 @@ class AchievementsRepository(
 
     /**
      * The window's `entries` rows, reduced to what the pure helpers read. Only the
-     * six columns the domain needs are selected — `photo_path` and `scale_values`
-     * feed `add_photo`/`use_scale`, `mood`/`activities`/`created_at` the rest —
-     * and no `order=`: `computeProgress` sorts by date itself, so a column rename
-     * can never turn into a 400 here.
+     * seven columns the domain needs are selected — `photo_path` and
+     * `scale_values` feed `add_photo`/`use_scale`, `mood`/`activities`/
+     * `created_at` the rest, and `habits` lets `complete_goal` see habit-backed
+     * goals („studena_sprcha") — and no `order=`: `computeProgress` sorts by date
+     * itself, so a column rename can never turn into a 400 here.
      */
     private fun readEntries(userId: String): List<AchievementEntry> {
         val since = today().minusDays(WINDOW_DAYS.toLong()).toString()
@@ -124,7 +125,7 @@ class AchievementsRepository(
             "entries",
             mapOf(
                 "user_id" to "eq.$userId",
-                "select" to "date,mood,created_at,photo_path,scale_values,activities",
+                "select" to "date,mood,created_at,photo_path,scale_values,activities,habits",
                 "date" to "gte.$since",
             ),
         )
@@ -250,6 +251,7 @@ internal fun achievementEntryFromRow(row: JSONObject): AchievementEntry = Achiev
     hasPhoto = row.strOrNull("photo_path") != null,
     scaleValues = parseScaleValues(row),
     activities = parseActivities(row.optJSONArray("activities")),
+    habitKeys = parseHabitKeys(row),
 )
 
 /** `goals` row → the reduced [AchievementGoal] `complete_goal` needs. */
@@ -299,6 +301,32 @@ private fun parseActivities(array: JSONArray?): List<String> {
                 if (key.isNotBlank()) out.add(key)
             }
         }
+    }
+    return out
+}
+
+/**
+ * `habits` is a JSON object of booleans (`{ "<key>": true }`); keep only keys
+ * whose value is truthy — the same "only true counts" rule `GoalsRepository`
+ * applies to the same column, so `complete_goal` sees habit-backed goals.
+ * Tolerates a string-encoded object and skips blank keys.
+ */
+private fun parseHabitKeys(row: JSONObject): List<String> {
+    val obj = row.optJSONObject("habits")
+        ?: row.strOrNull("habits")?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+        ?: return emptyList()
+    val out = ArrayList<String>()
+    val keys = obj.keys()
+    while (keys.hasNext()) {
+        val key = keys.next()
+        if (key.isBlank()) continue
+        val truthy = when (val v = obj.opt(key)) {
+            is Boolean -> v
+            is String -> v.equals("true", ignoreCase = true)
+            is Number -> v.toInt() != 0
+            else -> false
+        }
+        if (truthy) out.add(key)
     }
     return out
 }

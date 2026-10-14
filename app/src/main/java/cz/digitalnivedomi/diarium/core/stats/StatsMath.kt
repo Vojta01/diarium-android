@@ -503,7 +503,9 @@ object StatsMath {
         withApps.forEach { day ->
             day.topApps.forEach { app ->
                 if (app.app.isNotBlank()) {
-                    seconds[app.app] = (seconds[app.app] ?: 0) + app.minutes * 60
+                    // Round per app so fractional minutes (30–59 s) still count;
+                    // the seconds map stays whole seconds like the web's.
+                    seconds[app.app] = (seconds[app.app] ?: 0) + Math.round(app.minutes * 60).toInt()
                 }
             }
         }

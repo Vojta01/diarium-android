@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
+import cz.digitalnivedomi.diarium.core.data.formatTopAppDuration
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
@@ -193,7 +194,12 @@ fun WeatherSection(
 fun ScreenTimeSection(
     screenTimeMinutes: Int?,
     unlocks: Int?,
-    topApps: List<Pair<String, Int>>,
+    /**
+     * Per-app minutes, fractional on purpose: the worker stores `seconds / 60.0`
+     * and [formatTopAppDuration] renders sub-minute apps as „<1 min" instead of
+     * rounding them away (see the Double pipeline in DashboardInsights).
+     */
+    topApps: List<Pair<String, Double>>,
     modifier: Modifier = Modifier,
 ) {
     CheckInSection(title = "📱 Screen time", modifier = modifier) {
@@ -215,7 +221,7 @@ fun ScreenTimeSection(
             Spacer(Modifier.height(8.dp))
             topApps.take(5).forEach { (app, minutes) ->
                 Text(
-                    text = "• $app — ${formatMinutes(minutes)}",
+                    text = "• $app — ${formatTopAppDuration(minutes)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     modifier = Modifier.padding(vertical = 1.dp),

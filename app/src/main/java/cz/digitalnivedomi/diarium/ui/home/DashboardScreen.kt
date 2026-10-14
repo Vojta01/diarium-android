@@ -38,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,6 +46,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import coil.compose.AsyncImage
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DashboardData
 import cz.digitalnivedomi.diarium.core.data.DashboardDay
@@ -55,6 +57,7 @@ import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
 import cz.digitalnivedomi.diarium.core.data.MetricTrend
 import cz.digitalnivedomi.diarium.core.data.MoodDiscState
+import cz.digitalnivedomi.diarium.core.data.OnThisDayMemory
 import cz.digitalnivedomi.diarium.core.data.PhoneTopApp
 import cz.digitalnivedomi.diarium.core.data.formatTopAppDuration
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
@@ -158,6 +161,13 @@ fun DashboardScreen(
     }
 
     LaunchedEffect(repository, reloadTrigger) {
+        // Instant paint from the local snapshot while the network read runs: only
+        // when nothing is on screen yet (a resume reload keeps the fresh numbers),
+        // and only when something really was cached.
+        if (data == null) {
+            val cached = repository?.loadCached()
+            if (cached != null) holder.show(cached)
+        }
         holder.markLoading()
         val result = repository?.load()
         if (result == null) {
@@ -165,7 +175,18 @@ fun DashboardScreen(
         } else {
             result
                 .onSuccess { loaded -> holder.show(loaded) }
-                .onFailure { error -> holder.showError(error.message ?: ERROR_LOAD) }
+                .onFailure { error ->
+                    // A cached render outlives a failed refresh: it is the last real
+                    // sync, better than an error card over real numbers. Only a
+                    // screen with nothing at all turns red. show() also settles the
+                    // loading flag back off.
+                    val cachedBefore = holder.state.data
+                    if (cachedBefore != null) {
+                        holder.show(cachedBefore)
+                    } else {
+                        holder.showError(error.message ?: ERROR_LOAD)
+                    }
+                }
         }
         // Silent on purpose: neither read is allowed to touch the dashboard's own
         // loading/error state, and neither failure is worth a banner.
@@ -312,6 +333,14 @@ private fun DashboardContent(
         // statistics screen's own chart, right under the week strip, which stays.
         StaggeredItem(3) {
             MoodChartCard(month = data.month, onOpenDay = { date -> detailDate = date })
+        }
+        // „Tenhle den v historii": a memory from 1 year / 6 months / 1 month back —
+        // only when a real recorded day with content exists (the repository decides,
+        // see pickBestMemory). Taps open the same day detail the week strip uses.
+        data.onThisDay?.let { memory ->
+            StaggeredItem(4) {
+                OnThisDayCard(memory = memory, onOpenDay = { date -> detailDate = date })
+            }
         }
         // Goals sit right under the mood chart (owner request 2026-10-13): the
         // cards above say how the days went, this one says what they were for.
@@ -1141,6 +1170,74 @@ private fun UnlocksCard(data: DashboardData, onReload: () -> Unit) {
 }
 
 /**
+ * 🕰️ „Tenhle den v historii" — one memory card: the best of the three lookbacks
+ * (1 year → 6 months → 1 month), only when that day was really recorded and
+ * holds something worth re-reading (the repository decides, see `pickBestMemory`).
+ *
+ * Tapping „Otevřít den" hands the date to the same day-detail window the week
+ * strip uses; the entry is in `entryByDate` because the repository merges the
+ * fetched memory dates into it.
+ */
+@Composable
+private fun OnThisDayCard(memory: OnThisDayMemory, onOpenDay: (String) -> Unit) {
+    val entry = memory.entry
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        SectionHeader("🕰️ Tenhle den v historii")
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "${memory.horizon.label} · ${shortDateOf(memory.date)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (entry.moodEmoji.isNotBlank()) {
+                Text(text = entry.moodEmoji, style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.width(10.dp))
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                if (entry.note.isNotBlank()) {
+                    Text(
+                        text = entry.note,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                val gratitude = entry.filteredGratitude().take(3)
+                if (gratitude.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    gratitude.forEach { line ->
+                        Text(
+                            text = "🙏 $line",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+        if (!entry.photoPath.isNullOrBlank()) {
+            Spacer(Modifier.height(10.dp))
+            AsyncImage(
+                model = entry.photoPath,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(140.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        SecondaryButton(text = "Otevřít den") { onOpenDay(memory.date) }
+    }
+}
+
+/**
  * 🏆 The newest day whose app list is long enough to rank.
  *
  * The card prefers a complete snapshot from an older day over the two or three apps
@@ -1198,8 +1295,8 @@ private fun TopAppsCard(data: DashboardData, onReload: () -> Unit) {
  * width is animated, so a re-rank slides instead of jumping.
  */
 @Composable
-private fun TopAppRow(app: PhoneTopApp, maxMinutes: Int) {
-    val target = if (maxMinutes <= 0) 0f else (app.minutes.toFloat() / maxMinutes).coerceIn(0f, 1f)
+private fun TopAppRow(app: PhoneTopApp, maxMinutes: Double) {
+    val target = if (maxMinutes <= 0.0) 0f else (app.minutes / maxMinutes).toFloat().coerceIn(0f, 1f)
     val fill by animateFloatAsState(
         targetValue = target,
         animationSpec = tween(

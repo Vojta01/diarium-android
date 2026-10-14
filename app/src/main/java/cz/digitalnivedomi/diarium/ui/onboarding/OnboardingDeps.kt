@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.onboarding
 
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.AiKeyStore
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.PickersRepository
@@ -32,8 +33,8 @@ class OnboardingDeps(
 
         /** The real thing, built from the current context like `GoalsDeps.forContext`. */
         fun forContext(context: Context): OnboardingDeps {
-            val sessionStore = SessionStore(context)
-            val client = SupabaseClient(sessionStore)
+            val sessionStore = AppClients.sessionStore(context)
+            val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
             return OnboardingDeps(
                 profile = ProfileStore.from(context),

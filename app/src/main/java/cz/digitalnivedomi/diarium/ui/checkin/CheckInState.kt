@@ -23,6 +23,13 @@ data class CheckInUiState(
     val loading: Boolean = false,
     val saving: Boolean = false,
     val saved: Boolean = false,
+    /**
+     * True after a save that went to the offline outbox („Uloženo v telefonu —
+     * odešle se, jakmile budeš online.") instead of the server. Deliberately not
+     * [saved]: the reflection window needs the server, so opening it would lie;
+     * the day is nevertheless safe on the phone and the worker will send it.
+     */
+    val queuedOffline: Boolean = false,
     val errorMessage: String? = null,
     /**
      * True when the open day came from the database — the day already has an entry —
@@ -121,6 +128,7 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
             entry = DiaryEntry.EMPTY,
             saving = false,
             saved = false,
+            queuedOffline = false,
             errorMessage = null,
             // A day is opened passively (or as a fresh form) whichever day it is; the
             // "Upravit" flag and the finished/hint flags never survive a day switch.
@@ -165,6 +173,7 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
             entry = entry,
             loading = false,
             saved = false,
+            queuedOffline = false,
             storedEntry = stored,
             // A requested arrival (see [requestEdit]) opens the stored day straight
             // in the form; an ordinary (re)load stays passive.
@@ -242,7 +251,7 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
     }
 
     fun markSaving() {
-        state = state.copy(saving = true, errorMessage = null)
+        state = state.copy(saving = true, queuedOffline = false, errorMessage = null)
     }
 
     /**
@@ -256,9 +265,20 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         state = state.copy(
             saving = false,
             saved = true,
+            queuedOffline = false,
             errorMessage = null,
             showReflectionDialog = true,
         )
+    }
+
+    /**
+     * The save never reached the server: the day sits in the offline outbox and
+     * `PendingSaveWorker` will flush it. Nothing error-shaped here — the form
+     * shows the „v telefonu" note instead; [finished] stays false, so the host
+     * does not navigate away from a check-in the owner may still want to review.
+     */
+    fun markQueuedOffline() {
+        state = state.copy(saving = false, queuedOffline = true, errorMessage = null)
     }
 
     /** The user closed the reflection window; another save is what brings it back. */
@@ -279,7 +299,7 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
     }
 
     fun markError(message: String?) {
-        state = state.copy(saving = false, errorMessage = message)
+        state = state.copy(saving = false, queuedOffline = false, errorMessage = message)
     }
 
     /** The AI request is in flight; a previous failure is dropped (one state at a time). */
@@ -310,6 +330,6 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
     }
 
     private fun update(entry: DiaryEntry) {
-        state = state.copy(entry = entry, saved = false)
+        state = state.copy(entry = entry, saved = false, queuedOffline = false)
     }
 }

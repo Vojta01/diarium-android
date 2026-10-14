@@ -16,6 +16,7 @@ import androidx.core.content.ContextCompat
 import cz.digitalnivedomi.diarium.auth.AuthManager
 import cz.digitalnivedomi.diarium.auth.AuthStateHolder
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.fcm.FcmTokenRegistrar
 import cz.digitalnivedomi.diarium.notifications.EXTRA_OPEN_REPORT_TYPE
 import cz.digitalnivedomi.diarium.notifications.EXTRA_OPEN_ROUTE
@@ -62,7 +63,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        sessionStore = SessionStore(this)
+        sessionStore = AppClients.sessionStore(this)
         authState = AuthStateHolder(sessionStore)
         // onSessionSaved flips the Compose gate; a cold start with a stored
         // session is already AUTHENTICATED from the SessionStore.

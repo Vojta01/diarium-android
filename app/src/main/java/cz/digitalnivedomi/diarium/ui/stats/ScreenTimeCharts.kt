@@ -584,7 +584,9 @@ private fun SummaryCell(label: String, value: String, modifier: Modifier = Modif
 private fun SelectedDayCard(day: ScreenTimeDay, entry: StatsDay?, onClose: () -> Unit) {
     val seconds = day.seconds ?: 0
     val apps = entry?.topApps?.sortedByDescending { it.minutes }.orEmpty()
-    val appsSeconds = apps.sumOf { it.minutes * 60 }
+    // Round per app: the model keeps fractional minutes so a 30–59 s app still
+    // reads as its true share instead of being truncated to zero.
+    val appsSeconds = apps.sumOf { Math.round(it.minutes * 60).toInt() }
     val other = (seconds - appsSeconds).coerceAtLeast(0)
 
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
@@ -610,8 +612,8 @@ private fun SelectedDayCard(day: ScreenTimeDay, entry: StatsDay?, onClose: () ->
             apps.forEach { app ->
                 AppRow(
                     name = app.app,
-                    seconds = app.minutes * 60,
-                    share = if (seconds > 0) (app.minutes * 60).toDouble() / seconds else 0.0,
+                    seconds = Math.round(app.minutes * 60).toInt(),
+                    share = if (seconds > 0) (app.minutes * 60) / seconds else 0.0,
                     dotColor = accentFor(app.app),
                 )
                 VSpace(8)

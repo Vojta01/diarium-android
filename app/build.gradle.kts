@@ -93,7 +93,11 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
-            isMinifyEnabled = false
+            // R8 (minify + resource shrink) — the release APK ships only the code
+            // it can reach. proguard-rules.pro covers the bits R8 cannot see:
+            // Tink/Firebase reflection and the WorkManager worker classes.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             val stableSigning = signingConfigs.findByName("release")
             if (stableSigning == null) {

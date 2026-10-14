@@ -38,9 +38,11 @@ import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.core.data.NoteTemplate
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
+import cz.digitalnivedomi.diarium.core.data.QueuedOfflineException
 import cz.digitalnivedomi.diarium.core.data.Scale
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
+import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import cz.digitalnivedomi.diarium.ui.checkin.components.ActivitiesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.CheckInGoalsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.DateNav
@@ -247,14 +249,25 @@ fun CheckInScreen(
         }
         holder.markSaving()
         scope.launch {
-            persistEntry()
-                .onSuccess {
-                    holder.markSaved()
-                    // The diary just changed under the goals: recompute the read-only
-                    // progress so the section reflects the save without a reload.
-                    goalProgress = goalsRepo?.loadProgress()
+            val result = persistEntry()
+            if (result.isSuccess) {
+                holder.markSaved()
+                // The diary just changed under the goals: recompute the read-only
+                // progress so the section reflects the save without a reload.
+                goalProgress = goalsRepo?.loadProgress()
+            } else {
+                val error = result.exceptionOrNull()
+                if (error is QueuedOfflineException) {
+                    // Offline: the day is safe in the outbox (PendingSaveStore).
+                    // The card says „Uloženo v telefonu…"; the reflection window
+                    // stays closed on purpose — it needs the server.
+                    holder.markQueuedOffline()
+                    drafts?.clear(holder.date)
+                    PendingSaveWorker.enqueue(context)
+                } else {
+                    holder.markError(error?.message ?: "Uložení se nezdařilo.")
                 }
-                .onFailure { holder.markError(it.message ?: "Uložení se nezdařilo.") }
+            }
         }
     }
 
@@ -346,8 +359,18 @@ fun CheckInScreen(
                 holder.markSaving()
                 val stored = persistEntry()
                 if (stored.isFailure) {
-                    holder.markError(stored.exceptionOrNull()?.message ?: "Uložení se nezdařilo.")
-                    holder.markReflectionError("Nejdřív je potřeba uložit dnešní zápis.")
+                    if (stored.exceptionOrNull() is QueuedOfflineException) {
+                        // Offline: the entry is in the outbox. The reflection is a
+                        // server call, so it waits for the flush — say so instead of
+                        // an error the user cannot act on.
+                        holder.markQueuedOffline()
+                        drafts?.clear(holder.date)
+                        PendingSaveWorker.enqueue(context)
+                        holder.markReflectionError("Zápis je uložený v telefonu — reflexi vygeneruješ po připojení.")
+                    } else {
+                        holder.markError(stored.exceptionOrNull()?.message ?: "Uložení se nezdařilo.")
+                        holder.markReflectionError("Nejdřív je potřeba uložit dnešní zápis.")
+                    }
                     return@launch
                 }
                 // Not markSaved(): the manual flow must not pop the window open by
@@ -586,6 +609,28 @@ fun CheckInScreen(
                     Spacer(Modifier.width(10.dp))
                     Text(
                         text = "Uloženo",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextPrimary,
+                    )
+                }
+            }
+        }
+
+        if (state.queuedOffline) {
+            // Saved while offline: it reads as saved (it is — on the phone), with
+            // the send note instead of the reflection window. See PendingSaveWorker.
+            Spacer(Modifier.height(10.dp))
+            GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "📥",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = IndigoLight,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = "Uloženo v telefonu — odešle se, jakmile budeš online.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextPrimary,
                     )

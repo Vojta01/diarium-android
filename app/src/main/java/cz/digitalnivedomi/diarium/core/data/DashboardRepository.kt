@@ -90,6 +90,13 @@ data class DashboardData(
      * calendar.
      */
     val month: List<DashboardDay> = emptyList(),
+    /**
+     * „Tenhle den v historii" — the best memory among the 1-year / 6-month /
+     * 1-month lookbacks („Před rokem" wins over „Před měsícem"). Null when the
+     * render came from the cache (the lookbacks live outside the cached window)
+     * or when nothing qualified. See [pickBestMemory].
+     */
+    val onThisDay: OnThisDayMemory? = null,
 )
 
 /**
@@ -136,7 +143,31 @@ class DashboardRepository(private val entries: EntriesRepository) {
      */
     suspend fun load(today: String = LocalDate.now().toString()): Result<DashboardData> {
         val from = LocalDate.parse(today).minusDays((LOAD_DAYS - 1).toLong()).toString()
-        return entries.loadRange(from = from, to = today).map { rows -> derive(today, rows) }
+        return entries.loadRange(from = from, to = today).map { rows ->
+            val data = derive(today, rows)
+            // The memory lane points at days outside the 30-day window, so its
+            // three candidate dates are fetched on top — best effort: a failure
+            // just leaves the card off. entryByDate is merged so a tap on the
+            // memory can open the same day-detail window the week strip uses.
+            val memoryEntries = entries.loadDates(targetMemoryDates(today).map { it.second })
+            if (memoryEntries.isEmpty()) {
+                data
+            } else {
+                val byDate = data.entryByDate + memoryEntries
+                data.copy(onThisDay = pickBestMemory(today, byDate), entryByDate = byDate)
+            }
+        }
+    }
+
+    /**
+     * The dashboard as the local snapshot last saw it, or null when nothing is
+     * cached — the screen then shows its skeletons exactly as before. No memory
+     * lane here: its lookback dates sit outside the cached window by design.
+     */
+    suspend fun loadCached(today: String = LocalDate.now().toString()): DashboardData? {
+        val from = LocalDate.parse(today).minusDays((LOAD_DAYS - 1).toLong()).toString()
+        val rows = entries.loadRangeCachedFirst(from = from, to = today) ?: return null
+        return derive(today, rows)
     }
 
     companion object {
