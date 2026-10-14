@@ -438,7 +438,7 @@ private fun GoalEditorDialog(
 
     val clean = name.trim()
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo, opaque = true) {
             Text(
                 text = "✏️ Upravit cíl",
                 style = MaterialTheme.typography.titleLarge,

@@ -288,8 +288,10 @@ class ReportGeneratorTest {
         val userPrompt = JSONObject(deepSeekRequests.single().body!!)
             .getJSONArray("messages").getJSONObject(1).getString("content")
         assertTrue(userPrompt.startsWith("👤 Uživatel: Vojta (narozen 1990)\n"))
-        // sport is logged on 10-05 and 10-06: weekly count 2/3, streak 2 → unmet + 🔥.
-        assertTrue(userPrompt.contains("- Běhání: 2/3 (týden) — zbývá 1; série 🔥2"))
+        // sport is logged on 10-05 and 10-06, but "today" is Monday 2026-10-12:
+        // the CALENDAR week starts today, so the weekly count is 0/3 — the streak
+        // still sees the two consecutive logged days.
+        assertTrue(userPrompt.contains("- Běhání: 0/3 (týden) — zbývá 3; série 🔥2"))
     }
 
     // ── fixtures / helpers ──────────────────────────────────────────────────

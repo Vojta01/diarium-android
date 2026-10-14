@@ -1,6 +1,7 @@
 package cz.digitalnivedomi.diarium.core.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -67,10 +68,11 @@ class GoalsHistoryTest {
     @Test
     fun `a period is met when its window reaches the target`() {
         val days = listOf(day("2026-10-11", key), day("2026-10-12", key), day(today, key))
-        // current week window is 2026-10-06 … 2026-10-13
-        assertEquals(true, computeHistory(days, goal("weekly", target = 3), today).last())
+        // the current calendar week is 2026-10-12 … 2026-10-13 (Monday … today);
+        // 2026-10-11 lies before it, in the previous week.
+        assertEquals(true, computeHistory(days, goal("weekly", target = 2), today).last())
         // one short of the target: a definite miss, not "no data"
-        assertEquals(false, computeHistory(days, goal("weekly", target = 4), today).last())
+        assertEquals(false, computeHistory(days, goal("weekly", target = 3), today).last())
     }
 
     @Test
@@ -154,33 +156,35 @@ class GoalsHistoryTest {
     // ── window shifting ─────────────────────────────────────────────────────
 
     @Test
-    fun `weekly periods shift the current window back whole weeks`() {
+    fun `weekly periods are whole calendar weeks, Monday to Sunday`() {
         val days = listOf(
-            day("2026-09-17", key), // 2026-09-15 … 2026-09-22, three weeks back
-            day("2026-09-30", key), // 2026-09-29 … 2026-10-06, one week back
-            day(today, key),        // 2026-10-06 … 2026-10-13, current
+            day("2026-09-16", key), // week 2026-09-14 … 2026-09-20, four weeks back
+            day("2026-09-30", key), // week 2026-09-28 … 2026-10-04, two weeks back
+            day(today, key),        // week 2026-10-12 … today, current
         )
         val history = computeHistory(days, goal("weekly"), today)
         assertEquals(8, history.size)
-        assertEquals(true, history[7])
-        assertEquals(true, history[6])
-        assertEquals(true, history[4])
+        assertEquals(true, history[7]) // current week
+        assertEquals(true, history[5]) // 2026-09-28 … 2026-10-04
+        assertEquals(true, history[3]) // 2026-09-14 … 2026-09-20
         assertEquals(3, history.count { it == true })
         assertEquals(5, history.count { it == null })
     }
 
     @Test
-    fun `monthly periods shift the current window back whole calendar months`() {
+    fun `monthly periods are whole calendar months`() {
         val days = listOf(
-            day("2026-08-20", key), // 2026-08-13 … 2026-09-13, one month back
-            day("2026-10-01", key), // 2026-09-13 … 2026-10-13, current
+            day("2026-08-20", key), // August, two months back
+            day("2026-09-15", key), // September, one month back
+            day("2026-10-01", key), // October, current
         )
         val history = computeHistory(days, goal("monthly"), today)
         assertEquals(6, history.size)
-        assertEquals(true, history[5])
-        assertEquals(true, history[4])
-        assertEquals(2, history.count { it == true })
-        assertEquals(4, history.count { it == null })
+        assertEquals(true, history[5]) // current month
+        assertEquals(true, history[4]) // September
+        assertEquals(true, history[3]) // August
+        assertEquals(3, history.count { it == true })
+        assertEquals(3, history.count { it == null })
     }
 
     @Test
@@ -193,14 +197,45 @@ class GoalsHistoryTest {
         )
         val g = goal("weekly", target = 2)
         val count = countActivityInPeriod(days, key, periodStart(today, "weekly"), today)
-        assertEquals(3, count)
+        assertEquals(1, count) // the current week is 2026-10-12 … 2026-10-13
 
         val card = progress("weekly", 2, days)
         assertEquals(count, card.count)
         assertEquals(count >= g.targetCount, card.history.last())
-        assertTrue(card.targetMet)
-        // The week before the current one holds only the boundary day 2026-10-06,
-        // one logged day — under target, so previousMet is a definite false.
-        assertEquals(false, card.previousMet)
+        assertFalse(card.targetMet)
+        // The calendar week before the current one (2026-10-05 … 2026-10-11)
+        // logged the activity on two days: at target 2 that one was met.
+        assertEquals(true, card.previousMet)
+    }
+
+    // ── calendar helpers ────────────────────────────────────────────────────
+
+    @Test
+    fun `weekStart pins the Monday boundary`() {
+        assertEquals("2026-10-12", weekStart("2026-10-12")) // Monday maps to itself
+        assertEquals("2026-10-12", weekStart("2026-10-13"))
+        assertEquals("2026-10-12", weekStart("2026-10-18")) // Sunday stays in its week
+        assertEquals("2026-10-05", weekStart("2026-10-11")) // the week before's Sunday
+        assertEquals("2026-09-28", weekStart("2026-10-01"))
+    }
+
+    @Test
+    fun `calendar month helpers clamp to real month edges`() {
+        assertEquals("2026-10-01", firstOfMonth("2026-10-13"))
+        assertEquals("2026-10-31", lastDayOfMonth("2026-10-13"))
+        assertEquals("2026-02-28", lastDayOfMonth("2026-02-10"))
+        assertEquals("2024-02-29", lastDayOfMonth("2024-02-10"))
+        assertEquals("2026-02-01", periodStart("2026-02-27", "monthly"))
+        assertEquals("2026-09-07", periodStart("2026-09-13", "weekly"))
+    }
+
+    @Test
+    fun `periodEndBack returns full past calendar windows`() {
+        assertEquals("2026-10-13", periodEndBack("2026-10-13", "weekly", 0))
+        assertEquals("2026-10-11", periodEndBack("2026-10-13", "weekly", 1))
+        assertEquals("2026-10-04", periodEndBack("2026-10-13", "weekly", 2))
+        assertEquals("2026-10-13", periodEndBack("2026-10-13", "monthly", 0))
+        assertEquals("2026-09-30", periodEndBack("2026-10-13", "monthly", 1))
+        assertEquals("2026-08-31", periodEndBack("2026-10-13", "monthly", 2))
     }
 }

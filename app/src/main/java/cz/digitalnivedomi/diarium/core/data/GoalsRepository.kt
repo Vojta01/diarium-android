@@ -15,7 +15,10 @@ import java.util.Locale
  * Contract copied from the web app's goals feature:
  *  - table `goals`: id, user_id, activity_key, name, target_count, frequency
  *    ('daily' | 'weekly' | 'monthly'), is_active, created_at.
- *  - week  = (today − 7 days) … today inclusive; month = (today − 1 month) … today.
+ *  - week  = the current CALENDAR week (Monday … today); month = the current
+ *    CALENDAR month (the 1st … today). Past periods are their whole calendar
+ *    weeks (Mon–Sun) / months. (Rolling windows until 2026-10-14 — the owner
+ *    wants „tento týden/měsíc" to mean the calendar week and month.)
  *  - the period count is the number of **days** in the range whose `entries`
  *    row lists `goal.activity_key` in its `activities` array — one count per day,
  *    never per occurrence. Values are compared through [normalizeActivityValue],
@@ -409,31 +412,34 @@ internal fun dateMinusDays(iso: String, days: Int): String {
 
 /**
  * Start of the goal's current period, inclusive:
- * daily → today, weekly → today − 7 days (the web's window), monthly → one
- * calendar month back (clamped to the shorter month's last day).
+ * daily → today, weekly → this week's Monday (Mon–Sun), monthly → the 1st of
+ * this month. The windows are CALENDAR periods, not rolling ones.
  */
 internal fun periodStart(todayIso: String, frequency: String): String = when (normalizeFrequency(frequency)) {
     "daily" -> todayIso
-    "monthly" -> minusOneMonth(todayIso)
-    else -> dateMinusDays(todayIso, 7)
+    "monthly" -> firstOfMonth(todayIso)
+    else -> weekStart(todayIso)
 }
 
 /**
- * [todayIso] moved [periodsBack] whole periods back: daily by days, weekly by
- * 7-day weeks and monthly by whole calendar months (clamped like
- * [minusOneMonth]). `periodsBack = 0` returns [todayIso] itself, so [periodStart]
- * of the result reproduces the current period's window exactly — that is what
- * keeps history's last item on the same window as the current `count`.
+ * The END date of the period [periodsBack] whole CALENDAR periods back:
+ * daily → that day; weekly → that week's Sunday (the current week clamps to
+ * [todayIso]); monthly → that month's last day (the current month clamps to
+ * [todayIso]). `periodStart` of the result reproduces the window exactly — the
+ * current period is start…today, every earlier one its full calendar window —
+ * which keeps history's last item on the same window as the current `count`.
  */
 internal fun periodEndBack(todayIso: String, frequency: String, periodsBack: Int): String =
     when (normalizeFrequency(frequency)) {
         "daily" -> dateMinusDays(todayIso, periodsBack)
         "monthly" -> {
-            var iso = todayIso
-            repeat(periodsBack) { iso = minusOneMonth(iso) }
-            iso
+            if (periodsBack <= 0) todayIso
+            else lastDayOfMonth(monthsBack(todayIso, periodsBack))
         }
-        else -> dateMinusDays(todayIso, 7 * periodsBack)
+        else -> {
+            if (periodsBack <= 0) todayIso
+            else dateMinusDays(weekStart(todayIso), 7 * periodsBack - 6)
+        }
     }
 
 /** Czech period label shown on the card. */
@@ -463,6 +469,44 @@ internal fun minusOneMonth(iso: String): String {
     val targetYear = if (month == 1) year - 1 else year
     val clampedDay = day.coerceAtMost(daysInMonth(targetYear, targetMonth))
     return formatIso(targetYear, targetMonth, clampedDay)
+}
+
+/** [iso] moved back [months] whole calendar months (clamped day, like [minusOneMonth]). */
+internal fun monthsBack(iso: String, months: Int): String {
+    var out = iso
+    repeat(months) { out = minusOneMonth(out) }
+    return out
+}
+
+/**
+ * Monday of [iso]'s ISO week — Czech calendar weeks run Monday … Sunday. Epoch
+ * day 0 (1970-01-01) was a Thursday, so the ISO weekday is `((day + 3) mod 7) + 1`
+ * with Monday = 1; the modulo is kept positive for dates before 1970.
+ */
+internal fun weekStart(iso: String): String {
+    val day = isoToEpochDay(iso) ?: return iso
+    val dow = ((day + 3) % 7 + 7) % 7 + 1
+    return epochDayToIso(day - (dow - 1))
+}
+
+/** First day of [iso]'s calendar month. */
+internal fun firstOfMonth(iso: String): String {
+    val parts = iso.trim().split("-")
+    if (parts.size != 3) return iso
+    val year = parts[0].toIntOrNull() ?: return iso
+    val month = parts[1].toIntOrNull() ?: return iso
+    if (month !in 1..12) return iso
+    return formatIso(year, month, 1)
+}
+
+/** Last day of [iso]'s calendar month (leap-year aware through [daysInMonth]). */
+internal fun lastDayOfMonth(iso: String): String {
+    val parts = iso.trim().split("-")
+    if (parts.size != 3) return iso
+    val year = parts[0].toIntOrNull() ?: return iso
+    val month = parts[1].toIntOrNull() ?: return iso
+    if (month !in 1..12) return iso
+    return formatIso(year, month, daysInMonth(year, month))
 }
 
 private fun daysInMonth(year: Int, month: Int): Int = when (month) {

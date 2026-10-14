@@ -459,7 +459,7 @@ private fun GoalEditorDialog(
     val valid = name.isNotBlank() && activityKey.isNotBlank() && targetCount > 0
 
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo, opaque = true) {
             Text(
                 text = if (initial == null) "🎯 Nový cíl" else "✏️ Upravit cíl",
                 style = MaterialTheme.typography.titleLarge,
@@ -596,7 +596,7 @@ private fun ActivityPickerDialog(
     onDismiss: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo, opaque = true) {
             Text(
                 text = "Vybrat aktivitu",
                 style = MaterialTheme.typography.titleLarge,
@@ -701,7 +701,7 @@ private fun NewActivityDialog(
     val valid = label.isNotBlank() && !saving
 
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo, opaque = true) {
             Text(
                 text = "＋ Nová aktivita",
                 style = MaterialTheme.typography.titleLarge,
@@ -750,7 +750,7 @@ private fun NewActivityDialog(
 @Composable
 private fun DeleteGoalDialog(goal: Goal, onDismiss: () -> Unit, onConfirm: () -> Unit) {
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Danger) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Danger, opaque = true) {
             Text(
                 text = "🗑 Smazat cíl?",
                 style = MaterialTheme.typography.titleLarge,

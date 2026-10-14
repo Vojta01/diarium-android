@@ -426,6 +426,19 @@ class PickersRepository(
         ).isSuccessful
     }
 
+    /**
+     * True delete: the row is removed outright (`DELETE`), unlike [removeHabit]'s
+     * hide. Only the account's own habits may be deleted — the wizard offers it for
+     * `source == "user"` rows; a catalogue default has no row to delete (an
+     * unchecked default is *hidden* instead). Past entries keep the key in their
+     * `habits` object and are untouched.
+     */
+    suspend fun deleteHabit(key: String): Boolean = withContext(Dispatchers.IO) {
+        val userId = session.userId() ?: return@withContext false
+        if (key.isBlank()) return@withContext false
+        client.delete("user_habits", mapOf("user_id" to "eq.$userId", "key" to "eq.$key")).isSuccessful
+    }
+
     // ── internals ───────────────────────────────────────────────────────────
 
     private fun readUserActivities(): List<ActivityDef> {

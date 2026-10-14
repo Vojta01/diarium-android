@@ -398,6 +398,19 @@ class PickersRepositoryHabitsTest {
         assertFalse(sent.any { it.method == "DELETE" })
     }
 
+    @Test
+    fun `deleteHabit removes the row outright`() = runTest {
+        assertTrue(repository().deleteHabit("masturb5"))
+
+        val delete = sent.single { it.method == "DELETE" }
+        assertTrue(delete.url.startsWith("$BASE_URL/user_habits?"))
+        val query = decoded(delete)
+        assertTrue(query.contains("user_id=eq.$USER_ID"))
+        assertTrue(query.contains("key=eq.masturb5"))
+        // A true delete carries no body: the row is gone, not hidden.
+        assertTrue(delete.body == null)
+    }
+
     private fun decoded(request: HttpRequest): String =
         URLDecoder.decode(request.url.substringAfter('?'), Charsets.UTF_8.name())
 

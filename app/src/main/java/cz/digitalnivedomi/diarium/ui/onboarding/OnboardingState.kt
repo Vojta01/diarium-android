@@ -106,6 +106,20 @@ class OnboardingState(
      */
     fun habitsToRestore(): List<HabitChoice> = habits.filter { it.checked && !it.wasActive }
 
+    /**
+     * Rows deleted in this run (the account's own habits). The finish step deletes
+     * them first, before any hide/restore write — and leaving the wizard early
+     * writes nothing, so a staged delete is never half-applied.
+     */
+    var deletedHabits: List<HabitDef> = emptyList()
+        private set
+
+    /** Stages a true delete: the row leaves the wizard now, the database on finish. */
+    fun deleteHabit(def: HabitDef) {
+        deletedHabits = deletedHabits + def
+        habits = habits.filterNot { it.key == def.key }
+    }
+
     /** What the wizard saw when it loaded — only these goals may later be deleted. */
     private var seenGoals: List<Goal> = emptyList()
 

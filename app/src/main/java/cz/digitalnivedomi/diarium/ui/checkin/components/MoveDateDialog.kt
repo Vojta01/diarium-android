@@ -95,7 +95,7 @@ private fun OverwriteConfirmDialog(
     onConfirm: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
-        GlassCard(modifier = Modifier.fillMaxWidth(), accent = ErrorRed) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = ErrorRed, opaque = true) {
             Text(
                 text = "🗓 Přesunout zápis?",
                 style = MaterialTheme.typography.titleLarge,

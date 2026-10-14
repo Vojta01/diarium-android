@@ -200,6 +200,7 @@ fun OnboardingScreen(
         val birthYear = state.birthYearValue()
         val key = state.aiKey
         val enableAi = aiEnabled
+        val habitsToDelete = state.deletedHabits
         val habitsToHide = state.habitsToHide().map { it.toHabitDef() }
         val habitsToRestore = state.habitsToRestore()
         scope.launch {
@@ -213,6 +214,9 @@ fun OnboardingScreen(
                 runCatching { if (key.isNotBlank()) deps.aiKeys.saveKey(key) }
                     .onFailure { Log.w(FINISH_TAG, "aiKeys.saveKey failed", it) }
                 runCatching {
+                    // Deletes first: a habit deleted in the wizard must never also
+                    // be written as a hide.
+                    habitsToDelete.forEach { deps.pickers.deleteHabit(it.key) }
                     habitsToHide.forEach { deps.pickers.removeHabit(it) }
                     habitsToRestore.forEach { choice ->
                         deps.pickers.updateHabit(choice.key, choice.label, choice.icon, choice.isNegative)
@@ -729,6 +733,17 @@ fun OnboardingScreen(
             habit = editingHabit,
             saving = savingHabit,
             error = habitError,
+            hardRemove = editingHabit?.source == "user",
+            onRemove = editingHabit
+                ?.takeIf { it.source == "user" }
+                ?.let { def ->
+                    {
+                        // Staged only: leaving the wizard must not delete anything.
+                        state.deleteHabit(def)
+                        showHabitDialog = false
+                        editingHabit = null
+                    }
+                },
             onDismiss = {
                 if (!savingHabit) {
                     showHabitDialog = false

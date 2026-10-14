@@ -112,6 +112,19 @@ class OnboardingStateTest {
     }
 
     @Test
+    fun `a deleted habit leaves the wizard and is staged for the database`() {
+        val state = stateWithHabits()
+        val sport = state.habits.first { it.key == "sport" }
+        state.deleteHabit(sport.toHabitDef())
+
+        assertTrue(state.habits.none { it.key == "sport" })
+        assertEquals(listOf("sport"), state.deletedHabits.map { it.key })
+        // A staged delete must never also ride along as a hide or a restore.
+        assertTrue(state.habitsToHide().none { it.key == "sport" })
+        assertTrue(state.habitsToRestore().none { it.key == "sport" })
+    }
+
+    @Test
     fun `toggling an unknown habit key leaves every row as it was`() {
         val state = stateWithHabits()
 

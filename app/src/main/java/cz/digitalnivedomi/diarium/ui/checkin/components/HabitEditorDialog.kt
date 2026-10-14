@@ -49,9 +49,10 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
  * With no [habit] the window is the create step instead — "Nový návyk", the icon well
  * already holding the `✅` the repository would default to anyway — and save hands the
  * values to the screen's [cz.digitalnivedomi.diarium.core.data.PickersRepository.addHabit].
- * An existing habit additionally offers "✕ Odebrat návyk", which swaps this window into
- * an inline confirm (no second dialog) and reports through [onRemove]; the wording there
- * says what survives, because removal is a hide, not a delete.
+ * An existing habit additionally offers a remove action — "✕ Odebrat návyk", or
+ * "🗑 Smazat návyk" with [hardRemove] for the wizard's own rows — which swaps this window
+ * into an inline confirm (no second dialog) and reports through [onRemove]; the wording
+ * says what survives for a hide, and that a delete cannot be taken back.
  *
  * The `key` is deliberately *not* editable: it is the join key the day's entries store
  * their ticks under, so renaming it would orphan them.
@@ -66,6 +67,12 @@ fun HabitEditorDialog(
     onDismiss: () -> Unit,
     onSave: (label: String, icon: String, isNegative: Boolean) -> Unit,
     onRemove: (() -> Unit)? = null,
+    /**
+     * True = a real delete (the wizard's own habits, removed on finish); false =
+     * the check-in's hide. Only the confirm wording differs: a hide says what
+     * survives, a delete says it cannot be taken back.
+     */
+    hardRemove: Boolean = false,
     /** A failed save, reported by the owning screen; shown above the buttons. */
     error: String? = null,
 ) {
@@ -105,16 +112,19 @@ fun HabitEditorDialog(
                 // their ticks — so it is confirmed in words before anything is
                 // written, in this same window (see MoveDateDialog's overwrite step).
                 Text(
-                    text = "Odebrat návyk?",
+                    text = if (hardRemove) "Smazat návyk?" else "Odebrat návyk?",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = TextPrimary,
                 )
                 Spacer(Modifier.height(6.dp))
-                SectionHint("Historie zůstane.")
+                SectionHint(
+                    if (hardRemove) "Návrat není možný. Historie v deníku zůstane."
+                    else "Historie zůstane.",
+                )
                 Spacer(Modifier.height(14.dp))
                 DestructiveButton(
-                    text = "Odebrat",
+                    text = if (hardRemove) "Smazat" else "Odebrat",
                     enabled = !saving,
                     testTag = "habit_remove_confirm",
                 ) { onRemove?.invoke() }
@@ -200,7 +210,10 @@ fun HabitEditorDialog(
             SecondaryButton(text = "Zrušit", testTag = "habit_cancel") { onDismiss() }
             if (habit != null && onRemove != null) {
                 Spacer(Modifier.height(8.dp))
-                DestructiveButton(text = "✕ Odebrat návyk", testTag = "habit_remove") {
+                DestructiveButton(
+                    text = if (hardRemove) "🗑 Smazat návyk" else "✕ Odebrat návyk",
+                    testTag = "habit_remove",
+                ) {
                     confirmingRemove = true
                 }
             }

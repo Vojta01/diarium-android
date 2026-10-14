@@ -155,13 +155,13 @@ class GoalsRepositoryTest {
     // ── periods ─────────────────────────────────────────────────────────────
 
     @Test
-    fun `week period starts seven days back`() {
-        assertEquals("2026-01-08", periodStart("2026-01-15", "weekly"))
+    fun `week period starts on this week's Monday`() {
+        assertEquals("2026-01-12", periodStart("2026-01-15", "weekly"))
     }
 
     @Test
-    fun `month period starts one month back`() {
-        assertEquals("2025-12-15", periodStart("2026-01-15", "monthly"))
+    fun `month period starts on the 1st`() {
+        assertEquals("2026-01-01", periodStart("2026-01-15", "monthly"))
     }
 
     @Test
@@ -171,7 +171,7 @@ class GoalsRepositoryTest {
 
     @Test
     fun `unknown frequency behaves as weekly`() {
-        assertEquals("2026-01-08", periodStart("2026-01-15", "neweekly"))
+        assertEquals("2026-01-12", periodStart("2026-01-15", "neweekly"))
         assertEquals("týden", periodLabelFor("neweekly"))
     }
 
