@@ -38,6 +38,22 @@ internal fun JSONArray?.stringList(): List<String> {
 }
 
 /**
+ * Unwraps a *double-encoded* array column: a historic import stored the value
+ * as a JSON string whose text is the array (`"[\"cteni\"]"` instead of
+ * `["cteni"]`). PostgREST delivers that string as-is and [optJSONArray] would
+ * return null — reading the whole column as empty. The `entries` import of
+ * 27 Jul 2026 left the entire pre-July history this way (activities/weather,
+ * ~1 100 rows), so every array reader goes through here.
+ */
+internal fun JSONObject?.optArrayTolerant(key: String): JSONArray? {
+    if (this == null) return null
+    optJSONArray(key)?.let { return it }
+    val raw = optString(key, "")
+    if (raw.isBlank() || raw == "null") return null
+    return runCatching { JSONArray(raw) }.getOrNull()
+}
+
+/**
  * Reads exactly [slots] strings **in place**, keeping an empty slot empty.
  *
  * Gratitude needs this: the draft has to remember that the user filled the

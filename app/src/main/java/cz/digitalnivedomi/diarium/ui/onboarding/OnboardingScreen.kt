@@ -682,21 +682,13 @@ fun OnboardingScreen(
                                     testTag = "onboarding_custom_frequency_$index",
                                 )
                                 Spacer(Modifier.width(6.dp))
-                                // The cross sits centred in a slot exactly as wide as the
-                                // template rows' TogglePill (44.dp), so the right edge of
-                                // every row lines up.
-                                Box(
-                                    modifier = Modifier.width(44.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        text = "✕",
-                                        modifier = Modifier
-                                            .clickable { state.removeCustomGoal(index) }
-                                            .padding(6.dp),
-                                        color = TextSecondary,
-                                    )
-                                }
+                                // Same toggle as the template rows — switched off means
+                                // the goal is dropped on finish: a fresh custom goal is
+                                // not created, a stored one is deleted.
+                                TogglePill(
+                                    checked = goal.checked,
+                                    testTag = "onboarding_custom_$index",
+                                ) { state.toggleCustomGoal(index) }
                             }
                         }
                     }

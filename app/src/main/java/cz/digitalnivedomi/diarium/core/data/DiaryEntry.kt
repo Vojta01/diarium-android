@@ -113,13 +113,13 @@ data class DiaryEntry(
             moodEmoji = json.plainString("moodEmoji"),
             sleepQuality = json.optInt("sleepQuality", 0),
             stress = json.optInt("stress", 0),
-            activities = json.optJSONArray("activities").stringList(),
+            activities = json.optArrayTolerant("activities").stringList(),
             habits = json.optJSONObject("habits").booleanMap(),
-            gratitude = json.optJSONArray("gratitude").slotList(GRATITUDE_SLOTS),
+            gratitude = json.optArrayTolerant("gratitude").slotList(GRATITUDE_SLOTS),
             note = json.plainString("note"),
             photoPath = json.plainString("photoPath").takeIf { it.isNotBlank() },
             scaleValues = json.optJSONObject("scaleValues").intMap(),
-            weather = json.optJSONArray("weather").stringList(),
+            weather = json.optArrayTolerant("weather").stringList(),
         )
     }
 }

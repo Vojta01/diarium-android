@@ -186,7 +186,7 @@ class OnboardingState(
         }
     }
 
-    /** Adds a custom goal; blank names/keys are refused (the dialog validates too). */
+    /** Adds a custom goal, ticked; blank names/keys are refused (the dialog validates too). */
     fun addCustomGoal(name: String, activityKey: String, targetCount: Int, frequency: String) {
         val cleanName = name.trim()
         val cleanKey = activityKey.trim()
@@ -199,9 +199,15 @@ class OnboardingState(
         )
     }
 
-    fun removeCustomGoal(index: Int) {
-        if (index in customGoals.indices) {
-            customGoals = customGoals.filterIndexed { position, _ -> position != index }
+    /**
+     * Flips one custom row's toggle. Like an unchecked template, a row switched off
+     * is dropped on finish: a goal that mirrors a stored row is deleted from the
+     * account, a goal created in this run is simply never written.
+     */
+    fun toggleCustomGoal(index: Int) {
+        if (index !in customGoals.indices) return
+        customGoals = customGoals.mapIndexed { position, goal ->
+            if (position == index) goal.copy(checked = !goal.checked) else goal
         }
     }
 
@@ -262,7 +268,7 @@ class OnboardingState(
     fun plannedGoals(): List<PlannedGoal> =
         templates.filter { it.checked }.map {
             PlannedGoal(goalNameFor(it.baseName, it.targetCount, it.frequency), it.activityKey, it.targetCount, it.frequency)
-        } + customGoals.map { PlannedGoal(it.name, it.activityKey, it.targetCount, it.frequency) }
+        } + customGoals.filter { it.checked }.map { PlannedGoal(it.name, it.activityKey, it.targetCount, it.frequency) }
 
     /**
      * [plannedGoals] minus the goals the account already has (same `activityKey`),
@@ -296,7 +302,7 @@ class OnboardingState(
                 targetCount = template.targetCount,
                 frequency = template.frequency,
             )
-        } + customGoals.mapNotNull { goal ->
+        } + customGoals.filter { it.checked }.mapNotNull { goal ->
             val row = existing[goal.activityKey] ?: return@mapNotNull null
             if (goal.existingId == null) return@mapNotNull null
             if (row.name == goal.name && row.targetCount == goal.targetCount && row.frequency == goal.frequency) {
@@ -313,7 +319,7 @@ class OnboardingState(
 
     /**
      * Goals that were shown at load (a template or an „existing" custom row) and are
-     * no longer selected — unchecked template, or a custom row removed with „✕". Only
+     * no longer selected — an unchecked template or custom row. Only
      * goals the wizard actually saw can be deleted: a failed load (empty [seenGoals])
      * can therefore never wipe the account's goals.
      */
@@ -435,6 +441,12 @@ data class CustomGoal(
     val frequency: String,
     /** Set when the row mirrors a goal that already exists in the account. */
     val existingId: String? = null,
+    /**
+     * The row's toggle, mirroring a template's `checked`: switched off means the
+     * goal is dropped on finish — deleted when it mirrors a stored row, never
+     * created when it is new.
+     */
+    val checked: Boolean = true,
 )
 
 /** One goal the finish step should create, in `GoalsRepository.create` shape. */

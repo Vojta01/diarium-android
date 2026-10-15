@@ -278,16 +278,18 @@ class OnboardingStateTest {
     }
 
     @Test
-    fun `removeCustomGoal ignores out-of-range indexes`() {
+    fun `toggleCustomGoal flips a row and ignores out-of-range indexes`() {
         val state = OnboardingState()
         state.addCustomGoal("Běh", "beh", 3, "weekly")
-        state.addCustomGoal("Jóga", "joga", 2, "weekly")
 
-        state.removeCustomGoal(5)
-        assertEquals(2, state.customGoals.size)
+        state.toggleCustomGoal(5) // ignored
+        assertTrue(state.customGoals[0].checked)
 
-        state.removeCustomGoal(0)
-        assertEquals(listOf("joga"), state.customGoals.map { it.activityKey })
+        state.toggleCustomGoal(0)
+        assertFalse(state.customGoals[0].checked)
+
+        state.toggleCustomGoal(0)
+        assertTrue(state.customGoals[0].checked)
     }
 
     // ── birth year ───────────────────────────────────────────────────────────
@@ -422,13 +424,25 @@ class OnboardingStateTest {
     }
 
     @Test
-    fun `a custom goal removed with the cross is deleted on finish`() {
+    fun `an unchecked custom goal is deleted on finish`() {
         val state = OnboardingState()
         state.loadExistingGoals(listOf(goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly")))
-        state.removeCustomGoal(0)
+        state.toggleCustomGoal(0) // prefilled as checked -> off
 
         val existing = mapOf("studena_sprcha" to goal("g2", "studena_sprcha", "Studená sprcha", 4, "weekly"))
         assertEquals(listOf("g2"), state.goalsToDelete(existing))
+        assertTrue(state.goalsToCreate(existing).isEmpty())
+        assertTrue(state.goalsToUpdate(existing).isEmpty())
+    }
+
+    @Test
+    fun `a custom goal switched off is not created on finish`() {
+        val state = OnboardingState()
+        state.addCustomGoal("Běhat", "beh", 3, "weekly")
+        assertTrue("a ticked custom goal is planned", state.goalsToCreate(emptyMap()).isNotEmpty())
+
+        state.toggleCustomGoal(0)
+        assertTrue("a custom goal switched off must not be created", state.goalsToCreate(emptyMap()).isEmpty())
     }
 
     // ── item 22: the custom goal is editable like the templates ───────────────

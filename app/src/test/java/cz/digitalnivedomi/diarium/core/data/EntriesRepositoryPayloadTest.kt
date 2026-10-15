@@ -104,6 +104,20 @@ class EntriesRepositoryPayloadTest {
     }
 
     @Test
+    fun `fromRow unwraps a string-encoded activities column from the historic import`() {
+        // The import of 27 Jul 2026 stored activities/weather as JSON *strings*
+        // (`"[\"cteni\"]"`), not arrays; such a day must still surface both.
+        val row = JSONObject()
+            .put("mood", 4)
+            .put("activities", "[\"cteni\",\"trenink\"]")
+            .put("weather", "[\"déšť\"]")
+
+        val entry = EntriesRepository.fromRow(row)
+        assertEquals(listOf("cteni", "trenink"), entry.activities)
+        assertEquals(listOf("déšť"), entry.weather)
+    }
+
+    @Test
     fun `achievement payload reports photo and scale presence`() {
         val withBoth = EntriesRepository.buildAchievementsPayload(
             DiaryEntry(photoPath = "https://x/p.jpg", scaleValues = mapOf("energy" to 3)),
