@@ -29,7 +29,7 @@ class GoalsHistoryTest {
             goal = g,
             count = countActivityInPeriod(days, key, periodStart(today, frequency), today),
             streak = streakOf(activityDates(days, key, dateMinusDays(today, 365), today)),
-            history = computeHistory(days, g, today),
+            periods = computeHistory(days, g, today),
         )
     }
 
@@ -50,9 +50,9 @@ class GoalsHistoryTest {
         val days = listOf(day(today, key))
         listOf("daily" to 13, "weekly" to 7, "monthly" to 5).forEach { (frequency, olderCount) ->
             val history = computeHistory(days, goal(frequency), today)
-            assertEquals(true, history.last())
-            assertEquals(olderCount, history.count { it == null })
-            assertTrue(history.dropLast(1).all { it == null })
+            assertEquals(true, history.last().met)
+            assertEquals(olderCount, history.count { it.met == null })
+            assertTrue(history.dropLast(1).all { it.met == null })
         }
     }
 
@@ -60,7 +60,7 @@ class GoalsHistoryTest {
     fun `no entries at all means every period is null`() {
         val history = computeHistory(emptyList(), goal("daily"), today)
         assertEquals(14, history.size)
-        assertTrue(history.all { it == null })
+        assertTrue(history.all { it.met == null })
     }
 
     // ── met rule ────────────────────────────────────────────────────────────
@@ -70,23 +70,23 @@ class GoalsHistoryTest {
         val days = listOf(day("2026-10-11", key), day("2026-10-12", key), day(today, key))
         // the current calendar week is 2026-10-12 … 2026-10-13 (Monday … today);
         // 2026-10-11 lies before it, in the previous week.
-        assertEquals(true, computeHistory(days, goal("weekly", target = 2), today).last())
+        assertEquals(true, computeHistory(days, goal("weekly", target = 2), today).last().met)
         // one short of the target: a definite miss, not "no data"
-        assertEquals(false, computeHistory(days, goal("weekly", target = 3), today).last())
+        assertEquals(false, computeHistory(days, goal("weekly", target = 3), today).last().met)
     }
 
     @Test
     fun `a day counts once even when the key repeats`() {
         val days = listOf(day(today, key, key, key))
-        assertEquals(false, computeHistory(days, goal("daily", target = 2), today).last())
+        assertEquals(false, computeHistory(days, goal("daily", target = 2), today).last().met)
     }
 
     @Test
     fun `a day with other activities is a miss, not no data`() {
         val days = listOf(day("2026-10-12", "spanek"), day(today, key))
         val history = computeHistory(days, goal("daily"), today)
-        assertEquals(false, history[12]) // yesterday has a row, just not this activity
-        assertEquals(true, history[13])
+        assertEquals(false, history[12].met) // yesterday has a row, just not this activity
+        assertEquals(true, history[13].met)
     }
 
     // ── streak relationship ─────────────────────────────────────────────────
@@ -99,8 +99,8 @@ class GoalsHistoryTest {
 
         val streak = streakOf(activityDates(days, key, dateMinusDays(today, 365), today))
         assertEquals(3, streak)
-        assertEquals(streak, history.takeLastWhile { it == true }.size)
-        assertEquals(11, history.count { it == null })
+        assertEquals(streak, history.takeLastWhile { it.met == true }.size)
+        assertEquals(11, history.count { it.met == null })
     }
 
     @Test
@@ -113,8 +113,8 @@ class GoalsHistoryTest {
         val history = computeHistory(days, goal("daily"), today)
 
         assertEquals(3, streakOf(activityDates(days, key, dateMinusDays(today, 365), today)))
-        assertNull(history.last())
-        assertEquals(0, history.takeLastWhile { it == true }.size)
+        assertNull(history.last().met)
+        assertEquals(0, history.takeLastWhile { it.met == true }.size)
     }
 
     // ── previousMet / counters ──────────────────────────────────────────────
@@ -164,11 +164,11 @@ class GoalsHistoryTest {
         )
         val history = computeHistory(days, goal("weekly"), today)
         assertEquals(8, history.size)
-        assertEquals(true, history[7]) // current week
-        assertEquals(true, history[5]) // 2026-09-28 … 2026-10-04
-        assertEquals(true, history[3]) // 2026-09-14 … 2026-09-20
-        assertEquals(3, history.count { it == true })
-        assertEquals(5, history.count { it == null })
+        assertEquals(true, history[7].met) // current week
+        assertEquals(true, history[5].met) // 2026-09-28 … 2026-10-04
+        assertEquals(true, history[3].met) // 2026-09-14 … 2026-09-20
+        assertEquals(3, history.count { it.met == true })
+        assertEquals(5, history.count { it.met == null })
     }
 
     @Test
@@ -180,11 +180,11 @@ class GoalsHistoryTest {
         )
         val history = computeHistory(days, goal("monthly"), today)
         assertEquals(6, history.size)
-        assertEquals(true, history[5]) // current month
-        assertEquals(true, history[4]) // September
-        assertEquals(true, history[3]) // August
-        assertEquals(3, history.count { it == true })
-        assertEquals(3, history.count { it == null })
+        assertEquals(true, history[5].met) // current month
+        assertEquals(true, history[4].met) // September
+        assertEquals(true, history[3].met) // August
+        assertEquals(3, history.count { it.met == true })
+        assertEquals(3, history.count { it.met == null })
     }
 
     @Test
@@ -237,5 +237,87 @@ class GoalsHistoryTest {
         assertEquals("2026-10-13", periodEndBack("2026-10-13", "monthly", 0))
         assertEquals("2026-09-30", periodEndBack("2026-10-13", "monthly", 1))
         assertEquals("2026-08-31", periodEndBack("2026-10-13", "monthly", 2))
+    }
+
+    // ── period detail (window + logged days) ────────────────────────────────
+
+    @Test
+    fun `a period carries its window and the days that logged the activity`() {
+        val days = listOf(
+            day("2026-10-06", key),
+            day("2026-10-07", key),
+            day("2026-10-12", "spanek"),
+            day(today, key),
+        )
+        val history = computeHistory(days, goal("weekly", target = 2), today)
+
+        val previous = history[6] // 2026-10-05 … 2026-10-11
+        assertEquals("2026-10-05", previous.start)
+        assertEquals("2026-10-11", previous.end)
+        assertEquals(listOf("2026-10-06", "2026-10-07"), previous.dates)
+        assertEquals(2, previous.count)
+        assertEquals(true, previous.met)
+
+        val current = history.last() // 2026-10-12 … today, scored
+        assertEquals("2026-10-12", current.start)
+        assertEquals(listOf(today), current.dates)
+        assertEquals(false, current.met) // one day, target 2
+    }
+
+    @Test
+    fun `the running period reports its whole calendar window end`() {
+        // Scoring stops at today, but the window ends with the real period (month
+        // end, Sunday, today), so the detail can say "Probíhá — zbývá…".
+        assertEquals(
+            "2026-10-13",
+            computeHistory(listOf(day(today, key)), goal("daily"), today).last().end,
+        )
+        assertEquals(
+            "2026-10-18",
+            computeHistory(listOf(day(today, key)), goal("weekly"), today).last().end,
+        )
+        assertEquals(
+            "2026-10-31",
+            computeHistory(listOf(day(today, key)), goal("monthly"), today).last().end,
+        )
+    }
+
+    @Test
+    fun `past periods keep their own calendar windows`() {
+        val days = listOf(day("2026-09-15", key), day("2026-10-01", key))
+        val history = computeHistory(days, goal("monthly"), today)
+        assertEquals("2026-09-01", history[4].start) // September, one month back
+        assertEquals("2026-09-30", history[4].end)
+        assertEquals(listOf("2026-09-15"), history[4].dates)
+        assertEquals("2026-10-01", history.last().start) // October runs from its 1st
+        assertEquals(listOf("2026-10-01"), history.last().dates)
+    }
+
+    @Test
+    fun `a window without entries has no dates and no met flag`() {
+        val older = computeHistory(listOf(day(today, key)), goal("weekly"), today).first()
+        assertEquals(emptyList<String>(), older.dates)
+        assertEquals(0, older.count)
+        assertNull(older.met)
+    }
+
+    @Test
+    fun `periodFullEnd gives the whole calendar end for every frequency`() {
+        assertEquals("2026-10-13", periodFullEnd("2026-10-13", "daily"))
+        assertEquals("2026-10-18", periodFullEnd("2026-10-13", "weekly"))
+        assertEquals("2026-10-31", periodFullEnd("2026-10-13", "monthly"))
+        // Sunday itself stays in its own week, a month end stays put, and an
+        // unknown frequency behaves as weekly.
+        assertEquals("2026-10-18", periodFullEnd("2026-10-18", "weekly"))
+        assertEquals("2026-02-28", periodFullEnd("2026-02-10", "monthly"))
+        assertEquals("2026-10-18", periodFullEnd("2026-10-13", "neweekly"))
+    }
+
+    @Test
+    fun `the history getter still maps periods to plain flags`() {
+        val days = listOf(day("2026-10-12", key), day(today, key))
+        val card = progress("weekly", 2, days)
+        assertEquals(listOf(true), card.history.takeLast(1))
+        assertEquals(card.periods.map { it.met }, card.history)
     }
 }

@@ -77,7 +77,7 @@ class GoalsRepository(
                 goal = goal,
                 count = countActivityInPeriod(days, goal.activityKey, start, todayIso),
                 streak = streakOf(activityDates(days, goal.activityKey, from, todayIso)),
-                history = computeHistory(days, goal, todayIso),
+                periods = computeHistory(days, goal, todayIso),
             )
         }
     }
@@ -227,32 +227,60 @@ data class GoalProgress(
     val streak: Int,
     /**
      * Recent period results, OLDEST first, the current period LAST: 14 periods
-     * (days) for a daily goal, 8 (weeks) weekly, 6 (months) monthly. `true` = the
-     * period's window logged the activity at least [Goal.targetCount] times,
-     * `false` = it did not, `null` = no `entries` rows in that window at all
-     * ("no data"), so missing data is never shown as a missed period. The last
-     * item measures exactly the same window as [count]. Empty when the progress
-     * was built without history — the getters below then report "nothing known".
+     * (days) for a daily goal, 8 (weeks) weekly, 6 (months) monthly. Each item
+     * carries its window, the days that logged the activity and the met flag
+     * (`true` = the window reached [Goal.targetCount], `false` = it did not,
+     * `null` = no `entries` rows in that window at all — "no data", never shown
+     * as a missed period). The last item measures exactly the same window as
+     * [count]. Empty when the progress was built without history — the getters
+     * below then report "nothing known".
      */
-    val history: List<Boolean?> = emptyList(),
+    val periods: List<GoalPeriodResult> = emptyList(),
 ) {
     val targetMet: Boolean get() = isTargetMet(count, goal.targetCount)
     val remaining: Int get() = (goal.targetCount - count).coerceAtLeast(0)
     val periodLabel: String get() = periodLabelFor(goal.frequency)
 
+    /** [periods] reduced to the met/missed/no-data flags, oldest first. */
+    val history: List<Boolean?> get() = periods.map { it.met }
+
     /** The period right before the current one; `null` when unknown/unavailable. */
-    val previousMet: Boolean? get() = history.dropLast(1).lastOrNull()
+    val previousMet: Boolean? get() = periods.dropLast(1).lastOrNull()?.met
 
-    /** Periods in [history] that were met. */
-    val metPeriods: Int get() = history.count { it == true }
+    /** Periods in [periods] that were met. */
+    val metPeriods: Int get() = periods.count { it.met == true }
 
-    /** Periods in [history] that have data at all (met or missed). */
-    val knownPeriods: Int get() = history.count { it != null }
+    /** Periods in [periods] that have data at all (met or missed). */
+    val knownPeriods: Int get() = periods.count { it.met != null }
 
     /** 0f…1f, clamped, so the progress bar can never overflow its track. */
     val fraction: Float
         get() = if (goal.targetCount <= 0) 0f
         else (count.toFloat() / goal.targetCount.toFloat()).coerceIn(0f, 1f)
+}
+
+/**
+ * One judged period of a goal's history: the calendar window, the days inside
+ * the window that logged the activity, and whether the target was reached.
+ *
+ * [start] and [end] are the WHOLE calendar period — a month runs to its last
+ * day, a week to its Sunday — even for the running period, so the detail window
+ * can name the range; scoring still only sees the days up to today, because
+ * [dates] and the current `count` share the same clamped window. A window with
+ * no `entries` rows at all has no [dates] and `met == null` ("no data").
+ */
+data class GoalPeriodResult(
+    val start: String,
+    val end: String,
+    val dates: List<String>,
+    /**
+     * `true` when the window reached the target, `false` when it has entries but
+     * not enough, `null` = no `entries` rows in the window at all ("no data").
+     */
+    val met: Boolean?,
+) {
+    /** Days in the window that logged the activity; 0 when there are no data. */
+    val count: Int get() = dates.size
 }
 
 /**
@@ -357,23 +385,33 @@ internal fun historyPeriods(frequency: String): Int = when (normalizeFrequency(f
  * period is judged over exactly the same window [countActivityInPeriod] uses,
  * moved back k whole periods ([periodEndBack], then [periodStart]), with the
  * repository's existing rules — one count per day, met when the window reaches
- * `targetCount`. A period with no `entries` rows in its window is `null` ("no
- * data"), never a miss. `periodsBack = 0` is the current period, so the LAST
- * item always measures the same window as [GoalProgress.count].
+ * `targetCount`. A period with no `entries` rows in its window carries no dates
+ * and `met == null` ("no data"), never a miss. Each item reports its whole
+ * calendar window ([periodFullEnd] keeps the running period's real end instead
+ * of today's clamp) and the logged days, so the UI can open the period's
+ * detail. `periodsBack = 0` is the current period, so the LAST item always
+ * measures the same window as [GoalProgress.count].
  */
 internal fun computeHistory(
     days: List<DayActivities>,
     goal: Goal,
     todayIso: String,
-): List<Boolean?> =
+): List<GoalPeriodResult> =
     (historyPeriods(goal.frequency) - 1 downTo 0).map { periodsBack ->
         val end = periodEndBack(todayIso, goal.frequency, periodsBack)
         val from = periodStart(end, goal.frequency)
-        if (days.none { it.date in from..end }) null
-        else isTargetMet(
-            countActivityInPeriod(days, goal.activityKey, from, end),
-            goal.targetCount,
-        )
+        val fullEnd = if (periodsBack == 0) periodFullEnd(todayIso, goal.frequency) else end
+        if (days.none { it.date in from..end }) {
+            GoalPeriodResult(start = from, end = fullEnd, dates = emptyList(), met = null)
+        } else {
+            val logged = activityDates(days, goal.activityKey, from, end).sorted()
+            GoalPeriodResult(
+                start = from,
+                end = fullEnd,
+                dates = logged,
+                met = isTargetMet(logged.size, goal.targetCount),
+            )
+        }
     }
 
 /**
@@ -440,6 +478,19 @@ internal fun periodEndBack(todayIso: String, frequency: String, periodsBack: Int
             if (periodsBack <= 0) todayIso
             else dateMinusDays(weekStart(todayIso), 7 * periodsBack - 6)
         }
+    }
+
+/**
+ * The whole calendar END of the period [todayIso] falls in: the month's last
+ * day, the week's Sunday, or today itself for a daily goal. [periodEndBack]
+ * clamps the running period to today for scoring; this keeps its real extent so
+ * the detail window can say "Probíhá — zbývá…" instead of ending today.
+ */
+internal fun periodFullEnd(todayIso: String, frequency: String): String =
+    when (normalizeFrequency(frequency)) {
+        "daily" -> todayIso
+        "monthly" -> lastDayOfMonth(todayIso)
+        else -> dateMinusDays(weekStart(todayIso), -6)
     }
 
 /** Czech period label shown on the card. */

@@ -106,6 +106,6 @@ class GoalsActivityMatchingTest {
         val goal = Goal("g1", "kourit", "Kouření", 1, "daily", true)
         assertEquals(3, count(days, "kourit"))
         assertEquals(3, streakOf(activityDates(days, "kourit", dateMinusDays(today, 365), today)))
-        assertEquals(true, computeHistory(days, goal, today).last())
+        assertEquals(true, computeHistory(days, goal, today).last().met)
     }
 }
