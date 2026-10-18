@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.checkin.components
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,7 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -341,7 +342,7 @@ fun GoalsSection(
             GlassTextField(
                 value = newGoal,
                 onValueChange = { newGoal = it },
-                placeholder = "Nový cíl",
+                placeholder = tr("Nový cíl"),
                 modifier = Modifier.weight(1f),
                 testTag = "goal_new",
             )
@@ -454,7 +455,7 @@ private fun GoalEditorDialog(
                 GlassTextField(
                     value = name,
                     onValueChange = { name = it },
-                    placeholder = "Název cíle",
+                    placeholder = tr("Název cíle"),
                     modifier = Modifier.weight(1f),
                     testTag = "goal_edit_name",
                 )

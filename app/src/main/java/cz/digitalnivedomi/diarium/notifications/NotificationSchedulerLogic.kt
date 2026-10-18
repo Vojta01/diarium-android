@@ -101,8 +101,8 @@ object NotificationSchedulerLogic {
 
 /**
  * Pure smart-reminder decision. The caller is responsible for taking the real
- * "is there a saved entry today?" answer (Supabase) and for the offline rule:
- * when the answer is unknown the caller passes `hasSavedEntry = false` so the
+ * "is today's mood filled in?" answer (Supabase) and for the offline rule:
+ * when the answer is unknown the caller passes `hasRecordedMood = false` so the
  * reminder is still shown and the marker is set — never dropped silently.
  */
 object SmartReminder {
@@ -110,19 +110,19 @@ object SmartReminder {
     /**
      * @param todayIso today in the device zone, `yyyy-MM-dd`
      * @param dayOfWeek 1 = Monday … 7 = Sunday
-     * @param hasSavedEntry true only on a definitive "entry exists" answer
+     * @param hasRecordedMood true only when today's mood is actually filled in
      * @return true when the check-in reminder should fire now
      */
     fun shouldNotify(
         prefs: NotificationPrefs,
         todayIso: String,
         dayOfWeek: Int,
-        hasSavedEntry: Boolean,
+        hasRecordedMood: Boolean,
     ): Boolean {
         if (!prefs.reminderEnabled) return false
         if (dayOfWeek !in prefs.reminderDays) return false
         if (prefs.lastReminderDate == todayIso) return false // never twice a day
-        if (prefs.smartReminder && hasSavedEntry) return false // already checked in
+        if (prefs.smartReminder && hasRecordedMood) return false // already checked in
         return true
     }
 }

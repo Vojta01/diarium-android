@@ -52,6 +52,9 @@ git config user.name "Vojta01"
 git config user.email "22679657+Vojta01@users.noreply.github.com"
 cp "$APK" "diarium.apk"
 cp "$APK" "diarium-${VER}.apk"
+# The branch used to keep a stale version.txt (alpha27 while alpha35 shipped);
+# the download page and scripts read this file, so write it on every publish.
+printf '%s\n' "${VER}" > version.txt
 cat > README.md <<EOF
 # Diarium Android — buildy
 

@@ -1,6 +1,7 @@
 package cz.digitalnivedomi.diarium.ui.history
 
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
+import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import java.time.DayOfWeek
 import java.time.LocalDate
 
@@ -44,7 +45,7 @@ object HistoryCalendar {
     val LAST_MONTH = 12
 
     /** "Září" for 9; a month outside 1..12 is clamped rather than thrown at. */
-    fun monthName(month: Int): String = MONTH_NAMES[(month - 1).coerceIn(0, MONTH_NAMES.size - 1)]
+    fun monthName(month: Int): String = StatsMath.monthFullName(month.coerceIn(1, 12))
 
     /** The month header: "Září 2026". */
     fun title(year: Int, month: Int): String = "${monthName(month)} $year"

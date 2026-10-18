@@ -23,7 +23,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
+import cz.digitalnivedomi.diarium.ui.i18n.translate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -380,7 +381,7 @@ fun SectionHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = title.uppercase(),
+            text = translate(title).uppercase(),
             style = MaterialTheme.typography.labelSmall,
             color = TextSecondary,
             fontWeight = FontWeight.SemiBold,

@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.core.data
 
+import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -495,9 +496,9 @@ internal fun periodFullEnd(todayIso: String, frequency: String): String =
 
 /** Czech period label shown on the card. */
 internal fun periodLabelFor(frequency: String): String = when (normalizeFrequency(frequency)) {
-    "daily" -> "den"
-    "monthly" -> "měsíc"
-    else -> "týden"
+    "daily" -> if (AppLanguage.isEnglish()) "day" else "den"
+    "monthly" -> if (AppLanguage.isEnglish()) "month" else "měsíc"
+    else -> if (AppLanguage.isEnglish()) "week" else "týden"
 }
 
 /** Anything the database holds that is not daily/monthly behaves as weekly. */

@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.settings
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -16,7 +17,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -226,7 +227,7 @@ fun AiSettingsSection(deps: AiSettingsDeps, modifier: Modifier = Modifier) {
         GlassTextField(
             value = field,
             onValueChange = { field = it },
-            placeholder = "Vlož svůj DeepSeek API klíč",
+            placeholder = tr("Vlož svůj DeepSeek API klíč"),
             testTag = "ai_key_field",
             visualTransformation = PasswordVisualTransformation(),
         )

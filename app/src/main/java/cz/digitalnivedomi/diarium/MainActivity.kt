@@ -18,6 +18,7 @@ import cz.digitalnivedomi.diarium.auth.AuthStateHolder
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.fcm.FcmTokenRegistrar
+import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
 import cz.digitalnivedomi.diarium.notifications.EXTRA_OPEN_REPORT_TYPE
 import cz.digitalnivedomi.diarium.notifications.EXTRA_OPEN_ROUTE
 import cz.digitalnivedomi.diarium.notifications.NotificationScheduler
@@ -62,6 +63,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Read the saved UI language before the first composition, so the first
+        // frame is already in the right language instead of flashing Czech.
+        AppLanguage.init(this)
 
         sessionStore = AppClients.sessionStore(this)
         authState = AuthStateHolder(sessionStore)

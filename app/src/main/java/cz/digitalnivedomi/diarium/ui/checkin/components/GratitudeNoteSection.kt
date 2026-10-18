@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.checkin.components
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -10,7 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -86,7 +87,7 @@ fun NoteSection(
         GlassTextField(
             value = note,
             onValueChange = onChange,
-            placeholder = "Co ti dnes běželo hlavou...",
+            placeholder = tr("Co ti dnes běželo hlavou..."),
             minHeight = 90,
             testTag = "note",
         )

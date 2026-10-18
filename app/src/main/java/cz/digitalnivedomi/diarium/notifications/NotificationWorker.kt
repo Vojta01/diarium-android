@@ -22,6 +22,7 @@ import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.ui.nav.Routes
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -127,15 +128,18 @@ class NotificationWorker(
         val todayIso = today.toString()
         val dayOfWeek = today.dayOfWeek.value // 1=Po … 7=Ne (same as prefs)
 
-        // Unknown on network failure → hasSavedEntry=false → do not silently drop.
-        val hasSavedEntry = hasSavedEntry(todayIso)
+        // Only a recorded mood counts as "already checked in". A row created by the
+        // screen-time sync has mood == null; treating it as filled silently killed
+        // the evening reminder on every day the phone synced before the reminder time.
+        // Unknown (network failure) stays false so the reminder is not dropped.
+        val hasRecordedMood = hasMoodFor(todayIso) == true
 
-        if (!SmartReminder.shouldNotify(prefs, todayIso, dayOfWeek, hasSavedEntry)) return
+        if (!SmartReminder.shouldNotify(prefs, todayIso, dayOfWeek, hasRecordedMood)) return
 
         prefsStore.setLastReminderDate(todayIso)
         showNotification(
             title = "Diarium",
-            body = "Nezapomeň vyplnit dnešní záznam! 🖊️",
+            body = tr("Nezapomeň vyplnit dnešní záznam! 🖊️"),
             route = NotificationIntents.ROUTE_HOME,
             requestCode = REQ_REMINDER_PI,
             sound = prefs.sound,
@@ -168,7 +172,7 @@ class NotificationWorker(
         prefsStore.setLastMorningReminderDate(today.toString())
         showNotification(
             title = "Diarium",
-            body = "Včerejší den ještě nemá náladu — doplň si ho. 🖊️",
+            body = tr("Včerejší den ještě nemá náladu — doplň si ho. 🖊️"),
             route = NotificationIntents.ROUTE_HOME,
             requestCode = REQ_MORNING_PI,
             sound = prefs.sound,
@@ -222,10 +226,10 @@ class NotificationWorker(
         if (type == "weekly") prefsStore.setLastWeeklyId(id)
         else prefsStore.setLastMonthlyId(id)
 
-        val label = if (type == "weekly") "📊 Týdenní reflexe" else "📊 Měsíční reflexe"
+        val label = if (type == "weekly") tr("📊 Týdenní reflexe") else tr("📊 Měsíční reflexe")
         showNotification(
             title = label,
-            body = "Je připravená nová reflexe — podívej se, co ti data říkají.",
+            body = tr("Je připravená nová reflexe — podívej se, co ti data říkají."),
             route = Routes.REPORTS,
             requestCode = if (type == "weekly") REQ_WEEKLY_PI else REQ_MONTHLY_PI,
             sound = prefs.sound,
@@ -241,19 +245,6 @@ class NotificationWorker(
     }
 
     // ── Supabase queries (user JWT, RLS-secured) ────────────────
-
-    private fun hasSavedEntry(date: String): Boolean {
-        return try {
-            val resp = supabase.get(
-                "entries",
-                mapOf("date" to "eq.$date", "select" to "id", "limit" to "1"),
-            )
-            if (resp.code !in 200..299) return false
-            (resp.asJsonArray()?.length() ?: 0) > 0
-        } catch (_: Exception) {
-            false
-        }
-    }
 
     /**
      * Mood for [date] — a row alone proves nothing: the sync creates `entries`

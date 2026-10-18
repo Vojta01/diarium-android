@@ -22,7 +22,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
+import cz.digitalnivedomi.diarium.ui.i18n.translate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -306,7 +307,7 @@ private fun accentFor(state: UsageAccessState): Color = when (state) {
 @Composable
 private fun SettingsSectionTitle(title: String) {
     Text(
-        text = title.uppercase(),
+        text = translate(title).uppercase(),
         style = MaterialTheme.typography.labelSmall,
         color = TextSecondary,
         fontWeight = FontWeight.SemiBold,

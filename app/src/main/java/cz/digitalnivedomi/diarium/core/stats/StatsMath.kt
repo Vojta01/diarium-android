@@ -1,6 +1,7 @@
 package cz.digitalnivedomi.diarium.core.stats
 
 import cz.digitalnivedomi.diarium.core.data.PhoneTopApp
+import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
@@ -179,7 +180,12 @@ object StatsMath {
     )
 
     /** `calendar.day_names` / `screenTime.weekdays` from `cs.ts`, Monday first. */
-    val WEEKDAY_LABELS: List<String> = listOf("Po", "Út", "St", "Čt", "Pá", "So", "Ne")
+    val WEEKDAY_LABELS: List<String>
+        get() = if (AppLanguage.isEnglish()) WEEKDAY_LABELS_EN else WEEKDAY_LABELS_CS
+
+    private val WEEKDAY_LABELS_CS: List<String> = listOf("Po", "Út", "St", "Čt", "Pá", "So", "Ne")
+
+    private val WEEKDAY_LABELS_EN: List<String> = listOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
 
     /**
      * Three-letter month names, January first — the captions under the year chart's
@@ -188,6 +194,16 @@ object StatsMath {
     val MONTH_SHORT_NAMES: List<String> = listOf(
         "Led", "Úno", "Bře", "Dub", "Kvě", "Čvn",
         "Čvc", "Srp", "Zář", "Říj", "Lis", "Pro",
+    )
+
+    private val MONTH_NAMES_EN: List<String> = listOf(
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    )
+
+    private val MONTH_SHORT_NAMES_EN: List<String> = listOf(
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     )
 
     /** Smoothing applied to the year chart's monthly averages (twelve points, not 365). */
@@ -590,7 +606,7 @@ object StatsMath {
             }
 
             YearMonthGrid(
-                name = MONTH_NAMES[monthIndex],
+                name = monthFullName(monthIndex + 1),
                 index = monthIndex,
                 weeks = weeks,
                 daysInMonth = daysInMonth,
@@ -670,11 +686,13 @@ object StatsMath {
 
     /** `1` -> "Led" — the caption under that month's column. */
     fun monthShortName(month: Int): String =
-        MONTH_SHORT_NAMES.getOrNull(month - 1) ?: month.toString()
+        (if (AppLanguage.isEnglish()) MONTH_SHORT_NAMES_EN else MONTH_SHORT_NAMES)
+            .getOrNull(month - 1) ?: month.toString()
 
     /** `1` -> "Leden" — the name in a month's detail or summary line. */
     fun monthFullName(month: Int): String =
-        MONTH_NAMES.getOrNull(month - 1) ?: month.toString()
+        (if (AppLanguage.isEnglish()) MONTH_NAMES_EN else MONTH_NAMES)
+            .getOrNull(month - 1) ?: month.toString()
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 

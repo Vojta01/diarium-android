@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,6 +30,7 @@ import cz.digitalnivedomi.diarium.ui.onboarding.OnboardingDeps
 import cz.digitalnivedomi.diarium.ui.onboarding.OnboardingScreen
 import cz.digitalnivedomi.diarium.ui.settings.AiSettingsDeps
 import cz.digitalnivedomi.diarium.ui.settings.AiSettingsSection
+import cz.digitalnivedomi.diarium.ui.settings.LanguageSettingsSection
 import cz.digitalnivedomi.diarium.ui.settings.ProfileSettingsDeps
 import cz.digitalnivedomi.diarium.ui.settings.ProfileSettingsSection
 import androidx.compose.foundation.layout.Box
@@ -42,7 +44,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
@@ -461,6 +463,7 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit, aiDe
         ProfileSettingsSection(
             deps = remember(context) { ProfileSettingsDeps.forContext(context) },
         )
+        LanguageSettingsSection()
         GlassCard(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = "Deník",
@@ -605,7 +608,7 @@ private fun SubScreenChrome(title: String, onBack: () -> Unit, content: @Composa
             IconButton(onClick = onBack) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Zpět",
+                    contentDescription = tr("Zpět"),
                     tint = TextSecondary,
                 )
             }

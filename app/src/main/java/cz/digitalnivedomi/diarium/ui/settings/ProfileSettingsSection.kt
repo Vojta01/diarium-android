@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.settings
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import android.content.Context
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,7 +11,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -139,7 +140,7 @@ fun ProfileSettingsSection(deps: ProfileSettingsDeps, modifier: Modifier = Modif
                 name = it
                 saved = false
             },
-            placeholder = "Jméno",
+            placeholder = tr("Jméno"),
             testTag = "profile_name",
         )
         VSpace(10)
@@ -152,7 +153,7 @@ fun ProfileSettingsSection(deps: ProfileSettingsDeps, modifier: Modifier = Modif
                 birthYearError = false
                 saved = false
             },
-            placeholder = "Rok narození",
+            placeholder = tr("Rok narození"),
             testTag = "profile_birth_year",
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         )

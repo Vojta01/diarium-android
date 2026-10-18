@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.onboarding
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import android.util.Log
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
@@ -32,7 +33,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -456,14 +457,14 @@ fun OnboardingScreen(
                     GlassTextField(
                         value = state.name,
                         onValueChange = { state.name = it },
-                        placeholder = "Jméno",
+                        placeholder = tr("Jméno"),
                         testTag = "onboarding_name",
                     )
                     Spacer(Modifier.height(10.dp))
                     GlassTextField(
                         value = state.birthYear,
                         onValueChange = { raw -> state.birthYear = raw.filter { it.isDigit() }.take(4) },
-                        placeholder = "Rok narození",
+                        placeholder = tr("Rok narození"),
                         testTag = "onboarding_birth_year",
                     )
                     if (!state.birthYearValid) {
@@ -509,7 +510,7 @@ fun OnboardingScreen(
                     GlassTextField(
                         value = state.aiKey,
                         onValueChange = { state.aiKey = it },
-                        placeholder = "API klíč (sk-…)",
+                        placeholder = tr("API klíč (sk-…)"),
                         testTag = "onboarding_ai_key",
                     )
                     Spacer(Modifier.height(4.dp))
@@ -867,7 +868,7 @@ fun OnboardingScreen(
                     GlassTextField(
                         value = goalName,
                         onValueChange = { goalName = it },
-                        placeholder = "Název cíle",
+                        placeholder = tr("Název cíle"),
                         testTag = "onboarding_goal_name",
                     )
                     Spacer(Modifier.height(12.dp))
@@ -932,7 +933,7 @@ fun OnboardingScreen(
                         GlassTextField(
                             value = newActivityName,
                             onValueChange = { newActivityName = it },
-                            placeholder = "Název nové aktivity",
+                            placeholder = tr("Název nové aktivity"),
                             testTag = "onboarding_new_activity_name",
                         )
                         Spacer(Modifier.height(8.dp))

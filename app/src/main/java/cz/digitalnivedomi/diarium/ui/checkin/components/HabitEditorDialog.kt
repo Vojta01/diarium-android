@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.checkin.components
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,7 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -155,7 +156,7 @@ fun HabitEditorDialog(
                 GlassTextField(
                     value = label,
                     onValueChange = { label = it },
-                    placeholder = "Název návyku",
+                    placeholder = tr("Název návyku"),
                     modifier = Modifier.weight(1f),
                     testTag = "habit_label",
                 )

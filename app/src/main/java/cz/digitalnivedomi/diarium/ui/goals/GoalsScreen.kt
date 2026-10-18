@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.goals
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,7 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -476,7 +477,7 @@ private fun GoalEditorDialog(
                     nameTouched = true
                     name = it
                 },
-                placeholder = "Např. Běhání",
+                placeholder = tr("Např. Běhání"),
             )
 
             Spacer(Modifier.height(14.dp))
@@ -715,7 +716,7 @@ private fun NewActivityDialog(
             GlassTextField(
                 value = label,
                 onValueChange = { label = it },
-                placeholder = "Např. Jóga",
+                placeholder = tr("Např. Jóga"),
             )
             Spacer(Modifier.height(4.dp))
             Text(

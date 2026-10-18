@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.checkin.components
 
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -9,7 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -130,7 +131,7 @@ fun ActivitiesSection(
         GlassTextField(
             value = newActivity,
             onValueChange = { newActivity = it },
-            placeholder = "Název aktivity",
+            placeholder = tr("Název aktivity"),
             testTag = "activity_new",
         )
         Spacer(Modifier.height(8.dp))
