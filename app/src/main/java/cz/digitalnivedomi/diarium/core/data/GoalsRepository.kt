@@ -501,6 +501,13 @@ internal fun periodLabelFor(frequency: String): String = when (normalizeFrequenc
     else -> if (AppLanguage.isEnglish()) "week" else "týden"
 }
 
+/** Czech-only label for the AI prompt, which is Czech regardless of the UI language. */
+internal fun periodLabelCs(frequency: String): String = when (normalizeFrequency(frequency)) {
+    "daily" -> "den"
+    "monthly" -> "měsíc"
+    else -> "týden"
+}
+
 /** Anything the database holds that is not daily/monthly behaves as weekly. */
 internal fun normalizeFrequency(raw: String): String = when (raw.trim().lowercase(Locale.ROOT)) {
     "daily", "den", "denne", "denně" -> "daily"

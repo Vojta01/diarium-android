@@ -211,7 +211,7 @@ Tón: reflektivní, optimistický. Max 1200 znaků."""
             lines.add("\n🎯 Cíle:")
             goals.forEach { goal ->
                 lines.add(
-                    "- ${goal.goal.name}: ${goal.count}/${goal.goal.targetCount} (${goal.periodLabel}) — " +
+                    "- ${goal.goal.name}: ${goal.count}/${goal.goal.targetCount} (${periodLabelCs(goal.goal.frequency)}) — " +
                         "${if (goal.targetMet) "splněno ✅" else "zbývá ${goal.remaining}"}" +
                         "${if (goal.streak > 0) "; série 🔥${goal.streak}" else ""}",
                 )
