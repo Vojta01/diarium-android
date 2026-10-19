@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -260,6 +261,26 @@ class NotificationSchedulerLogicTest {
         assertTrue(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 14, 21, 30), 3, 21 * 60))
         assertFalse(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 14, 21, 30), 7, 20 * 60))
         assertTrue(ReportSafetyWindow.isWeeklyWindow(z(2026, 10, 15, 9, 0), 3, 21 * 60))
+    }
+
+    @Test
+    fun weeklyReportEnd_usesTheScheduledDay_notTheLateRunDay() {
+        // Sunday 20:00 run → the report ends that Sunday.
+        assertEquals(
+            LocalDate.of(2026, 10, 11),
+            ReportSafetyWindow.lastWeeklyOccurrence(z(2026, 10, 11, 20, 5), 7, 20 * 60),
+        )
+        // Monday 08:00 safety net → the report still ends on Sunday 10-11,
+        // not on the Monday that just started (the 0/4 bug).
+        assertEquals(
+            LocalDate.of(2026, 10, 11),
+            ReportSafetyWindow.lastWeeklyOccurrence(z(2026, 10, 12, 8, 1), 7, 20 * 60),
+        )
+        // Wednesday 21:00 chosen, Thursday morning rescue → Wednesday 10-14.
+        assertEquals(
+            LocalDate.of(2026, 10, 14),
+            ReportSafetyWindow.lastWeeklyOccurrence(z(2026, 10, 15, 9, 0), 3, 21 * 60),
+        )
     }
 
     @Test

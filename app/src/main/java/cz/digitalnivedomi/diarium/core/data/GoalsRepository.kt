@@ -7,6 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.text.Normalizer
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.util.Locale
 
 /**
@@ -58,27 +59,30 @@ class GoalsRepository(
      * [PickersRepository] — a column rename in the database must not turn the
      * whole read into a 400.
      */
-    suspend fun loadProgress(): List<GoalProgress>? = withContext(Dispatchers.IO) {
+    suspend fun loadProgress(asOf: LocalDate = LocalDate.parse(today())): List<GoalProgress>? = withContext(Dispatchers.IO) {
         val userId = session.userId() ?: return@withContext null
 
         val goals = readGoals(userId) ?: return@withContext null
         val active = goals.filter { it.isActive }
         if (active.isEmpty()) return@withContext emptyList()
 
-        val todayIso = today()
+        // The report path passes the end of the reported week; the UI uses today.
+        // Keeping this a parameter is what stops a Monday-generated weekly report
+        // from counting the new week (0/4) instead of the week it describes (4/4).
+        val asOfIso = asOf.toString()
         // One entries read covers every goal's period and a year of streak, so a
         // daily streak longer than a month is not silently truncated at the edge
         // of the monthly window.
-        val from = dateMinusDays(todayIso, STREAK_LOOKBACK_DAYS)
+        val from = dateMinusDays(asOfIso, STREAK_LOOKBACK_DAYS)
         val days = readDays(userId, from) ?: return@withContext null
 
         active.map { goal ->
-            val start = periodStart(todayIso, goal.frequency)
+            val start = periodStart(asOfIso, goal.frequency)
             GoalProgress(
                 goal = goal,
-                count = countActivityInPeriod(days, goal.activityKey, start, todayIso),
-                streak = streakOf(activityDates(days, goal.activityKey, from, todayIso)),
-                periods = computeHistory(days, goal, todayIso),
+                count = countActivityInPeriod(days, goal.activityKey, start, asOfIso),
+                streak = streakOf(activityDates(days, goal.activityKey, from, asOfIso)),
+                periods = computeHistory(days, goal, asOfIso),
             )
         }
     }

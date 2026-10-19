@@ -203,6 +203,23 @@ object ReportSafetyWindow {
     private const val DAY_END_HOUR = 20
 
     /**
+     * The local date of the most recent scheduled weekly run at or before [now].
+     * A Monday safety-net run therefore returns the Sunday the report belongs to,
+     * not the Monday that just started.
+     */
+    fun lastWeeklyOccurrence(now: ZonedDateTime, weeklyDay: Int, weeklyTimeMinutes: Int): LocalDate {
+        val target = weeklyDay.coerceIn(1, 7)
+        val minutes = now.hour * 60 + now.minute
+        var date = now.toLocalDate()
+        if (date.dayOfWeek.value == target && minutes >= weeklyTimeMinutes.coerceIn(0, 1439)) return date
+        repeat(7) {
+            date = date.minusDays(1)
+            if (date.dayOfWeek.value == target) return date
+        }
+        return date
+    }
+
+    /**
      * @param weeklyDay the user's chosen day (1=Mo…7=Su)
      * @param weeklyTimeMinutes the user's chosen time (minutes past midnight)
      */

@@ -9,7 +9,9 @@ import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.temporal.TemporalAdjusters
 import java.util.concurrent.TimeUnit
 
 /**
@@ -69,7 +71,7 @@ class ReportGenerator(
     private val session: SessionContext = SessionContext(),
     private val deepSeek: HttpTransport = defaultDeepSeekTransport(),
     private val deepSeekUrl: String = BuildConfig.DEEPSEEK_URL,
-    /** Overridable clock — the period windows are `today-7d..today` / `today-30d..today`. */
+    /** Overridable clock — a weekly report defaults to the last Sunday, a monthly one to today. */
     private val today: () -> LocalDate = { LocalDate.now() },
     /** Pause between empty-content retries; 0 in tests so they stay instant. */
     private val retryDelayMs: Long = RETRY_DELAY_MS,
@@ -79,15 +81,15 @@ class ReportGenerator(
      */
     private val profile: ProfileStore? = null,
     /**
-     * The goals repository feeding the `🎯 Cíle:` section with the current
-     * period's progress; null (or a failed read) simply omits the section.
+     * The goals repository feeding the `🎯 Cíle:` section with the progress
+     * for the report's period; null (or a failed read) simply omits the section.
      */
     private val goals: GoalsRepository? = null,
 ) {
 
-    suspend fun generate(type: String): ReportOutcome = withContext(Dispatchers.IO) {
+    suspend fun generate(type: String, periodEnd: LocalDate? = null): ReportOutcome = withContext(Dispatchers.IO) {
         try {
-            generateBlocking(type)
+            generateBlocking(type, periodEnd)
         } catch (e: CancellationException) {
             // The caller walked away; not a failure to report.
             throw e
@@ -100,17 +102,25 @@ class ReportGenerator(
         }
     }
 
-    private suspend fun generateBlocking(type: String): ReportOutcome {
+    private suspend fun generateBlocking(type: String, requestedEnd: LocalDate?): ReportOutcome {
         // No key, no call — the worker then walks the server-fallback path.
         val apiKey = keyStore.key() ?: return ReportOutcome.NoKey
         val userId = session.userId() ?: return ReportOutcome.Failed(SIGNED_OUT)
 
-        val periodEnd = today()
-        val periodStart = periodEnd.minusDays(if (type == "monthly") MONTHLY_DAYS else WEEKLY_DAYS)
+        // A late report must describe the week it was scheduled for, not the
+        // week that started after it. A weekly run therefore defaults to the
+        // last Sunday; the worker passes the user's actual weekly day.
+        val periodEnd = requestedEnd ?: if (type == "weekly") {
+            today().with(TemporalAdjusters.previousOrSame(DayOfWeek.SUNDAY))
+        } else {
+            today()
+        }
+        // Both windows are inclusive: 7 days for a week, 30 for a month.
+        val periodStart = periodEnd.minusDays(if (type == "monthly") MONTHLY_DAYS - 1 else WEEKLY_DAYS - 1)
         val fromDate = periodStart.toString()
         val periodEndIso = periodEnd.toString()
 
-        val entries = readEntries(userId, fromDate)
+        val entries = readEntries(userId, fromDate, periodEndIso)
             ?: return ReportOutcome.Failed("entries read failed")
         if (entries.size < MIN_ENTRIES) return ReportOutcome.NotEnoughData
 
@@ -128,7 +138,7 @@ class ReportGenerator(
             null
         }
         val goalsProgress = try {
-            goals?.loadProgress()
+            goals?.loadProgress(asOf = periodEnd)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -166,7 +176,7 @@ class ReportGenerator(
     // ── reads (user JWT, RLS-scoped) ────────────────────────────────────────
 
     /** The window's entries, oldest first; null when the read itself failed. */
-    private fun readEntries(userId: String, fromDate: String): List<ReportEntry>? {
+    private fun readEntries(userId: String, fromDate: String, toDate: String): List<ReportEntry>? {
         val resp = client.get(
             "entries",
             mapOf(
@@ -183,7 +193,7 @@ class ReportGenerator(
         val rows = resp.asJsonArray() ?: return null
         return (0 until rows.length()).mapNotNull { index ->
             rows.optJSONObject(index)?.let(::parseEntry)
-        }
+        }.filter { it.date <= toDate }
     }
 
     /** `scales.id` → `name`; a failure degrades to an empty map (route parity). */

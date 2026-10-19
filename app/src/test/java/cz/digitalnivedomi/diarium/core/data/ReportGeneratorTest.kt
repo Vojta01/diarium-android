@@ -81,7 +81,7 @@ class ReportGeneratorTest {
 
         assertEquals(ReportOutcome.Generated, outcome)
 
-        // 1) The entries read is scoped to the weekly window (today-7d..today).
+        // 1) The entries read is scoped to the 7-day week ending on Sunday 10-11.
         val entriesQuery = decoded(supabaseRequests.single { it.url.startsWith("$BASE_URL/entries?") })
         assertTrue(entriesQuery.contains("user_id=eq.$USER_ID"))
         assertTrue(entriesQuery.contains("date=gte.2026-10-05"))
@@ -120,7 +120,7 @@ class ReportGeneratorTest {
         assertEquals(USER_ID, row.getString("user_id"))
         assertEquals("weekly", row.getString("type"))
         assertEquals("2026-10-05", row.getString("period_start"))
-        assertEquals("2026-10-12", row.getString("period_end"))
+        assertEquals("2026-10-11", row.getString("period_end"))
         assertEquals("Týdenní shrnutí.", row.getString("content"))
     }
 
@@ -142,7 +142,7 @@ class ReportGeneratorTest {
 
         val row = JSONObject(supabaseRequests.single { it.method == "POST" }.body!!)
         assertEquals("monthly", row.getString("type"))
-        assertEquals("2026-09-12", row.getString("period_start"))
+        assertEquals("2026-09-13", row.getString("period_start"))
         assertEquals("2026-10-12", row.getString("period_end"))
     }
 
@@ -288,10 +288,9 @@ class ReportGeneratorTest {
         val userPrompt = JSONObject(deepSeekRequests.single().body!!)
             .getJSONArray("messages").getJSONObject(1).getString("content")
         assertTrue(userPrompt.startsWith("👤 Uživatel: Vojta (narozen 1990)\n"))
-        // sport is logged on 10-05 and 10-06, but "today" is Monday 2026-10-12:
-        // the CALENDAR week starts today, so the weekly count is 0/3 — the streak
-        // still sees the two consecutive logged days.
-        assertTrue(userPrompt.contains("- Běhání: 0/3 (týden) — zbývá 3; série 🔥2"))
+        // sport is logged on 10-05 and 10-06; the weekly report covers
+        // 10-05..10-11, so that calendar week is complete: 2/3 with a 2-day streak.
+        assertTrue(userPrompt.contains("- Běhání: 2/3 (týden) — zbývá 1; série 🔥2"))
     }
 
     // ── fixtures / helpers ──────────────────────────────────────────────────

@@ -32,6 +32,7 @@ import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 
 /**
@@ -208,7 +209,19 @@ class NotificationWorker(
         val latest = if (existing != null && isFresh(existing)) {
             existing
         } else if (aiKeys.hasKey()) {
-            val outcome = generator.generate(type)
+            // A late (safety-net) run must still describe the week it was
+            // scheduled for. Pass the last scheduled weekly date explicitly:
+            // on Monday that is the Sunday the report belongs to.
+            val reportEnd = if (type == "weekly") {
+                ReportSafetyWindow.lastWeeklyOccurrence(
+                    now = ZonedDateTime.now(ZoneId.systemDefault()),
+                    weeklyDay = prefs.weeklyDay,
+                    weeklyTimeMinutes = prefs.weeklyTimeMinutes,
+                )
+            } else {
+                null
+            }
+            val outcome = generator.generate(type, reportEnd)
             if (outcome !is ReportOutcome.Generated) {
                 // No key path never reaches here (checked above); record why a
                 // failure happened so the cause is visible in logs — the poll
