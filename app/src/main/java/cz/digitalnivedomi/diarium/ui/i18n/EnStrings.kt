@@ -24,6 +24,11 @@ internal object EnStrings {
             "English is machine-translated for now. If something looks wrong, switch back to Czech.",
         "AI reflexe a přehledy zatím zůstávají česky." to
             "AI reflections and reports stay in Czech for now.",
+        // Goal celebration overlay (backlog 29, variant A).
+        "🎯 Cíl splněn!" to "🎯 Goal complete!",
+        "dnes" to "today",
+        "tento týden" to "this week",
+        "tento měsíc" to "this month",
     )
 
     private fun part1(): Map<String, String> = mapOf(

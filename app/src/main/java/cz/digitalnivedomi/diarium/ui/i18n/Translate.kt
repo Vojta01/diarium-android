@@ -93,6 +93,12 @@ private val RULES: List<Rule> = listOf(
     rule("""^(\d+) (?:den|dny|dní) v řadě$""") { m ->
         "${days(m.groupValues[1].toInt())} in a row"
     },
+    rule("""^🔥 (\d+) (?:den|dny|dní) v řadě$""") { m ->
+        "🔥 ${days(m.groupValues[1].toInt())} in a row"
+    },
+    rule("""^\+ (\d+) dalších cílů splněno$""") { m ->
+        "+ ${m.groupValues[1]} more goals met"
+    },
     rule("""^Nejdelší série \(za (\d+) dní\)$""") { m ->
         "Longest streak (over ${days(m.groupValues[1].toInt())})"
     },

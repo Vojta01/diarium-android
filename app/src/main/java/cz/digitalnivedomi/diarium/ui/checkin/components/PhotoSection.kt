@@ -39,6 +39,7 @@ fun PhotoSection(
     uploading: Boolean,
     onPhotoSelected: (Uri) -> Unit,
     onRemove: () -> Unit,
+    error: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -110,6 +111,13 @@ fun PhotoSection(
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
             )
+        }
+
+        // The failure reason belongs next to the buttons that caused it: the
+        // shared banner renders at the top of the form, off-screen from here.
+        error?.let {
+            Spacer(Modifier.height(10.dp))
+            ErrorBanner(it)
         }
     }
 }

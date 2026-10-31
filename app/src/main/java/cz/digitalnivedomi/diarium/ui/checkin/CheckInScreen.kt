@@ -42,11 +42,13 @@ import cz.digitalnivedomi.diarium.core.data.QueuedOfflineException
 import cz.digitalnivedomi.diarium.core.data.Scale
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
+import cz.digitalnivedomi.diarium.core.media.PhotoCompressor
 import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import cz.digitalnivedomi.diarium.ui.checkin.components.ActivitiesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.CheckInGoalsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.DateNav
 import cz.digitalnivedomi.diarium.ui.checkin.components.ErrorBanner
+import cz.digitalnivedomi.diarium.ui.checkin.components.GoalCelebration
 import cz.digitalnivedomi.diarium.ui.checkin.components.GratitudeSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.HabitEditorDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.HabitsSection
@@ -150,6 +152,15 @@ fun CheckInScreen(
     // [GoalsRepository.loadProgress] has answered — computed from the diary.
     var goalProgress by remember { mutableStateOf<List<GoalProgress>?>(null) }
     var uploadingPhoto by remember { mutableStateOf(false) }
+    // Why the last photo pick failed, shown right under the buttons (the shared
+    // ErrorBanner sits at the top of the form, far above the photo section, so a
+    // photo failure was invisible while the user was scrolled down).
+    var photoError by remember { mutableStateOf<String?>(null) }
+
+    // Goals this save pushed over their target. Shown one at a time, at most three;
+    // the queue also gates the reflection dialog, so both never stack.
+    var celebrationQueue by remember { mutableStateOf<List<GoalProgress>>(emptyList()) }
+    var celebrationSeen by remember { mutableStateOf(0) }
 
     // ── The 2026-09 additions ──
     // One-shot guard for the after-midnight step back to yesterday (see the load effect).
@@ -254,7 +265,17 @@ fun CheckInScreen(
                 holder.markSaved()
                 // The diary just changed under the goals: recompute the read-only
                 // progress so the section reflects the save without a reload.
-                goalProgress = goalsRepo?.loadProgress()
+                val progressBefore = goalProgress
+                val progressAfter = goalsRepo?.loadProgress()
+                goalProgress = progressAfter
+                // A goal that crossed its target earns the celebration overlay. The
+                // AI request below starts immediately either way — the overlay only
+                // hides the dialog, it never delays the call.
+                val newlyMet = newlyMetGoals(progressBefore, progressAfter)
+                if (newlyMet.isNotEmpty()) {
+                    celebrationSeen = 0
+                    celebrationQueue = newlyMet
+                }
             } else {
                 val error = result.exceptionOrNull()
                 if (error is QueuedOfflineException) {
@@ -403,21 +424,26 @@ fun CheckInScreen(
         uploadingPhoto = true
         scope.launch {
             val bytes = withContext(Dispatchers.IO) {
-                runCatching {
-                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                }.getOrNull()
+                PhotoCompressor.compress(context, uri)
+                    // A source the decoder cannot handle (HEIC below API 28, a
+                    // container BitmapFactory rejects) still goes up untouched when
+                    // it is small enough for the bucket — the pre-existing path.
+                    ?: runCatching {
+                        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    }.getOrNull()?.takeIf { it.size <= PhotoCompressor.MAX_BYTES }
             }
             if (bytes == null) {
                 uploadingPhoto = false
-                holder.markError("Fotku se nepodařilo načíst.")
+                photoError = "Fotku se nepodařilo načíst z telefonu."
                 return@launch
             }
-            val url = repo.uploadPhoto(holder.date, bytes)
+            val result = repo.uploadPhoto(holder.date, bytes)
             uploadingPhoto = false
-            if (url != null) {
-                holder.setPhotoPath(url)
+            if (result.url != null) {
+                photoError = null
+                holder.setPhotoPath(result.url)
             } else {
-                holder.markError("Fotku se nepodařilo nahrát.")
+                photoError = "Fotku se nepodařilo nahrát (${result.error ?: "neznámá chyba"})."
             }
         }
     }
@@ -552,8 +578,12 @@ fun CheckInScreen(
         PhotoSection(
             photoPath = state.entry.photoPath,
             uploading = uploadingPhoto,
+            error = photoError,
             onPhotoSelected = { uploadPhoto(it) },
-            onRemove = { holder.setPhotoPath(null) },
+            onRemove = {
+                photoError = null
+                holder.setPhotoPath(null)
+            },
         )
 
         ScalesSection(
@@ -641,7 +671,10 @@ fun CheckInScreen(
         Spacer(Modifier.height(48.dp))
     }
 
-    if (state.showReflectionDialog) {
+    // The reflection dialog waits behind the celebration queue: the AI request has
+    // already started (the LaunchedEffect above fires on `showReflectionDialog`), so
+    // the dialog opens with the text ready — never as a second window above it.
+    if (state.showReflectionDialog && celebrationQueue.isEmpty()) {
         ReflectionDialog(
             entry = state.entry,
             activities = activities,
@@ -653,6 +686,20 @@ fun CheckInScreen(
             canRegenerate = state.saved && !state.reflectionLoading,
             onRetry = { generateReflection() },
             onDismiss = { holder.dismissReflectionDialog() },
+        )
+    }
+
+    // Goal celebration (backlog 29, variant A): one goal at a time, at most three,
+    // tap or 2.2 s dismisses. The third card also carries the remainder count.
+    celebrationQueue.firstOrNull()?.let { goal ->
+        GoalCelebration(
+            goal = goal,
+            extra = if (celebrationSeen == 2) (celebrationQueue.size - 1).coerceAtLeast(0) else 0,
+            onDone = {
+                celebrationSeen += 1
+                celebrationQueue =
+                    if (celebrationSeen >= 3) emptyList() else celebrationQueue.drop(1)
+            },
         )
     }
 

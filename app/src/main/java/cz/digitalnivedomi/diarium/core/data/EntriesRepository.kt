@@ -1,11 +1,20 @@
 package cz.digitalnivedomi.diarium.core.data
 
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+
+/**
+ * Outcome of [EntriesRepository.uploadPhoto] — exactly one field is set.
+ *
+ * [error] is short and user-facing („fotka je moc velká“), never a raw HTTP
+ * dump; the code and body go to logcat instead.
+ */
+data class PhotoUpload(val url: String? = null, val error: String? = null)
 
 /**
  * Reads and writes the `entries` table through the server-side RPCs — the same
@@ -275,14 +284,31 @@ class EntriesRepository(
 
     /**
      * Uploads the day's photo to the public `diary-photos` bucket at
-     * `{uid}/{date}.jpg` (upsert) and returns its public URL, or null on failure.
+     * `{uid}/{date}.jpg` (upsert).
+     *
+     * Returns the public URL on success, or a short user-facing reason on
+     * failure. The reason matters: the previous `null` return hid the bucket's
+     * 5 MB cap (HTTP 413), so an oversized photo looked exactly like a dead
+     * network and the entry silently kept `photo_path = null`.
      */
-    suspend fun uploadPhoto(date: String, bytes: ByteArray): String? = withContext(Dispatchers.IO) {
-        val userId = session.userId() ?: return@withContext null
+    suspend fun uploadPhoto(date: String, bytes: ByteArray): PhotoUpload = withContext(Dispatchers.IO) {
+        val userId = session.userId() ?: return@withContext PhotoUpload(error = "přihlášení vypršelo")
         val path = "$userId/$date.jpg"
         val resp = client.uploadObject("diary-photos/$path", bytes, "image/jpeg", upsert = true)
-        if (!resp.isSuccessful) return@withContext null
-        client.publicStorageUrl("diary-photos/$path")
+        if (!resp.isSuccessful) {
+            Log.w(LOG_TAG, "photo upload failed: HTTP ${resp.code} ${resp.errorMessage.orEmpty()} (${bytes.size} B)")
+            return@withContext PhotoUpload(error = uploadError(resp))
+        }
+        PhotoUpload(url = client.publicStorageUrl("diary-photos/$path"))
+    }
+
+    /** Maps a Storage failure onto a reason the form can show next to the buttons. */
+    private fun uploadError(resp: HttpResponse): String = when {
+        resp.code == 413 -> "fotka je moc velká"
+        resp.code == 401 || resp.code == 403 -> "přihlášení vypršelo"
+        resp.code == 400 && resp.errorMessage?.contains("mime", ignoreCase = true) == true ->
+            "nepodporovaný formát fotky"
+        else -> "HTTP ${resp.code}"
     }
 
     companion object {
@@ -293,6 +319,9 @@ class EntriesRepository(
          * real read.
          */
         const val RANGE_LIMIT = 100
+
+        /** Logcat tag for the photo upload — the only failure here that used to be silent. */
+        private const val LOG_TAG = "Diarium/Photo"
 
         /** Same wording `save` uses, so a signed-out read reads like a session problem. */
         private const val SIGNED_OUT = "Přihlášení vypršelo, přihlas se znovu."
