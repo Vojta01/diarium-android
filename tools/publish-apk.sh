@@ -19,6 +19,11 @@ WORK="/tmp/diarium-apk-branch"
 
 test -f "$APK" || { echo "APK not found: $APK" >&2; exit 1; }
 
+# The script cds into a fresh clone before copying, so a relative path from the
+# caller's directory stops resolving once we leave it — pin it to an absolute
+# path first (this used to fail with "cannot stat" on every relative invocation).
+APK="$(cd "$(dirname "$APK")" && pwd)/$(basename "$APK")"
+
 # Refuse to publish anything but the stable key: a debug-signed APK would force
 # every user to uninstall first, which is exactly what the release key fixed.
 # The expected fingerprint is the stable key's own (keytool -list -v, 2026-09-11).
