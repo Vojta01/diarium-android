@@ -243,4 +243,15 @@ object ReportSafetyWindow {
             else -> false
         }
     }
+
+    /**
+     * The period end a monthly run is responsible for: the 1st of the current month.
+     *
+     * The rescue window is still open on the 2nd, so a run that day must describe the
+     * month that ended on the 1st. Without this it fell back to "today" and produced a
+     * rolling 30-day window shifted by one day — a different period from the report the
+     * 1st had already written, so nothing recognised it as a duplicate (reported
+     * 2026-11-02: two monthly reports, 10-03…11-01 and 10-04…11-02).
+     */
+    fun lastMonthlyOccurrence(now: ZonedDateTime): LocalDate = now.toLocalDate().withDayOfMonth(1)
 }

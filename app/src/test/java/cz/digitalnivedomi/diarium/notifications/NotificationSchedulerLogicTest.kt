@@ -292,4 +292,23 @@ class NotificationSchedulerLogicTest {
         assertTrue(ReportSafetyWindow.isMonthlyWindow(z(2026, 11, 2, 10, 0), 9 * 60))
         assertFalse(ReportSafetyWindow.isMonthlyWindow(z(2026, 11, 3, 10, 0), 9 * 60))
     }
+
+    @Test
+    fun lastMonthlyOccurrence_isTheFirstOfTheCurrentMonth() {
+        // The rescue on the 2nd belongs to the month that ended on the 1st: that is
+        // the period the alarm already wrote, so the duplicate check can see it.
+        assertEquals(
+            LocalDate.of(2026, 11, 1),
+            ReportSafetyWindow.lastMonthlyOccurrence(z(2026, 11, 2, 13, 57)),
+        )
+        assertEquals(
+            LocalDate.of(2026, 11, 1),
+            ReportSafetyWindow.lastMonthlyOccurrence(z(2026, 11, 1, 9, 31)),
+        )
+        // Just after midnight on the 1st the run still belongs to that same 1st.
+        assertEquals(
+            LocalDate.of(2026, 12, 1),
+            ReportSafetyWindow.lastMonthlyOccurrence(z(2026, 12, 1, 0, 30)),
+        )
+    }
 }

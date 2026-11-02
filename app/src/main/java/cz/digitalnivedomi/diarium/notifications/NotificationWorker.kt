@@ -199,29 +199,32 @@ class NotificationWorker(
 
         val marker = if (type == "weekly") prefs.lastWeeklyNotifiedId else prefs.lastMonthlyNotifiedId
 
-        // Never generate a second report when a fresh one already sits on the
-        // server (this run's own request, the safety net, or a manual run).
-        // Otherwise: on-device generation with the user's key generates and
-        // inserts synchronously, so the poll below finds the row immediately;
-        // the server fallback needs the longer poll (the route retries empty
-        // outputs, so up to ~75 s).
+        // The period this run is responsible for. A late (safety-net) run must
+        // describe the week or month it was scheduled for, never the one that
+        // started after it: on Monday that is the Sunday, on the 2nd the 1st.
+        val now = ZonedDateTime.now(ZoneId.systemDefault())
+        val targetEnd = if (type == "weekly") {
+            ReportSafetyWindow.lastWeeklyOccurrence(
+                now = now,
+                weeklyDay = prefs.weeklyDay,
+                weeklyTimeMinutes = prefs.weeklyTimeMinutes,
+            )
+        } else {
+            ReportSafetyWindow.lastMonthlyOccurrence(now)
+        }
+
+        // Never generate a second report for a period that already has one. The
+        // age check alone is not enough: the monthly rescue window is still open on
+        // the 2nd, and a report written on the 1st at 13:51 is 24 h 6 min old when
+        // the net runs at 13:57 — "not fresh" by six minutes, which is how the 2nd
+        // got the same month again, shifted by one day.
         val existing = latestReportOnce(type)
-        val latest = if (existing != null && isFresh(existing)) {
+        val existingEnd = existing?.let { if (it.isNull("period_end")) null else it.optString("period_end") }
+        val existingCoversTarget = existingEnd != null && existingEnd == targetEnd.toString()
+        val latest = if (existing != null && (existingCoversTarget || isFresh(existing))) {
             existing
         } else if (aiKeys.hasKey()) {
-            // A late (safety-net) run must still describe the week it was
-            // scheduled for. Pass the last scheduled weekly date explicitly:
-            // on Monday that is the Sunday the report belongs to.
-            val reportEnd = if (type == "weekly") {
-                ReportSafetyWindow.lastWeeklyOccurrence(
-                    now = ZonedDateTime.now(ZoneId.systemDefault()),
-                    weeklyDay = prefs.weeklyDay,
-                    weeklyTimeMinutes = prefs.weeklyTimeMinutes,
-                )
-            } else {
-                null
-            }
-            val outcome = generator.generate(type, reportEnd)
+            val outcome = generator.generate(type, targetEnd)
             if (outcome !is ReportOutcome.Generated) {
                 // No key path never reaches here (checked above); record why a
                 // failure happened so the cause is visible in logs — the poll
@@ -230,7 +233,7 @@ class NotificationWorker(
             }
             latestReport(type, attempts = if (outcome is ReportOutcome.Generated) REPORT_POLL_ATTEMPTS else 1)
         } else {
-            val requested = requestReportGeneration(type)
+            val requested = requestReportGeneration(type, targetEnd)
             latestReport(type, attempts = if (requested) REPORT_POLL_ATTEMPTS else 1)
         } ?: return
         val id = latest.optString("id")
@@ -291,7 +294,7 @@ class NotificationWorker(
      * Returns true when the server accepted the request (2xx). A failure is not
      * fatal: the notification path still polls for an already existing report.
      */
-    private suspend fun requestReportGeneration(type: String): Boolean {
+    private suspend fun requestReportGeneration(type: String, periodEnd: java.time.LocalDate): Boolean {
         val token = session.validAccessToken() ?: return false
         val profile = try {
             profileStore.load()
@@ -301,6 +304,9 @@ class NotificationWorker(
         return try {
             val url = buildString {
                 append("${BuildConfig.DIARIUM_URL}/api/cron/ai-report?type=$type")
+                // The route must describe the same period as the alarm, not "today":
+                // a rescue on the 2nd belongs to the month that ended on the 1st.
+                append("&periodEnd=").append(periodEnd)
                 profile?.name?.takeIf { it.isNotBlank() }?.let { name ->
                     append("&userName=").append(java.net.URLEncoder.encode(name, "UTF-8"))
                 }
@@ -334,7 +340,7 @@ class NotificationWorker(
                 "ai_reports",
                 mapOf(
                     "type" to "eq.$type",
-                    "select" to "id,created_at",
+                    "select" to "id,created_at,period_end",
                     "order" to "created_at.desc",
                     "limit" to "1",
                 ),
