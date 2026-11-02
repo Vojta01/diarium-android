@@ -203,6 +203,10 @@ class NotificationWorker(
         // describe the week or month it was scheduled for, never the one that
         // started after it: on Monday that is the Sunday, on the 2nd the 1st.
         val now = ZonedDateTime.now(ZoneId.systemDefault())
+        // A monthly report covers the whole previous calendar month (1st .. last day);
+        // a weekly one covers the 7 days that end on the last scheduled day.
+        val monthly = ReportSafetyWindow.previousMonth(ReportSafetyWindow.lastMonthlyOccurrence(now))
+        val targetStart = if (type == "weekly") null else monthly.first
         val targetEnd = if (type == "weekly") {
             ReportSafetyWindow.lastWeeklyOccurrence(
                 now = now,
@@ -210,7 +214,7 @@ class NotificationWorker(
                 weeklyTimeMinutes = prefs.weeklyTimeMinutes,
             )
         } else {
-            ReportSafetyWindow.lastMonthlyOccurrence(now)
+            monthly.second
         }
 
         // Never generate a second report for a period that already has one. The
@@ -224,7 +228,7 @@ class NotificationWorker(
         val latest = if (existing != null && (existingCoversTarget || isFresh(existing))) {
             existing
         } else if (aiKeys.hasKey()) {
-            val outcome = generator.generate(type, targetEnd)
+            val outcome = generator.generate(type, targetEnd, targetStart)
             if (outcome !is ReportOutcome.Generated) {
                 // No key path never reaches here (checked above); record why a
                 // failure happened so the cause is visible in logs — the poll
@@ -233,7 +237,7 @@ class NotificationWorker(
             }
             latestReport(type, attempts = if (outcome is ReportOutcome.Generated) REPORT_POLL_ATTEMPTS else 1)
         } else {
-            val requested = requestReportGeneration(type, targetEnd)
+            val requested = requestReportGeneration(type, targetEnd, targetStart)
             latestReport(type, attempts = if (requested) REPORT_POLL_ATTEMPTS else 1)
         } ?: return
         val id = latest.optString("id")
@@ -294,7 +298,7 @@ class NotificationWorker(
      * Returns true when the server accepted the request (2xx). A failure is not
      * fatal: the notification path still polls for an already existing report.
      */
-    private suspend fun requestReportGeneration(type: String, periodEnd: java.time.LocalDate): Boolean {
+    private suspend fun requestReportGeneration(type: String, periodEnd: LocalDate, periodStart: LocalDate?): Boolean {
         val token = session.validAccessToken() ?: return false
         val profile = try {
             profileStore.load()
@@ -307,6 +311,7 @@ class NotificationWorker(
                 // The route must describe the same period as the alarm, not "today":
                 // a rescue on the 2nd belongs to the month that ended on the 1st.
                 append("&periodEnd=").append(periodEnd)
+                periodStart?.let { append("&periodStart=").append(it) }
                 profile?.name?.takeIf { it.isNotBlank() }?.let { name ->
                     append("&userName=").append(java.net.URLEncoder.encode(name, "UTF-8"))
                 }

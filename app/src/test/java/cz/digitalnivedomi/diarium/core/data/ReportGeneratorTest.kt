@@ -24,8 +24,8 @@ import java.time.LocalDate
  * real key.
  *
  * The period windows are driven by an injected clock, so `today` is
- * 2026-10-12 in every test: weekly runs `2026-10-05..2026-10-12`, monthly runs
- * `2026-09-12..2026-10-12`.
+ * 2026-10-12 in every test unless one passes its own: weekly runs
+ * `2026-10-05..2026-10-11`, monthly covers the whole previous calendar month.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
@@ -125,11 +125,12 @@ class ReportGeneratorTest {
     }
 
     @Test
-    fun `monthly uses the 30-day window, the monthly system prompt and the larger budget`() = runTest {
+    fun `monthly covers the whole previous calendar month with the monthly prompt`() = runTest {
         useRealisticFixtures()
         deepSeekPlan = listOf(HttpResponse(200, completion("Měsíční shrnutí.")))
 
-        val outcome = generator().generate("monthly")
+        // Today is 3 November, so the report describes October: 1st .. 31st.
+        val outcome = generator(today = LocalDate.of(2026, 11, 3)).generate("monthly")
 
         assertEquals(ReportOutcome.Generated, outcome)
         val body = JSONObject(deepSeekRequests.single().body!!)
@@ -140,10 +141,14 @@ class ReportGeneratorTest {
         )
         assertFalse(body.getJSONArray("messages").getJSONObject(1).getString("content").contains("Denní přehled"))
 
+        // The read starts on the 1st of the month, not 30 rolling days back.
+        val entriesQuery = decoded(supabaseRequests.single { it.url.startsWith("$BASE_URL/entries?") })
+        assertTrue(entriesQuery.contains("date=gte.2026-10-01"))
+
         val row = JSONObject(supabaseRequests.single { it.method == "POST" }.body!!)
         assertEquals("monthly", row.getString("type"))
-        assertEquals("2026-09-13", row.getString("period_start"))
-        assertEquals("2026-10-12", row.getString("period_end"))
+        assertEquals("2026-10-01", row.getString("period_start"))
+        assertEquals("2026-10-31", row.getString("period_end"))
     }
 
     @Test

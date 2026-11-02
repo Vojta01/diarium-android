@@ -254,4 +254,17 @@ object ReportSafetyWindow {
      * 2026-11-02: two monthly reports, 10-03…11-01 and 10-04…11-02).
      */
     fun lastMonthlyOccurrence(now: ZonedDateTime): LocalDate = now.toLocalDate().withDayOfMonth(1)
+
+    /**
+     * The full calendar month that ended before [firstOfMonth]: the 1st and the last day.
+     *
+     * A monthly report describes one whole month, not a rolling 30-day window: the
+     * number of covered days is 28, 29, 30 or 31, and the period matches the calendar
+     * the user reads ("říjen 2026") instead of a window that starts on an arbitrary
+     * day such as 3. 10.
+     */
+    fun previousMonth(firstOfMonth: LocalDate): Pair<LocalDate, LocalDate> {
+        val end = firstOfMonth.minusDays(1)
+        return end.withDayOfMonth(1) to end
+    }
 }

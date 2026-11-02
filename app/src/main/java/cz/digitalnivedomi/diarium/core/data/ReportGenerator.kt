@@ -41,7 +41,8 @@ sealed interface ReportOutcome {
  * variable, so no secret of ours is involved anywhere.
  *
  * The whole exchange:
- *  1. reads `entries` (last 7 / 30 days), `scales`, `habit_catalog` and
+ *  1. reads `entries` (the last 7 days, or the whole previous calendar month),
+ *     `scales`, `habit_catalog` and
  *     `user_habits` through [SupabaseClient] with the signed-in user's JWT (RLS
  *     scopes every row); a failed scales/habits read degrades exactly like the
  *     route's `try/catch` — the prompt just loses that section;
@@ -71,7 +72,7 @@ class ReportGenerator(
     private val session: SessionContext = SessionContext(),
     private val deepSeek: HttpTransport = defaultDeepSeekTransport(),
     private val deepSeekUrl: String = BuildConfig.DEEPSEEK_URL,
-    /** Overridable clock — a weekly report defaults to the last Sunday, a monthly one to today. */
+    /** Overridable clock — a weekly report defaults to the last Sunday, a monthly one to the month that just ended. */
     private val today: () -> LocalDate = { LocalDate.now() },
     /** Pause between empty-content retries; 0 in tests so they stay instant. */
     private val retryDelayMs: Long = RETRY_DELAY_MS,
@@ -87,9 +88,13 @@ class ReportGenerator(
     private val goals: GoalsRepository? = null,
 ) {
 
-    suspend fun generate(type: String, periodEnd: LocalDate? = null): ReportOutcome = withContext(Dispatchers.IO) {
+    suspend fun generate(
+        type: String,
+        periodEnd: LocalDate? = null,
+        periodStart: LocalDate? = null,
+    ): ReportOutcome = withContext(Dispatchers.IO) {
         try {
-            generateBlocking(type, periodEnd)
+            generateBlocking(type, periodEnd, periodStart)
         } catch (e: CancellationException) {
             // The caller walked away; not a failure to report.
             throw e
@@ -102,7 +107,7 @@ class ReportGenerator(
         }
     }
 
-    private suspend fun generateBlocking(type: String, requestedEnd: LocalDate?): ReportOutcome {
+    private suspend fun generateBlocking(type: String, requestedEnd: LocalDate?, requestedStart: LocalDate?): ReportOutcome {
         // No key, no call — the worker then walks the server-fallback path.
         val apiKey = keyStore.key() ?: return ReportOutcome.NoKey
         val userId = session.userId() ?: return ReportOutcome.Failed(SIGNED_OUT)
@@ -113,10 +118,18 @@ class ReportGenerator(
         val periodEnd = requestedEnd ?: if (type == "weekly") {
             today().with(TemporalAdjusters.previousOrSame(DayOfWeek.SUNDAY))
         } else {
-            today()
+            // A monthly report covers the whole month before today, so the default
+            // end is the last day of the previous calendar month.
+            today().withDayOfMonth(1).minusDays(1)
         }
-        // Both windows are inclusive: 7 days for a week, 30 for a month.
-        val periodStart = periodEnd.minusDays(if (type == "monthly") MONTHLY_DAYS - 1 else WEEKLY_DAYS - 1)
+        // A monthly window is always a calendar month (28..31 days): the 1st of the
+        // month that contains periodEnd. The worker passes it explicitly, and this
+        // fallback keeps a direct call on the same rule.
+        val periodStart = requestedStart ?: if (type == "monthly") {
+            periodEnd.withDayOfMonth(1)
+        } else {
+            periodEnd.minusDays(WEEKLY_DAYS - 1)
+        }
         val fromDate = periodStart.toString()
         val periodEndIso = periodEnd.toString()
 
@@ -339,9 +352,8 @@ class ReportGenerator(
         /** Pause between those retries — the route waits 4 s too. */
         const val RETRY_DELAY_MS = 4_000L
 
-        /** Route window: `weekly` = today-7d..today, `monthly` = today-30d..today. */
+        /** Weekly window: 7 days. A monthly window is a calendar month, so it has no length constant. */
         const val WEEKLY_DAYS = 7L
-        const val MONTHLY_DAYS = 30L
 
         /** The route refuses to summarize fewer than two days. */
         const val MIN_ENTRIES = 2

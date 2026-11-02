@@ -311,4 +311,27 @@ class NotificationSchedulerLogicTest {
             ReportSafetyWindow.lastMonthlyOccurrence(z(2026, 12, 1, 0, 30)),
         )
     }
+
+    @Test
+    fun previousMonth_isTheWholeCalendarMonthBefore() {
+        // A monthly report covers 1st..last day of the month that just ended, so the
+        // window is 31 days for October and 28 or 29 for February — never a fixed 30.
+        assertEquals(
+            LocalDate.of(2026, 10, 1) to LocalDate.of(2026, 10, 31),
+            ReportSafetyWindow.previousMonth(LocalDate.of(2026, 11, 1)),
+        )
+        assertEquals(
+            LocalDate.of(2028, 2, 1) to LocalDate.of(2028, 2, 29),
+            ReportSafetyWindow.previousMonth(LocalDate.of(2028, 3, 1)),
+        )
+        assertEquals(
+            LocalDate.of(2027, 2, 1) to LocalDate.of(2027, 2, 28),
+            ReportSafetyWindow.previousMonth(LocalDate.of(2027, 3, 1)),
+        )
+        // Year boundary: January looks back to December of the previous year.
+        assertEquals(
+            LocalDate.of(2026, 12, 1) to LocalDate.of(2026, 12, 31),
+            ReportSafetyWindow.previousMonth(LocalDate.of(2027, 1, 1)),
+        )
+    }
 }
