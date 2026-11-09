@@ -72,6 +72,26 @@ Diarium account, nowhere else.
 > Sideloading from GitHub is for personal builds. For distribution through a store the
 > app can be signed and published normally.
 
+## Screenshots
+
+These Android screens use synthetic fixture data, not a personal account. The interface is in English; AI-generated report text remains in Czech.
+
+| Dashboard | Check-in |
+| --- | --- |
+| [![Dashboard](docs/screenshots/en/01-dashboard.png)](docs/screenshots/en/01-dashboard.png) | [![Check-in](docs/screenshots/en/02-check-in.png)](docs/screenshots/en/02-check-in.png) |
+
+| History | Statistics |
+| --- | --- |
+| [![History](docs/screenshots/en/03-history.png)](docs/screenshots/en/03-history.png) | [![Statistics](docs/screenshots/en/04-statistics.png)](docs/screenshots/en/04-statistics.png) |
+
+| Settings | Goals |
+| --- | --- |
+| [![Settings](docs/screenshots/en/05-settings.png)](docs/screenshots/en/05-settings.png) | [![Goals](docs/screenshots/en/06-goals.png)](docs/screenshots/en/06-goals.png) |
+
+| Badges | AI reports |
+| --- | --- |
+| [![Badges](docs/screenshots/en/07-achievements.png)](docs/screenshots/en/07-achievements.png) | [![AI reports — Czech report text](docs/screenshots/en/08-ai-report.png)](docs/screenshots/en/08-ai-report.png) |
+
 ## Versioning
 
 Each tagged release (`v1.2.3`) is built by GitHub Actions and published as
