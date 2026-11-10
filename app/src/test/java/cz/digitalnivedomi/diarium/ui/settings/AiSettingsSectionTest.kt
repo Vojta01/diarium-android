@@ -1,7 +1,5 @@
 package cz.digitalnivedomi.diarium.ui.settings
 
-import androidx.compose.ui.test.assertExists
-import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
