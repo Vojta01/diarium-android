@@ -5,6 +5,7 @@ on:
     branches:
       - fix/android-ai-cas-recovery-20261110
       - ci/android-ai-cas-recovery-full-tests-20261110
+      - ci/android-usage-sync-v2-20261110-a91c4d
 
 permissions:
   contents: read
