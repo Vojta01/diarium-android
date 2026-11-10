@@ -10,6 +10,7 @@ import cz.digitalnivedomi.diarium.core.data.HttpTransport
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
 import cz.digitalnivedomi.diarium.core.data.UsagePushOutcome
 import cz.digitalnivedomi.diarium.core.data.UsageSyncRepository
+import cz.digitalnivedomi.diarium.core.data.UsageSyncRequestStore
 import cz.digitalnivedomi.diarium.core.stats.DayAppUsage
 import cz.digitalnivedomi.diarium.core.stats.DayUsage
 import cz.digitalnivedomi.diarium.stats.UsageStatsSource
@@ -37,7 +38,7 @@ class UsageSyncWorkerIsolationTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        listOf("diarium_session", UsageSyncConsentStore.PREFS_NAME, "diarium_notifications")
+        listOf("diarium_session", UsageSyncConsentStore.PREFS_NAME, "diarium_notifications", UsageSyncRequestStore.PREFS_NAME)
             .forEach { context.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit() }
         requests.clear()
         sessionStore = SessionStore(context)
@@ -48,7 +49,8 @@ class UsageSyncWorkerIsolationTest {
     fun `reboot backfill captures its owner and retries with the same owner token`() = runBlocking {
         sessionStore.save(session(OWNER_A))
         consentStore.setEnabledFor(OWNER_A, true)
-        val networkAttempt = AtomicInteger()
+        var rowRevision = 7L
+        val writeAttempt = AtomicInteger()
         val repository = UsageSyncRepository(
             store = sessionStore,
             consentStore = consentStore,
@@ -56,8 +58,24 @@ class UsageSyncWorkerIsolationTest {
                 sessionStore = sessionStore,
                 transport = HttpTransport { request ->
                     requests += request
-                    if (networkAttempt.getAndIncrement() == 0) HttpResponse(503, "temporary")
-                    else HttpResponse(200, "{}")
+                    when {
+                        request.method == "GET" && request.url.contains("/entries?") -> HttpResponse(
+                            200,
+                            org.json.JSONArray().put(
+                                org.json.JSONObject().put("id", ROW_ID).put("revision", rowRevision),
+                            ).toString(),
+                        )
+                        request.url.endsWith("/rpc/save_daily_entry_v2") && writeAttempt.getAndIncrement() == 0 -> {
+                            rowRevision = 8L // Synthetic commit; its response is lost.
+                            throw java.io.IOException("lost conditional-save response")
+                        }
+                        request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                            200,
+                            org.json.JSONObject().put("status", "saved").put("entry_id", ROW_ID)
+                                .put("revision", 8).put("replayed", true).toString(),
+                        )
+                        else -> HttpResponse(500, "unexpected endpoint")
+                    }
                 },
                 baseUrl = "https://example.supabase.co/rest/v1",
                 anonKey = "anon-test-key",
@@ -70,6 +88,7 @@ class UsageSyncWorkerIsolationTest {
                     apps = listOf(DayAppUsage("com.example.app", "Example", 120)),
                 )
             },
+            requestStore = UsageSyncRequestStore(context),
         )
 
         // SyncBootReceiver builds this exact input after reboot; a retry reuses the
@@ -87,12 +106,71 @@ class UsageSyncWorkerIsolationTest {
             UsageSyncWorker.runUsageSync(capturedOwner, listOf(DATE), repository::pushDay),
         )
 
-        assertEquals(2, requests.size)
+        val writes = requests.filter { it.url.endsWith("/rpc/save_daily_entry_v2") }
+        assertEquals(4, requests.size)
+        assertEquals(2, writes.size)
+        assertEquals(writes[0].body, writes[1].body)
+        assertEquals(
+            org.json.JSONObject(writes[0].body!!).getString("p_request_id"),
+            org.json.JSONObject(writes[1].body!!).getString("p_request_id"),
+        )
         assertTrue(requests.all { it.headers["Authorization"] == "Bearer ${jwt(OWNER_A)}" })
-        assertTrue(requests.all {
+        assertTrue(writes.all {
             org.json.JSONObject(it.body!!).getJSONObject("p_payload").getString("user_id") == OWNER_A
         })
+        assertFalse(requests.any { it.url.endsWith("/rpc/save_daily_entry") })
         assertFalse(requests.any { it.headers["Authorization"] == "Bearer ${jwt(OWNER_B)}" })
+    }
+
+    @Test
+    fun `v2 unavailability retries the same durable request without a legacy write`() = runBlocking {
+        sessionStore.save(session(OWNER_A))
+        consentStore.setEnabledFor(OWNER_A, true)
+        val repository = UsageSyncRepository(
+            store = sessionStore,
+            consentStore = consentStore,
+            client = SupabaseClient(
+                sessionStore = sessionStore,
+                transport = HttpTransport { request ->
+                    requests += request
+                    when {
+                        request.method == "GET" && request.url.contains("/entries?") -> HttpResponse(
+                            200,
+                            org.json.JSONArray().put(
+                                org.json.JSONObject().put("id", ROW_ID).put("revision", 7),
+                            ).toString(),
+                        )
+                        request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(404, "RPC unavailable")
+                        else -> HttpResponse(500, "unexpected endpoint")
+                    }
+                },
+                baseUrl = "https://example.supabase.co/rest/v1",
+                anonKey = "anon-test-key",
+            ),
+            usageStats = object : UsageStatsSource {
+                override fun hasUsageAccess(): Boolean = true
+                override fun dayUsage(date: String) = DayUsage(
+                    totalSec = 600,
+                    unlocks = 3,
+                    apps = listOf(DayAppUsage("com.example.app", "Example", 120)),
+                )
+            },
+            requestStore = UsageSyncRequestStore(context),
+        )
+
+        assertEquals(
+            UsageSyncAttempt.RETRY,
+            UsageSyncWorker.runUsageSync(OWNER_A, listOf(DATE), repository::pushDay),
+        )
+        assertEquals(
+            UsageSyncAttempt.RETRY,
+            UsageSyncWorker.runUsageSync(OWNER_A, listOf(DATE), repository::pushDay),
+        )
+
+        val writes = requests.filter { it.url.endsWith("/rpc/save_daily_entry_v2") }
+        assertEquals(2, writes.size)
+        assertEquals(writes[0].body, writes[1].body)
+        assertFalse(requests.any { it.url.endsWith("/rpc/save_daily_entry") })
     }
 
     @Test
@@ -130,6 +208,7 @@ class UsageSyncWorkerIsolationTest {
     private companion object {
         const val OWNER_A = "account-a"
         const val OWNER_B = "account-b"
+        const val ROW_ID = "11111111-1111-4111-8111-111111111111"
         const val DATE = "2026-11-08"
     }
 }

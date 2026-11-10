@@ -32,8 +32,12 @@ class UsageSyncConditionalWriteTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        listOf("diarium_session", UsageSyncConsentStore.PREFS_NAME, "diarium_notifications")
-            .forEach { context.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit() }
+        listOf(
+            "diarium_session",
+            UsageSyncConsentStore.PREFS_NAME,
+            "diarium_notifications",
+            UsageSyncRequestStore.PREFS_NAME,
+        ).forEach { context.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit() }
         requests.clear()
         session = SessionStore(context)
         consent = UsageSyncConsentStore(context)
@@ -289,6 +293,7 @@ class UsageSyncConditionalWriteTest {
             anonKey = "anon-test-key",
         ),
         usageStats = usage,
+        requestStore = UsageSyncRequestStore(context),
     )
 
     private fun sessionJson(ownerId: String): JSONObject = JSONObject().apply {

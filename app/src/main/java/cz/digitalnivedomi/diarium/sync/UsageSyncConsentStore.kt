@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.sync
 
 import android.content.Context
 import android.util.Base64
+import cz.digitalnivedomi.diarium.core.data.UsageSyncRequestStore
 
 /**
  * Screen-time sync is an account-scoped consent, not a device-wide preference.
@@ -37,6 +38,9 @@ class UsageSyncConsentStore(context: Context) {
                     .apply()
             }
             if (!enabled) {
+                // An opted-out account must not retain queued usage snapshots for a
+                // later process restart or silent replay after re-enabling.
+                UsageSyncRequestStore(appContext).clearOwner(owner)
                 // A backfill marker is written when work is queued. If opt-out
                 // cancels that work, do not let a quick re-opt-in inherit it.
                 SyncScheduler.resetBackfillState(appContext, owner)

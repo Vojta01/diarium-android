@@ -92,8 +92,15 @@ class SupabaseClient(
     ): HttpResponse = transport.execute(buildRequest(method, path, query, body, extraHeaders))
 
     /** Build the owner-pinned request before entering the short dispatch/consent gate. */
+    internal fun prepareGetRequest(path: String, query: Map<String, String> = emptyMap()): HttpRequest =
+        buildRequest("GET", path, query, body = null)
+
     internal fun preparePostRequest(path: String, body: JSONObject): HttpRequest =
-        buildRequest("POST", path, emptyMap(), body.toString())
+        preparePostRequest(path, body.toString())
+
+    /** Preserve an outboxed RPC body byte-for-byte for ambiguous response replay. */
+    internal fun preparePostRequest(path: String, bodyJson: String): HttpRequest =
+        buildRequest("POST", path, emptyMap(), bodyJson)
 
     /** Enqueue asynchronously so consent is locked only until network handoff. */
     internal fun enqueue(

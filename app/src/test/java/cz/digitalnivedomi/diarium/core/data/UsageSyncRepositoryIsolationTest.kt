@@ -35,7 +35,7 @@ class UsageSyncRepositoryIsolationTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
-        listOf("diarium_session", UsageSyncConsentStore.PREFS_NAME, "diarium_notifications")
+        listOf("diarium_session", UsageSyncConsentStore.PREFS_NAME, "diarium_notifications", UsageSyncRequestStore.PREFS_NAME)
             .forEach { context.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit() }
         requests.clear()
         sessionStore = SessionStore(context)
@@ -96,18 +96,26 @@ class UsageSyncRepositoryIsolationTest {
         val callback = java.util.concurrent.atomic.AtomicReference<((Result<HttpResponse>) -> Unit)?>(null)
         val optOutCompleted = CountDownLatch(1)
         val transport = object : HttpTransport {
-            override fun execute(request: HttpRequest): HttpResponse {
-                synchronized(requests) { requests += request }
-                return HttpResponse(500, "unexpected synchronous request")
-            }
+            override fun execute(request: HttpRequest): HttpResponse =
+                error("the consent-gated asynchronous transport path is expected")
 
             override fun enqueue(
                 request: HttpRequest,
                 responseCallback: (Result<HttpResponse>) -> Unit,
             ): HttpCallHandle {
                 synchronized(requests) { requests += request }
-                callback.set(responseCallback)
-                transportStarted.countDown()
+                if (request.method == "GET") {
+                    responseCallback(
+                        Result.success(
+                            HttpResponse(200, org.json.JSONArray().put(
+                                org.json.JSONObject().put("id", ROW_ID).put("revision", 7),
+                            ).toString()),
+                        ),
+                    )
+                } else {
+                    callback.set(responseCallback)
+                    transportStarted.countDown()
+                }
                 return HttpCallHandle { }
             }
         }
@@ -124,13 +132,21 @@ class UsageSyncRepositoryIsolationTest {
 
         // An already handed-off request may complete after opt-out; it cannot be
         // recalled, but no subsequent request may cross the same owner gate.
-        callback.get()!!.invoke(Result.success(HttpResponse(200, "{}")))
+        callback.get()!!.invoke(
+            Result.success(
+                HttpResponse(
+                    200,
+                    org.json.JSONObject().put("status", "saved").put("entry_id", ROW_ID)
+                        .put("revision", 8).put("replayed", false).toString(),
+                ),
+            ),
+        )
         assertEquals(UsagePushOutcome.SENT, worker.await())
-        assertEquals("the in-flight handoff is allowed to finish", 1, requests.size)
-        assertEquals("Bearer ${jwt(OWNER_A)}", requests.single().headers["Authorization"])
+        assertEquals("the in-flight handoff may finish after opt-out", 2, requests.size)
+        assertEquals("Bearer ${jwt(OWNER_A)}", requests.single { it.method == "POST" }.headers["Authorization"])
 
         assertEquals(UsagePushOutcome.CONSENT_DISABLED, repository.pushDay(OWNER_A, DATE))
-        assertEquals("no upload may start after opt-out completes", 1, requests.size)
+        assertEquals("no upload may start after opt-out completes", 2, requests.size)
     }
 
     @Test
@@ -181,16 +197,34 @@ class UsageSyncRepositoryIsolationTest {
     fun `legitimate owner opt in writes only that owner's payload with that owner's token`() = runBlocking {
         sessionStore.save(session(OWNER_A))
         consentStore.setEnabledFor(OWNER_A, true)
-        val repository = repository()
+        val repository = repository(response = { request ->
+            when {
+                request.method == "GET" && request.url.contains("/entries?") -> HttpResponse(
+                    200,
+                    org.json.JSONArray().put(org.json.JSONObject().put("id", ROW_ID).put("revision", 7)).toString(),
+                )
+                request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                    200,
+                    org.json.JSONObject().put("status", "saved").put("entry_id", ROW_ID)
+                        .put("revision", 8).put("replayed", false).toString(),
+                )
+                else -> HttpResponse(500, "unexpected endpoint")
+            }
+        })
 
         assertEquals(UsagePushOutcome.SENT, repository.pushDay(OWNER_A, DATE))
 
-        val request = requests.single()
+        val request = requests.single { it.method == "POST" }
         assertEquals("Bearer ${jwt(OWNER_A)}", request.headers["Authorization"])
         assertEquals("POST", request.method)
-        assertTrue(request.url.endsWith("/rpc/save_daily_entry"))
-        assertEquals(OWNER_A, org.json.JSONObject(request.body!!).getJSONObject("p_payload").getString("user_id"))
-        assertEquals(DATE, org.json.JSONObject(request.body!!).getJSONObject("p_payload").getString("date"))
+        assertTrue(request.url.endsWith("/rpc/save_daily_entry_v2"))
+        val body = org.json.JSONObject(request.body!!)
+        assertEquals(true, body.getBoolean("p_expected_exists"))
+        assertEquals(ROW_ID, body.getString("p_expected_id"))
+        assertEquals(7L, body.getLong("p_expected_revision"))
+        assertEquals(OWNER_A, body.getJSONObject("p_payload").getString("user_id"))
+        assertEquals(DATE, body.getJSONObject("p_payload").getString("date"))
+        assertFalse(requests.any { it.url.endsWith("/rpc/save_daily_entry") })
         assertFalse(requests.any { it.headers["Authorization"] == "Bearer ${jwt(OWNER_B)}" })
     }
 
@@ -209,25 +243,35 @@ class UsageSyncRepositoryIsolationTest {
         consentStore.setEnabledFor(OWNER_A, true)
         var responseCount = 0
         val repository = repository(
-            response = {
-                if (responseCount++ == 0) HttpResponse(401, "unauthorized")
-                else HttpResponse(200, "{}")
+            response = { request ->
+                val responseIndex = responseCount++
+                when {
+                    request.method == "GET" && responseIndex == 0 -> HttpResponse(401, "unauthorized")
+                    request.method == "GET" && request.url.contains("/entries?") -> HttpResponse(
+                        200,
+                        org.json.JSONArray().put(org.json.JSONObject().put("id", ROW_ID).put("revision", 7)).toString(),
+                    )
+                    request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                        200,
+                        org.json.JSONObject().put("status", "saved").put("entry_id", ROW_ID)
+                            .put("revision", 8).put("replayed", false).toString(),
+                    )
+                    else -> HttpResponse(500, "unexpected endpoint")
+                }
             },
         )
 
         assertEquals(UsagePushOutcome.SENT, repository.pushDay(OWNER_A, DATE))
 
-        assertEquals("one 401 may cause only one refreshed retry", 2, requests.size)
-        assertEquals(2, responseCount)
+        assertEquals("one 401 may cause only one refreshed retry", 3, requests.size)
+        assertEquals(3, responseCount)
         assertEquals(1, refreshCount)
         assertEquals("Bearer ${jwt(OWNER_A)}", requests[0].headers["Authorization"])
-        assertEquals(
-            "Bearer ${jwt(OWNER_A).replace("fake-signature", "rotated-signature")}",
-            requests[1].headers["Authorization"],
-        )
-        requests.forEach { request ->
-            assertEquals(OWNER_A, org.json.JSONObject(request.body!!).getJSONObject("p_payload").getString("user_id"))
-        }
+        val refreshedToken = "Bearer ${jwt(OWNER_A).replace("fake-signature", "rotated-signature")}"
+        assertEquals(refreshedToken, requests[1].headers["Authorization"])
+        assertEquals(refreshedToken, requests[2].headers["Authorization"])
+        val rpc = requests.single { it.url.endsWith("/rpc/save_daily_entry_v2") }
+        assertEquals(OWNER_A, org.json.JSONObject(rpc.body!!).getJSONObject("p_payload").getString("user_id"))
     }
 
     @Test
@@ -315,7 +359,7 @@ class UsageSyncRepositoryIsolationTest {
 
     private fun repository(
         usageStats: UsageStatsSource = fakeUsage {},
-        response: () -> HttpResponse = { HttpResponse(200, "{}") },
+        response: (HttpRequest) -> HttpResponse = { HttpResponse(200, "{}") },
         transportOverride: HttpTransport? = null,
     ): UsageSyncRepository = UsageSyncRepository(
         store = sessionStore,
@@ -324,12 +368,13 @@ class UsageSyncRepositoryIsolationTest {
             sessionStore = sessionStore,
             transport = transportOverride ?: HttpTransport { request ->
                 synchronized(requests) { requests += request }
-                response()
+                response(request)
             },
             baseUrl = "https://example.supabase.co/rest/v1",
             anonKey = "anon-test-key",
         ),
         usageStats = usageStats,
+        requestStore = UsageSyncRequestStore(context),
     )
 
     private fun fakeUsage(beforeRead: () -> Unit): UsageStatsSource = object : UsageStatsSource {
@@ -361,6 +406,7 @@ class UsageSyncRepositoryIsolationTest {
     private companion object {
         const val OWNER_A = "account-a"
         const val OWNER_B = "account-b"
+        const val ROW_ID = "11111111-1111-4111-8111-111111111111"
         const val DATE = "2026-11-08"
     }
 }

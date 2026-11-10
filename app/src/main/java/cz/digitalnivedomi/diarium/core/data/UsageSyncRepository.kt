@@ -12,6 +12,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.time.LocalDate
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -27,6 +29,7 @@ class UsageSyncRepository internal constructor(
     private val consentStore: UsageSyncConsentStore,
     private val client: SupabaseClient,
     private val usageStats: UsageStatsSource,
+    private val requestStore: UsageSyncRequestStore,
 ) {
 
     constructor(context: Context) : this(
@@ -34,144 +37,337 @@ class UsageSyncRepository internal constructor(
         consentStore = UsageSyncConsentStore(context),
         client = AppClients.supabaseClient(context),
         usageStats = UsageStatsProvider(context),
+        requestStore = UsageSyncRequestStore(context),
     )
 
-    /**
-     * Reads [date]'s usage and upserts it only for [expectedOwnerId]. Missing
-     * consent or a changed owner is a terminal no-op, not a retryable condition.
-     * Usage access, refresh failures and HTTP failures remain retryable.
-     */
+    /** Update only an existing day's phone fields through the durable conditional RPC. */
     suspend fun pushDay(expectedOwnerId: String, date: String): UsagePushOutcome = withContext(Dispatchers.IO) {
         if (expectedOwnerId.isBlank() || store.userSubject() != expectedOwnerId) {
             return@withContext UsagePushOutcome.OWNER_CHANGED
         }
+        if (runCatching { LocalDate.parse(date) }.isFailure) throw IllegalArgumentException("Invalid screen-time date")
         if (!consentStore.isEnabledFor(expectedOwnerId)) {
+            requestStore.clearOwner(expectedOwnerId)
             return@withContext UsagePushOutcome.CONSENT_DISABLED
         }
-        if (!usageStats.hasUsageAccess()) return@withContext UsagePushOutcome.NO_USAGE_ACCESS
-
-        // This refresh is still owner-bound: SessionStore verifies the refreshed
-        // JWT subject before persisting/returning it.
         if (store.validAccessTokenForUser(expectedOwnerId) == null) {
-            return@withContext if (store.userSubject() == expectedOwnerId) {
-                UsagePushOutcome.NO_SESSION
-            } else {
-                UsagePushOutcome.OWNER_CHANGED
+            return@withContext sessionUnavailableOutcome(expectedOwnerId) ?: UsagePushOutcome.NO_SESSION
+        }
+        gateOutcome(expectedOwnerId)?.let { return@withContext it }
+
+        requestStore.withDateLock(expectedOwnerId, date) {
+            gateOutcome(expectedOwnerId)?.let { return@withDateLock it }
+            pushDayLocked(expectedOwnerId, date)
+        }
+    }
+
+    private suspend fun pushDayLocked(ownerId: String, date: String): UsagePushOutcome {
+        var request = when (val state = requestStore.read(ownerId, date)) {
+            UsageSyncRequestState.Absent -> null
+            UsageSyncRequestState.Corrupt -> throw IOException("Stored screen-time request is invalid; refusing to overwrite it")
+            is UsageSyncRequestState.Present -> state.request
+        }
+
+        if (request == null) {
+            if (!usageStats.hasUsageAccess()) return UsagePushOutcome.NO_USAGE_ACCESS
+            val usage = usageStats.dayUsage(date)
+            gateOutcome(ownerId)?.let { return it }
+            if (usage.totalSec <= 0 && usage.unlocks <= 0) return UsagePushOutcome.EMPTY_DAY
+            when (val baseline = readCurrentBaseline(ownerId, date)) {
+                is BaselineRead.Refused -> return baseline.outcome
+                BaselineRead.Missing -> return UsagePushOutcome.NO_DIARY_ENTRY
+                is BaselineRead.Found -> {
+                    val payload = UsageSyncPayload.build(ownerId, date, usage)
+                    request = UsageSyncRequest.create(ownerId, date, payload.toString(), baseline.baseline)
+                    persistRequest(ownerId, request!!, expected = null)?.let { return it }
+                }
             }
         }
+        return writeWithConflictRecovery(ownerId, date, requireNotNull(request))
+    }
 
-        val usage = usageStats.dayUsage(date)
-
-        // UsageStats collection may take time; re-read both independent gates at
-        // the write boundary so opt-out and account replacement stop this attempt.
-        if (store.userSubject() != expectedOwnerId) return@withContext UsagePushOutcome.OWNER_CHANGED
-        if (!consentStore.isEnabledFor(expectedOwnerId)) {
-            return@withContext UsagePushOutcome.CONSENT_DISABLED
-        }
-        if (usage.totalSec <= 0 && usage.unlocks <= 0) return@withContext UsagePushOutcome.EMPTY_DAY
-
-        val payload = UsageSyncPayload.build(expectedOwnerId, date, usage)
+    /** Read the actual row token; missing, duplicate, or malformed rows never get a write. */
+    private suspend fun readCurrentBaseline(ownerId: String, date: String): BaselineRead {
+        gateOutcome(ownerId)?.let { return BaselineRead.Refused(it) }
         val ownerClient = try {
-            client.forOwner(expectedOwnerId)
+            client.forOwner(ownerId)
         } catch (_: SessionOwnerMismatchException) {
-            return@withContext UsagePushOutcome.OWNER_CHANGED
+            return BaselineRead.Refused(sessionUnavailableOutcome(ownerId) ?: UsagePushOutcome.NO_SESSION)
         }
         val request = try {
-            ownerClient.preparePostRequest("rpc/save_daily_entry", JSONObject().put("p_payload", payload))
+            ownerClient.prepareGetRequest(
+                "entries",
+                mapOf(
+                    "user_id" to "eq.$ownerId",
+                    "date" to "eq.$date",
+                    "select" to "id,revision",
+                    "limit" to "2",
+                ),
+            )
         } catch (_: SessionOwnerMismatchException) {
-            return@withContext UsagePushOutcome.OWNER_CHANGED
+            return BaselineRead.Refused(sessionUnavailableOutcome(ownerId) ?: UsagePushOutcome.NO_SESSION)
         }
+        val response = when (val result = executeWithAuthRetry(ownerId, ownerClient, request)) {
+            is NetworkResult.Refused -> return BaselineRead.Refused(result.outcome)
+            is NetworkResult.Received -> result.response
+        }
+        if (!response.isSuccessful) throw IOException("Could not read screen-time baseline: HTTP ${response.code}")
+        val rows = response.asJsonArray() ?: throw IOException("Screen-time baseline response was not an array")
+        if (rows.length() == 0) return BaselineRead.Missing
+        if (rows.length() != 1) throw IOException("Multiple diary rows matched the screen-time date")
+        val row = rows.getJSONObject(0)
+        val id = row.optString("id").takeIf { it.isNotBlank() }
+            ?: throw IOException("Diary row id is missing from the screen-time baseline")
+        if (runCatching { UUID.fromString(id) }.isFailure) throw IOException("Diary row id is invalid")
+        val rawRevision = row.opt("revision") as? Number
+            ?: throw IOException("Diary row revision is missing from the screen-time baseline")
+        val number = rawRevision.toDouble()
+        val revision = rawRevision.toLong()
+        if (!number.isFinite() || revision < 1L || revision.toDouble() != number) {
+            throw IOException("Diary row revision is invalid in the screen-time baseline")
+        }
+        return BaselineRead.Found(EntryBaseline(exists = true, id = id, revision = revision))
+    }
 
-        var refusal: UsagePushOutcome? = null
-        suspend fun dispatch(request: HttpRequest): HttpResponse? {
-            refusal = null
-            return suspendCancellableCoroutine { continuation ->
-                val callHandle = AtomicReference<HttpCallHandle?>(null)
-                continuation.invokeOnCancellation { callHandle.get()?.cancel() }
+    /** Conflicts refresh the baseline/id; ambiguous requests retain the exact staged body. */
+    private suspend fun writeWithConflictRecovery(
+        ownerId: String,
+        date: String,
+        initialRequest: UsageSyncRequest,
+    ): UsagePushOutcome {
+        val ownerClient = try {
+            client.forOwner(ownerId)
+        } catch (_: SessionOwnerMismatchException) {
+            return sessionUnavailableOutcome(ownerId) ?: UsagePushOutcome.NO_SESSION
+        }
+        var request = initialRequest
+        for (attempt in 0 until MAX_WRITE_ATTEMPTS) {
+            gateOutcome(ownerId)?.let { return it }
+            val post = try {
+                ownerClient.preparePostRequest(RPC_CONDITIONAL_SAVE, request.requestBodyJson)
+            } catch (_: SessionOwnerMismatchException) {
+                return sessionUnavailableOutcome(ownerId) ?: UsagePushOutcome.NO_SESSION
+            }
+            val response = when (val result = executeWithAuthRetry(ownerId, ownerClient, post)) {
+                is NetworkResult.Refused -> return result.outcome
+                is NetworkResult.Received -> result.response
+            }
+            if (response.code == 404) throw IOException("Conditional save RPC unavailable; no legacy write was attempted")
+            if (response.code == 408 || response.code == 429 || response.code >= 500) {
+                throw IOException("Conditional screen-time save outcome is unknown: HTTP ${response.code}")
+            }
+            if (!response.isSuccessful) throw IOException("Conditional screen-time save failed: HTTP ${response.code}")
+            val receipt = response.asJsonObject() ?: throw IOException("Conditional screen-time save returned an invalid receipt")
 
-                val dispatched = consentStore.withOwnerDispatchLock(expectedOwnerId) {
-                    val ownerStillActive = store.withCurrentOwnerLock(expectedOwnerId) {
-                        when {
-                            !continuation.isActive -> false
-                            !consentStore.isEnabledFor(expectedOwnerId) -> {
-                                refusal = UsagePushOutcome.CONSENT_DISABLED
-                                false
-                            }
-                            else -> {
-                                val handle = ownerClient.enqueue(request) { result ->
-                                    result.fold(
-                                        onSuccess = { if (continuation.isActive) continuation.resume(it) },
-                                        onFailure = {
-                                            if (continuation.isActive) continuation.resumeWithException(it)
-                                        },
-                                    )
-                                }
-                                callHandle.set(handle)
-                                if (!continuation.isActive) handle.cancel()
-                                true
-                            }
+            when (receipt.optString("status")) {
+                "conflict" -> {
+                    when (val current = readCurrentBaseline(ownerId, date)) {
+                        is BaselineRead.Refused -> return current.outcome
+                        BaselineRead.Missing -> {
+                            clearConfirmedRequest(request)
+                            return UsagePushOutcome.NO_DIARY_ENTRY
+                        }
+                        is BaselineRead.Found -> {
+                            val replacement = request.withNewBaseline(current.baseline)
+                            persistRequest(ownerId, replacement, expected = request)?.let { return it }
+                            request = replacement
+                            continue
                         }
                     }
-                    if (ownerStillActive == null) refusal = UsagePushOutcome.OWNER_CHANGED
-                    ownerStillActive == true
                 }
-                if (!dispatched && continuation.isActive) continuation.resume(null)
+                "saved" -> {
+                    val entryId = receipt.optString("entry_id").takeIf { it.isNotBlank() }
+                        ?: throw IOException("Conditional screen-time receipt has no row id")
+                    val revision = receipt.optLong("revision", 0L)
+                    if (revision < 1L) throw IOException("Conditional screen-time receipt has no revision")
+                    if (!receipt.optBoolean("replayed", false)) {
+                        if (entryId != request.baseline.id || revision <= (request.baseline.revision ?: 0L)) {
+                            throw IOException("Conditional screen-time receipt did not match its baseline")
+                        }
+                        clearConfirmedRequest(request)
+                        return UsagePushOutcome.SENT
+                    }
+                    // An idempotency receipt is historical; only a matching current
+                    // row token lets us discard the durable request.
+                    when (val current = readCurrentBaseline(ownerId, date)) {
+                        is BaselineRead.Refused -> return current.outcome
+                        BaselineRead.Missing -> {
+                            clearConfirmedRequest(request)
+                            return UsagePushOutcome.NO_DIARY_ENTRY
+                        }
+                        is BaselineRead.Found -> {
+                            if (current.baseline.id == entryId && current.baseline.revision == revision) {
+                                clearConfirmedRequest(request)
+                                return UsagePushOutcome.SENT
+                            }
+                            val replacement = request.withNewBaseline(current.baseline)
+                            persistRequest(ownerId, replacement, expected = request)?.let { return it }
+                            request = replacement
+                            continue
+                        }
+                    }
+                }
+                else -> throw IOException("Conditional screen-time response had no recognized status")
             }
         }
+        throw IOException("Too many concurrent screen-time save conflicts")
+    }
 
-        var response = dispatch(request)
-        if (response == null) {
-            return@withContext refusal ?: UsagePushOutcome.OWNER_CHANGED
-        }
-        if (response.code == 401) {
-            // Do not spend a refresh token after this work item's account or
-            // screen-time consent has changed. The refresh itself is owner-pinned
-            // and runs without the consent dispatch lock; retry dispatch rechecks
-            // both gates below to avoid holding either lock across network I/O.
-            if (store.userSubject() != expectedOwnerId) return@withContext UsagePushOutcome.OWNER_CHANGED
-            if (!consentStore.isEnabledFor(expectedOwnerId)) {
-                return@withContext UsagePushOutcome.CONSENT_DISABLED
-            }
-            if (store.refreshAccessTokenForUser(expectedOwnerId) == null) {
-                return@withContext if (store.userSubject() != expectedOwnerId) {
-                    UsagePushOutcome.OWNER_CHANGED
+    /** SharedPreferences.commit must succeed before request handoff. */
+    private fun persistRequest(
+        ownerId: String,
+        request: UsageSyncRequest,
+        expected: UsageSyncRequest?,
+    ): UsagePushOutcome? {
+        var refusal: UsagePushOutcome? = null
+        var saved = false
+        consentStore.withOwnerDispatchLock(ownerId) {
+            val active = store.withCurrentOwnerLock(ownerId) {
+                if (!consentStore.isEnabledFor(ownerId)) {
+                    requestStore.clearOwner(ownerId)
+                    refusal = UsagePushOutcome.CONSENT_DISABLED
+                    false
                 } else {
-                    throw IOException("token refresh failed for $date after HTTP 401")
+                    saved = if (expected == null) requestStore.saveIfAbsent(request)
+                    else requestStore.replaceIfUnchanged(expected, request)
+                    true
                 }
             }
+            if (active == null) refusal = UsagePushOutcome.OWNER_CHANGED
+        }
+        refusal?.let { return it }
+        if (!saved) throw IOException("Could not durably stage the conditional screen-time request")
+        return null
+    }
 
-            val retryRequest = try {
-                ownerClient.preparePostRequest("rpc/save_daily_entry", JSONObject().put("p_payload", payload))
-            } catch (_: SessionOwnerMismatchException) {
-                return@withContext UsagePushOutcome.OWNER_CHANGED
-            }
-            response = dispatch(retryRequest)
-            if (response == null) {
-                return@withContext refusal ?: UsagePushOutcome.OWNER_CHANGED
+    private fun clearConfirmedRequest(request: UsageSyncRequest) {
+        if (requestStore.removeIfUnchanged(request)) return
+        when (val current = requestStore.read(request.ownerId, request.date)) {
+            UsageSyncRequestState.Absent -> Unit // Consent withdrawal may clear an in-flight request.
+            UsageSyncRequestState.Corrupt -> throw IOException("Could not safely clear the completed screen-time request")
+            is UsageSyncRequestState.Present -> if (current.request == request) {
+                throw IOException("Could not durably clear the completed screen-time request")
             }
         }
-        if (!response.isSuccessful) throw IOException("push failed for $date: HTTP ${response.code}")
-        UsagePushOutcome.SENT
+    }
+
+    /** Each HTTP handoff and the auth refresh after 401 recheck owner and consent. */
+    private suspend fun executeWithAuthRetry(
+        ownerId: String,
+        ownerClient: SupabaseClient,
+        request: HttpRequest,
+    ): NetworkResult {
+        gateOutcome(ownerId)?.let { return NetworkResult.Refused(it) }
+        val first = dispatch(ownerId, ownerClient, request)
+        if (first !is NetworkResult.Received || first.response.code != 401) return first
+        gateOutcome(ownerId)?.let { return NetworkResult.Refused(it) }
+        if (store.refreshAccessTokenForUser(ownerId) == null) {
+            val status = sessionUnavailableOutcome(ownerId)
+            if (status != null) return NetworkResult.Refused(status)
+            throw IOException("Session refresh failed before conditional screen-time retry")
+        }
+        gateOutcome(ownerId)?.let { return NetworkResult.Refused(it) }
+        val token = store.validAccessTokenForUser(ownerId)
+            ?: throw IOException("Refreshed screen-time session is unavailable")
+        gateOutcome(ownerId)?.let { return NetworkResult.Refused(it) }
+        return dispatch(
+            ownerId,
+            ownerClient,
+            request.copy(headers = request.headers + ("Authorization" to "Bearer $token")),
+        )
+    }
+
+    /** Hold owner/consent locks only through asynchronous transport handoff. */
+    private suspend fun dispatch(
+        ownerId: String,
+        ownerClient: SupabaseClient,
+        request: HttpRequest,
+    ): NetworkResult {
+        var refusal: UsagePushOutcome? = null
+        val response = suspendCancellableCoroutine<HttpResponse?> { continuation ->
+            val callHandle = AtomicReference<HttpCallHandle?>(null)
+            continuation.invokeOnCancellation { callHandle.get()?.cancel() }
+            val handedOff = consentStore.withOwnerDispatchLock(ownerId) {
+                val active = store.withCurrentOwnerLock(ownerId) {
+                    when {
+                        !continuation.isActive -> false
+                        !consentStore.isEnabledFor(ownerId) -> {
+                            requestStore.clearOwner(ownerId)
+                            refusal = UsagePushOutcome.CONSENT_DISABLED
+                            false
+                        }
+                        else -> {
+                            val handle = ownerClient.enqueue(request) { result ->
+                                result.fold(
+                                    onSuccess = { if (continuation.isActive) continuation.resume(it) },
+                                    onFailure = { if (continuation.isActive) continuation.resumeWithException(it) },
+                                )
+                            }
+                            callHandle.set(handle)
+                            if (!continuation.isActive) handle.cancel()
+                            true
+                        }
+                    }
+                }
+                if (active == null) refusal = UsagePushOutcome.OWNER_CHANGED
+                active == true
+            }
+            if (!handedOff && continuation.isActive) continuation.resume(null)
+        }
+        return response?.let(NetworkResult::Received)
+            ?: NetworkResult.Refused(refusal ?: UsagePushOutcome.OWNER_CHANGED)
+    }
+
+    private fun gateOutcome(ownerId: String): UsagePushOutcome? {
+        if (ownerId.isBlank() || store.userSubject() != ownerId) return UsagePushOutcome.OWNER_CHANGED
+        if (!consentStore.isEnabledFor(ownerId)) {
+            requestStore.clearOwner(ownerId)
+            return UsagePushOutcome.CONSENT_DISABLED
+        }
+        return null
+    }
+
+    /** null means a retryable token-refresh/session failure. */
+    private fun sessionUnavailableOutcome(ownerId: String): UsagePushOutcome? = when {
+        store.userSubject() != ownerId -> UsagePushOutcome.OWNER_CHANGED
+        !consentStore.isEnabledFor(ownerId) -> {
+            requestStore.clearOwner(ownerId)
+            UsagePushOutcome.CONSENT_DISABLED
+        }
+        else -> null
+    }
+
+    private sealed interface BaselineRead {
+        data object Missing : BaselineRead
+        data class Found(val baseline: EntryBaseline) : BaselineRead
+        data class Refused(val outcome: UsagePushOutcome) : BaselineRead
+    }
+
+    private sealed interface NetworkResult {
+        data class Received(val response: HttpResponse) : NetworkResult
+        data class Refused(val outcome: UsagePushOutcome) : NetworkResult
+    }
+
+    companion object {
+        private const val RPC_CONDITIONAL_SAVE = "rpc/save_daily_entry_v2"
+        private const val MAX_WRITE_ATTEMPTS = 3
     }
 }
 
 /** What one [UsageSyncRepository.pushDay] attempt did. */
 enum class UsagePushOutcome {
-    /** The RPC accepted the day's usage. */
+    /** The conditional v2 RPC accepted the day's phone usage. */
     SENT,
-
     /** The day captured nothing (screen off / phone unused) — nothing to push. */
     EMPTY_DAY,
-
+    /** There is no diary row to update; screen-time sync never creates one. */
+    NO_DIARY_ENTRY,
     /** The expected owner is no longer the active session; discard stale work. */
     OWNER_CHANGED,
-
     /** The owner withdrew screen-time consent; discard stale work. */
     CONSENT_DISABLED,
-
     /** The active owner's session needs a retry (including failed token refresh). */
     NO_SESSION,
-
     /** PACKAGE_USAGE_STATS not granted yet — the worker retries. */
     NO_USAGE_ACCESS,
 }
