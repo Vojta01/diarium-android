@@ -58,6 +58,7 @@ import cz.digitalnivedomi.diarium.core.data.GoalProgress
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.core.data.NoteTemplate
+import cz.digitalnivedomi.diarium.core.data.PendingEntryMoveException
 import cz.digitalnivedomi.diarium.core.data.PendingSave
 import cz.digitalnivedomi.diarium.core.data.PendingSaveRecoveryIssue
 import cz.digitalnivedomi.diarium.core.data.PendingSaveRecoveryIssueKind
@@ -768,6 +769,8 @@ fun CheckInScreen(
         return saved
     }
 
+    var dispatchMoveHandler: ((EntryMoveCandidate, Boolean) -> Unit)? = null
+
     fun beginMove(targetDate: String) {
         val repo = entriesRepo ?: run {
             holder.markError("Přesun vyžaduje přihlášení.")
@@ -820,12 +823,12 @@ fun CheckInScreen(
                 moveCandidate = prepared
                 movePickerOpen = true
             } else {
-                dispatchMove(prepared, confirmOverwrite = false)
+                dispatchMoveHandler?.invoke(prepared, false)
             }
         }
     }
 
-    fun dispatchMove(candidate: EntryMoveCandidate, confirmOverwrite: Boolean) {
+    fun performMoveRequest(candidate: EntryMoveCandidate, confirmOverwrite: Boolean) {
         val repo = entriesRepo ?: return
         val owner = candidate.ownerId
         if (moveInProgress || ownerId != owner) return
@@ -847,7 +850,13 @@ fun CheckInScreen(
                 if (result.isSuccess) {
                     pendingMoveRecovery = null
                     moveRecoveryError = null
-                    goalProgress = goalsRepo?.loadProgress()
+                    try {
+                        goalProgress = goalsRepo?.loadProgress()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        goalProgress = null
+                    }
                     if (candidate.targetDate == holder.date) {
                         holder.setLoading(true)
                         reloadToken++
@@ -880,6 +889,8 @@ fun CheckInScreen(
         }
     }
 
+    dispatchMoveHandler = ::performMoveRequest
+
     fun retryMove(request: EntryMoveRequest) {
         val repo = entriesRepo ?: return
         val owner = request.ownerId
@@ -892,7 +903,13 @@ fun CheckInScreen(
                 if (result.isSuccess) {
                     pendingMoveRecovery = null
                     moveRecoveryError = null
-                    goalProgress = goalsRepo?.loadProgress()
+                    try {
+                        goalProgress = goalsRepo?.loadProgress()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        goalProgress = null
+                    }
                     if (holder.date == request.sourceDate) {
                         holder.setDate(request.targetDate)
                     } else if (holder.date == request.targetDate) {
@@ -1677,7 +1694,7 @@ fun CheckInScreen(
             },
             onPickDate = ::beginMove,
             onConfirmOverwrite = {
-                moveCandidate?.let { dispatchMove(it, confirmOverwrite = true) }
+                moveCandidate?.let { dispatchMoveHandler?.invoke(it, true) }
             },
         )
     }

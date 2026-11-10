@@ -1174,13 +1174,14 @@ class EntriesRepository(
             return@withContext Result.failure(SessionOwnerMismatchException())
         }
         val targetExists = candidate.targetSnapshot != null
-        if (targetExists && !confirmOverwrite) {
+        val sameDate = candidate.sourceDate == candidate.targetDate
+        if (targetExists && !sameDate && !confirmOverwrite) {
             return@withContext Result.failure(EntryMoveConfirmationRequiredException())
         }
         if (!targetExists && confirmOverwrite) {
             return@withContext Result.failure(IllegalArgumentException("Potvrzení přepsání vyžaduje obsazený cílový den."))
         }
-        if (candidate.sourceDate == candidate.targetDate && confirmOverwrite) {
+        if (sameDate && confirmOverwrite) {
             return@withContext Result.failure(IllegalArgumentException("Přesun na stejný den nelze potvrdit jako přepsání."))
         }
         val outbox = moveOutboxFor(userId)
