@@ -29,6 +29,8 @@ import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
 import cz.digitalnivedomi.diarium.core.i18n.Lang
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.DraftStore
+import cz.digitalnivedomi.diarium.core.data.ConditionalEntrySaveRequest
+import cz.digitalnivedomi.diarium.core.data.EntryBaseline
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.HttpRequest
 import cz.digitalnivedomi.diarium.core.data.HttpResponse
@@ -388,45 +390,44 @@ class CheckInDraftRecoveryScreenTest {
     }
 
     @Test
-    fun `worker completion during recovery read clears stale unsynced screen`() = runBlocking {
-        val file = File.createTempFile("diarium_pending_worker_race", ".preferences_pb").also { it.delete() }
-        val scope = CoroutineScope(Dispatchers.IO + Job())
-        val dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
-        val drafts = DraftStore(dataStore, OWNER_ID)
+    fun `worker completion during pending day read clears stale unsynced screen`() = runBlocking {
         val pending = PendingSaveStore.from(context, OWNER_ID)
         pending.remove(DATE)
-        val requests = CopyOnWriteArrayList<HttpRequest>()
+        val localEntry = DiaryEntry(mood = 4, moodEmoji = "🙂", note = "queued local copy")
+        assertTrue(
+            pending.enqueueConditional(
+                ConditionalEntrySaveRequest(
+                    ownerId = OWNER_ID,
+                    date = DATE,
+                    entry = localEntry,
+                    baseline = EntryBaseline(exists = false, id = null, revision = null),
+                    requestId = "ed2d48f1-3638-4f9f-8228-19a2a9120a7c",
+                ),
+            ),
+        )
         val dayReads = AtomicInteger()
         val workerSaved = AtomicBoolean(false)
-        val recoveryReadStarted = CountDownLatch(1)
-        val releaseRecoveryRead = CountDownLatch(1)
+        val dayReadStarted = CountDownLatch(1)
+        val releaseDayRead = CountDownLatch(1)
         val transport = HttpTransport { request ->
-            requests += request
-            when {
-                request.method == "GET" && request.url.contains("/entries?") -> {
-                    when (dayReads.incrementAndGet()) {
-                        1 -> HttpResponse(200, "[]")
-                        2 -> {
-                            recoveryReadStarted.countDown()
-                            check(releaseRecoveryRead.await(10_000L, TimeUnit.MILLISECONDS)) {
-                                "test did not release the recovery read"
-                            }
-                            // This response began before the worker replay completed.
-                            HttpResponse(200, "[]")
-                        }
-                        else -> if (workerSaved.get()) {
-                            HttpResponse(
-                                200,
-                                """[{"user_id":"$OWNER_ID","id":"$ROW_ID","date":"$DATE","revision":8,"mood":4,"mood_emoji":"🙂","note":"saved by worker","updated_at":"$NEW_REVISION"}]""",
-                            )
-                        } else {
-                            HttpResponse(200, "[]")
-                        }
+            if (request.method == "GET" && request.url.contains("/entries?")) {
+                if (dayReads.incrementAndGet() == 1) {
+                    dayReadStarted.countDown()
+                    check(releaseDayRead.await(10_000L, TimeUnit.MILLISECONDS)) {
+                        "test did not release the pending day read"
                     }
+                    // The request began while the outbox row was still pending.
+                    HttpResponse(200, "[]")
+                } else if (workerSaved.get()) {
+                    HttpResponse(
+                        200,
+                        """[{"user_id":"$OWNER_ID","id":"$ROW_ID","date":"$DATE","revision":8,"mood":4,"mood_emoji":"🙂","note":"saved by worker","updated_at":"$NEW_REVISION"}]""",
+                    )
+                } else {
+                    HttpResponse(200, "[]")
                 }
-                request.method == "POST" && request.url.endsWith("/rpc/save_daily_entry_v2") ->
-                    throw IOException("connection lost after request")
-                else -> HttpResponse(200, "{}")
+            } else {
+                HttpResponse(200, "{}")
             }
         }
 
@@ -434,21 +435,15 @@ class CheckInDraftRecoveryScreenTest {
             compose.setContent {
                 DiariumTheme {
                     CheckInScreen(
-                        deps = CheckInDeps(
-                            entries = repository(pending = pending, transportOverride = transport),
-                            drafts = drafts,
-                        ),
+                        deps = CheckInDeps(entries = repository(pending = pending, transportOverride = transport)),
                         today = LocalDate.parse(DATE),
                         lateNight = false,
                     )
                 }
             }
-            waitForEditableForm()
-            compose.onNodeWithTag("note").performScrollTo().performTextInput("local update")
-            compose.onNodeWithTag("save_button").performScrollTo().performClick()
             assertTrue(
-                "refreshPendingRecovery should be blocked in its server read",
-                recoveryReadStarted.await(TIMEOUT, TimeUnit.MILLISECONDS),
+                "the screen should be blocked in its pending-day server read",
+                dayReadStarted.await(TIMEOUT, TimeUnit.MILLISECONDS),
             )
 
             val workerResult = pending.flushRecord(
@@ -456,18 +451,14 @@ class CheckInDraftRecoveryScreenTest {
                 expectedOwnerId = OWNER_ID,
                 currentOwnerId = { OWNER_ID },
                 dispatch = { record ->
-                    assertEquals("local update", record.entry.note)
+                    assertEquals(localEntry, record.entry)
                     workerSaved.set(true)
                     Result.success(Unit)
-                },
-                afterSaved = { record ->
-                    val request = requireNotNull(record.conditionalRequest)
-                    drafts.clearIfUnchanged(DATE, request.entry, request.requestId)
                 },
             )
             assertTrue(workerResult is cz.digitalnivedomi.diarium.core.data.PendingSaveFlush.Saved)
             assertNull(pending.peekRecord(DATE))
-            releaseRecoveryRead.countDown()
+            releaseDayRead.countDown()
 
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithText("saved by worker").fetchSemanticsNodes().isNotEmpty()
@@ -477,10 +468,8 @@ class CheckInDraftRecoveryScreenTest {
             assertTrue(compose.onAllNodesWithText(PENDING_TITLE).fetchSemanticsNodes().isEmpty())
             assertNull(pending.peekRecord(DATE))
         } finally {
-            releaseRecoveryRead.countDown()
+            releaseDayRead.countDown()
             pending.remove(DATE)
-            scope.coroutineContext[Job]?.cancelAndJoin()
-            file.delete()
         }
     }
 
