@@ -138,6 +138,36 @@ class EntryDateMoveSqlContractTests(unittest.TestCase):
         self.assertNotIn("storage.objects", self.code)
         self.assertNotIn("http", self.code)
 
+    def test_overwrite_receipt_hands_off_only_a_pending_actor_bound_photo_candidate(self):
+        self.assertIn("photo_cleanup_candidate", self.code)
+        self.assertIn("v_target.photo_path is distinct from v_moved.photo_path", self.code)
+        self.assertIn("v_target_found", self.code)
+        self.assertIn("'actor_id', v_actor", self.code)
+        self.assertIn("'photo_path', v_target.photo_path", self.code)
+        self.assertIn("'status', 'pending_validation'", self.code)
+        self.assertIn("'safe_to_delete', false", self.code)
+        self.assertIn("'uncertain_validation_action', 'retain_object'", self.code)
+        self.assertIn("verify_storage_object_owner", self.code)
+        self.assertIn("verify_no_remaining_entry_references", self.code)
+        self.assertIn("v_outcome", self.code)
+        self.assertNotRegex(self.code, r"delete\s+from\s+(?:storage\.|public\.storage)")
+
+    def test_transactional_tests_cover_photo_handoff_and_identity_idempotency_edges(self):
+        tests = (ROOT / "tests" / "entry_date_move_v1_transactional.sql").read_text(
+            encoding="utf-8"
+        ).lower()
+        for behavior in (
+            "shared-source-target.jpg",
+            "cleanup-review.jpg",
+            "target without photo",
+            "rolled-back overwrite",
+            "changed-intent request-id reuse",
+            "delete/reinsert changes row identity",
+            "identical pending cleanup receipt",
+        ):
+            with self.subTest(behavior=behavior):
+                self.assertIn(behavior, tests)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -4,6 +4,9 @@
 -- extensions.digest(), unique entry/scale keys, and the Supabase API roles.
 -- This adds a separate RPC and receipt table; save_daily_entry_v2 is untouched.
 -- SQL moves the source photo_path pointer as row data. It never mutates Storage.
+-- Successful overwrite receipts may carry an actor-bound cleanup candidate;
+-- callers must separately verify object ownership and every reference, and
+-- retain the object whenever either check is ambiguous.
 
 DO $preflight$
 DECLARE
@@ -499,6 +502,27 @@ BEGIN
     'overwrote', v_target_found, 'scale_rows_moved', v_scale_rows_moved,
     'entry', pg_catalog.to_jsonb(v_moved)
   );
+  -- The actor-scoped receipt is the durable cleanup handoff. This is only a
+  -- possible object identifier, never deletion authorization: consumers must
+  -- independently prove storage ownership and no remaining entry references.
+  -- If either validation is unavailable or ambiguous, retain the object.
+  IF v_target_found
+     AND NULLIF(pg_catalog.btrim(v_target.photo_path), '') IS NOT NULL
+     AND v_target.photo_path IS DISTINCT FROM v_moved.photo_path THEN
+    v_outcome := v_outcome || pg_catalog.jsonb_build_object(
+      'photo_cleanup_candidate', pg_catalog.jsonb_build_object(
+        'actor_id', v_actor,
+        'photo_path', v_target.photo_path,
+        'status', 'pending_validation',
+        'safe_to_delete', false,
+        'required_checks', pg_catalog.jsonb_build_array(
+          'verify_storage_object_owner',
+          'verify_no_remaining_entry_references'
+        ),
+        'uncertain_validation_action', 'retain_object'
+      )
+    );
+  END IF;
   UPDATE public.entry_move_v1_receipts SET outcome = v_outcome
    WHERE user_id = v_actor AND request_id = p_request_id;
   RETURN v_outcome || pg_catalog.jsonb_build_object('replayed', false);
@@ -516,4 +540,4 @@ REVOKE ALL ON FUNCTION public.move_daily_entry_v1(date, uuid, bigint, date, bool
 GRANT EXECUTE ON FUNCTION public.move_daily_entry_v1(date, uuid, bigint, date, boolean, uuid, bigint, boolean, uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.move_daily_entry_v1(date, uuid, bigint, date, boolean, uuid, bigint, boolean, uuid) IS
-  'Test-only atomic date move: authenticates via auth.uid(), checks source and destination CAS tokens, locks both date keys deterministically, moves scale rows and preserves the photo_path pointer, and replays immutable request receipts. Existing direct legacy writers do not share all locks and must be retired before claiming global cross-device serialization.';
+  'Test-only atomic date move: authenticates via auth.uid(), checks source and destination CAS tokens, locks both date keys deterministically, moves scale rows and preserves the photo_path pointer, and replays immutable request receipts. An overwritten target photo is only returned as an actor-bound pending candidate when different from the moved photo; callers must independently verify storage ownership and all references, retain on ambiguity, and never treat the candidate as delete authorization. This SQL never deletes Storage. Existing direct legacy writers do not share all locks and must be retired before claiming global cross-device serialization.';
