@@ -1,0 +1,51 @@
+name: CAS PostgreSQL integration and race tests
+
+on:
+  push:
+    branches:
+      - ci/cas-postgres-20261110-b5903caf
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-cas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out test branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Run static SQL contract tests and script checks
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s database/tests -p 'test_sql_contract.py' -v
+          bash -n database/tests/run_postgres_tests.sh database/tests/race_save_daily_entry_v2.sh
+          python3 -m py_compile database/tests/guard_local_test_database.py database/tests/verify_race.py database/tests/test_sql_contract.py
+
+      - name: Create disposable synthetic test database
+        run: createdb --host=127.0.0.1 --port=5432 --username=postgres diarium_test_cas
+
+      - name: Run real PostgreSQL integration and concurrent-session race tests
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_cas
+        run: bash database/tests/run_postgres_tests.sh
