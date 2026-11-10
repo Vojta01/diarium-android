@@ -877,14 +877,16 @@ class EntriesRepositoryWriteTest {
             }
         }
 
-        val first = repository().save(
-            DiaryEntry(mood = 4, note = "retry-safe"), DATE,
-            baselineExists = false, requestId = REQUEST_RETRY,
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "retry-safe"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_RETRY,
         )
-        val second = repository().save(
-            DiaryEntry(mood = 4, note = "retry-safe"), DATE,
-            baselineExists = false, requestId = REQUEST_RETRY,
-        )
+        val repository = repository()
+        val first = repository.save(request)
+        val second = repository.save(request)
 
         assertTrue(first.exceptionOrNull() is ConditionalSaveUnknownException)
         assertTrue(second.isSuccess)
