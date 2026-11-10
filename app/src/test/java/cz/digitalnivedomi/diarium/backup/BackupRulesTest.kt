@@ -10,7 +10,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.w3c.dom.Element
 import org.xmlpull.v1.XmlPullParser
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
+import javax.xml.parsers.DocumentBuilderFactory
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -41,14 +46,36 @@ class BackupRulesTest {
     @Test
     fun `manifest keeps backup enabled and references both rule resources`() {
         val appInfo = context.applicationInfo
+        val application = mainManifestApplication()
 
         assertTrue(appInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP != 0)
-        assertEquals(R.xml.backup_rules, appInfo.resourceField("fullBackupContent"))
-        assertEquals(R.xml.data_extraction_rules, appInfo.resourceField("dataExtractionRulesRes"))
+        assertEquals(
+            "@xml/backup_rules",
+            application.getAttributeNS("http://schemas.android.com/apk/res/android", "fullBackupContent"),
+        )
+        assertEquals(
+            "@xml/data_extraction_rules",
+            application.getAttributeNS("http://schemas.android.com/apk/res/android", "dataExtractionRules"),
+        )
     }
 
-    private fun ApplicationInfo.resourceField(fieldName: String): Int =
-        javaClass.getField(fieldName).getInt(this)
+    private fun mainManifestApplication(): Element {
+        val start = Paths.get(System.getProperty("user.dir")).toAbsolutePath()
+        val manifest = generateSequence(start) { it.parent }
+            .flatMap { directory ->
+                sequenceOf(
+                    directory.resolve("src/main/AndroidManifest.xml"),
+                    directory.resolve("app/src/main/AndroidManifest.xml"),
+                )
+            }
+            .firstOrNull { Files.isRegularFile(it) }
+            ?: error("Cannot locate app AndroidManifest.xml from $start")
+        val document = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder()
+            .parse(manifest.toFile())
+        return document.getElementsByTagName("application").item(0) as? Element
+            ?: error("AndroidManifest.xml has no application element")
+    }
 
     private fun readRules(resourceId: Int): Map<String, Rules> {
         val parser = context.resources.getXml(resourceId)
