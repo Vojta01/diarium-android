@@ -122,10 +122,36 @@ class CheckInDataLossTest {
             baselineRevision = 7,
         )
         holder.markReflectionLoading()
+        holder.setNote("must not change the save snapshot")
 
+        assertEquals("already stored", holder.state.entry.note)
         assertFalse("save stays disabled until generated text is safely persisted", holder.state.canSave)
         assertFalse("date navigation cannot race the reflection save", holder.beginDateNavigation())
         assertEquals(null, holder.beginSaveRequest(OWNER_ID))
+    }
+
+    @Test
+    fun `only the guarded AI completion can start its conditional save during generation`() {
+        val holder = holder()
+        holder.load(
+            DiaryEntry(mood = 4, note = "already stored"),
+            stored = true,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+        )
+        holder.markReflectionLoading()
+
+        val completion = holder.beginSaveRequest(
+            OWNER_ID,
+            writeAiReflection = true,
+            allowDuringReflection = true,
+        )
+
+        assertTrue(completion != null)
+        assertTrue(completion!!.writeAiReflection)
+        assertTrue(holder.state.saving)
+        assertFalse("the user-facing Save remains blocked", holder.state.canSave)
     }
 
     @Test

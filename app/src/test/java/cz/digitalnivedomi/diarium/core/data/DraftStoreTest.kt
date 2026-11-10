@@ -178,6 +178,36 @@ class DraftStoreTest {
     }
 
     @Test
+    fun `generated reflection stays account pinned across process restart and account switch`() = runBlocking {
+        val file = tempFile()
+        val date = "2026-11-10"
+        val reflection = "Generated text survives the process exit"
+        val entry = DiaryEntry(mood = 4, note = "unsent entry", aiReflection = reflection)
+        val accountA = newStore(file, OWNER_A)
+        accountA.store.stage(
+            date = date,
+            entry = entry,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+            pendingAiReflection = reflection,
+        ).await()
+        accountA.close()
+
+        val accountB = newStore(file, OWNER_B)
+        assertNull("a switched account cannot read A's generated text", accountB.store.loadRecord(date))
+        accountB.close()
+
+        val reopenedA = newStore(file, OWNER_A)
+        val recovered = reopenedA.store.loadRecord(date)
+        assertEquals(OWNER_A, recovered?.ownerId)
+        assertEquals(entry, recovered?.entry)
+        assertEquals(reflection, recovered?.pendingAiReflection)
+        assertEquals(7L, recovered?.baselineRevision)
+        reopenedA.close()
+    }
+
+    @Test
     fun `conditional clear removes only the draft matching a completed save`() = runBlocking {
         val handle = newStore(tempFile())
         val store = handle.store

@@ -49,6 +49,8 @@ import cz.digitalnivedomi.diarium.core.data.ConditionalSaveReceipt
 import cz.digitalnivedomi.diarium.core.data.ConditionalSaveUnknownException
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.DraftRecord
+import cz.digitalnivedomi.diarium.core.data.EntryBaseline
+import cz.digitalnivedomi.diarium.core.data.GeneratedReflectionDraftException
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.HabitDef
@@ -59,6 +61,8 @@ import cz.digitalnivedomi.diarium.core.data.PendingSaveRecoveryIssueKind
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
 import cz.digitalnivedomi.diarium.core.data.QueuedOfflineException
 import cz.digitalnivedomi.diarium.core.data.Scale
+import cz.digitalnivedomi.diarium.core.data.SessionOwnerMismatchException
+import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.StoredEntrySnapshot
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
@@ -140,7 +144,13 @@ fun CheckInScreen(
     // A holder and every recovery state are scoped to the same account as the
     // repositories. Switching accounts cannot flush one user's current form into
     // another user's local draft namespace.
-    val ownerId = drafts?.ownerId ?: entriesRepo?.pendingOwnerId
+    val configuredOwnerId = drafts?.ownerId ?: entriesRepo?.pendingOwnerId
+    val activeOwnerId = deps.sessionStore?.let { SessionContext(it).userId() }
+    val ownerId = if (deps.sessionStore == null) {
+        configuredOwnerId
+    } else {
+        configuredOwnerId?.takeIf { it == activeOwnerId }
+    }
     val holder = remember(today, ownerId) {
         CheckInStateHolder(today.toString(), initiallyLoading = true)
     }
@@ -707,7 +717,7 @@ fun CheckInScreen(
             holder.markError(LOAD_BLOCKED_MESSAGE)
             return
         }
-        if (holder.state.loading || holder.state.saving) return
+        if (holder.state.loading || holder.state.saving || holder.state.reflectionLoading) return
         val baselineUpdatedAt = holder.state.baselineUpdatedAt
         val request = ownerId?.let(holder::beginSaveRequest)
         if (request == null) {
@@ -755,22 +765,9 @@ fun CheckInScreen(
     }
 
     /**
-     * The AI reflection request — the web's AI block, native. It is fired by the
-     * save itself (and by the "Vygenerovat reflexi" action on an already stored
-     * day), never by a button that competes with "Uložit check-in"; whatever the
-     * server answers is persisted by [AiReflectionRepository.generate].
-     *
-     * Order matters: anything unsaved is pushed first, and a failed save aborts
-     * the request instead of letting the AI reflect on a day it cannot see. The
-     * generated text is then written by a second save — that pass is the only one
-     * whose payload carries `ai_reflection`.
-     *
-     * The whole flow is pinned to the day it started on ([date] + [entry]): if the
-     * user switches days while the request is in flight, the result is dropped
-     * instead of being written to (and saved under) the newly open day.
-     *
-     * The on-device profile decides first: with the AI master switch off
-     * (Nastavení → AI) no request is fired at all, the window just says so.
+     * AI generation is serialized with foreground saves and pinned to the exact
+     * server snapshot used in the prompt. Generated text is staged before the UI
+     * receives it; the second write then goes through the normal v2 CAS path.
      */
     fun generateReflection() {
         if (dateNavigationGuard.get()) return
@@ -787,81 +784,156 @@ fun CheckInScreen(
             holder.markReflectionError(DRAFT_CONFLICT_BLOCKED_MESSAGE)
             return
         }
-        // A second tap while the pre-save or the request runs would duplicate the
-        // work; the endpoint caches, but the button must not look idle.
         if (holder.state.reflectionLoading || holder.state.saving || holder.state.loading) return
+
         val date = holder.date
-        val entry = holder.entry
+        val initialEntry = holder.entry
+        // Lock Save, editing, and date navigation before yielding to the coroutine.
+        holder.markReflectionLoading()
         scope.launch {
-            // The master switch is read once, before anything is saved or sent:
-            // with AI off the whole flow is skipped.
-            val profile = deps.profile?.load()
-            if (profile?.aiEnabled != true) {
-                holder.markReflectionError(AI_DISABLED_MESSAGE)
-                return@launch
-            }
-
-            if (entry.hasContent() && !holder.state.saved) {
-                val request = ownerId?.let(holder::beginSaveRequest)
-                if (request == null) {
-                    holder.markReflectionError(CONDITIONAL_BASELINE_REQUIRED_MESSAGE)
+            try {
+                val profile = deps.profile?.load()
+                if (profile?.aiEnabled != true) {
+                    holder.markReflectionError(AI_DISABLED_MESSAGE)
                     return@launch
                 }
-                val stagedDraft = drafts?.takeIf { it.ownerId == request.ownerId }?.stage(
-                    request.date,
-                    request.entry,
-                    holder.state.baselineUpdatedAt,
-                    request.baseline.exists,
-                    request.baseline.id,
-                    request.baseline.revision,
-                    request.requestId,
-                    request.entry.aiReflection.takeIf { request.writeAiReflection },
-                )
-                val stored = persistEntry(request, holder.state.baselineUpdatedAt, stagedDraft)
-                if (stored.isFailure) {
-                    holder.markError(stored.exceptionOrNull()?.message ?: "Uložení se nezdařilo.", date)
-                    holder.markReflectionError("Nejdřív je potřeba bezpečně uložit dnešní zápis.")
+
+                val owner = ownerId
+                val entries = entriesRepo
+                val draftStore = drafts?.takeIf { it.ownerId == owner }
+                if (owner == null || entries == null || draftStore == null ||
+                    entries.currentUserId() != owner
+                ) {
+                    holder.markReflectionError(AiReflectionRepository.MESSAGE_SIGNED_OUT)
                     return@launch
                 }
-                if (holder.date != date) return@launch
-                holder.markReflectionStored(date, stored.getOrThrow())
-            }
 
-            holder.markReflectionLoading()
-            val profileName = profile?.name?.takeIf { it.isNotBlank() } ?: repo.userName()
-            repo.generate(date, entry, profileName, profile?.birthYear)
-                .onSuccess { text ->
-                    if (holder.date != date) return@onSuccess
-                    holder.setReflection(text)
-                    val reflectedEntry = holder.entry
-                    val reflectedBaselineUpdatedAt = holder.state.baselineUpdatedAt
-                    val request = ownerId?.let(holder::beginSaveRequest)
+                // Unsaved form data must land before the model is asked to reflect on it.
+                if (initialEntry.hasContent() && !holder.state.saved) {
+                    val request = holder.beginSaveRequest(owner, allowDuringReflection = true)
                     if (request == null) {
                         holder.markReflectionError(CONDITIONAL_BASELINE_REQUIRED_MESSAGE)
-                        return@onSuccess
+                        return@launch
                     }
-                    val stagedReflection = drafts?.takeIf { it.ownerId == request.ownerId }?.stage(
+                    val stagedDraft = draftStore.stage(
                         request.date,
-                        reflectedEntry,
-                        reflectedBaselineUpdatedAt,
+                        request.entry,
+                        holder.state.baselineUpdatedAt,
                         request.baseline.exists,
                         request.baseline.id,
                         request.baseline.revision,
                         request.requestId,
                         request.entry.aiReflection.takeIf { request.writeAiReflection },
                     )
-                    persistEntry(request, reflectedBaselineUpdatedAt, stagedReflection)
+                    val stored = persistEntry(request, holder.state.baselineUpdatedAt, stagedDraft)
+                    if (stored.isFailure) {
+                        val failure = stored.exceptionOrNull()
+                        if (failure is QueuedOfflineException || failure is ConditionalSaveUnknownException) {
+                            holder.markQueuedOffline(date)
+                            refreshPendingRecovery(date)
+                        } else {
+                            holder.markError(failure?.message ?: "Uložení se nezdařilo.", date)
+                        }
+                        holder.markReflectionError("Nejdřív je potřeba bezpečně uložit dnešní zápis.")
+                        return@launch
+                    }
+                    if (holder.date != date) return@launch
+                    if (entries.currentUserId() != owner) {
+                        holder.markReflectionError(AiReflectionRepository.MESSAGE_SIGNED_OUT)
+                        return@launch
+                    }
+                    holder.markReflectionStored(date, stored.getOrThrow())
+                }
+
+                // Capture the live row identity/revision, not an old dashboard/UI copy.
+                val remote = entries.loadRemoteEntrySnapshot(date)
+                if (remote.isFailure) {
+                    holder.markReflectionError(remote.exceptionOrNull()?.message ?: LOAD_BLOCKED_MESSAGE)
+                    return@launch
+                }
+                val snapshot = remote.getOrNull()
+                if (snapshot == null && holder.state.baselineExists != false) {
+                    holder.markReflectionError("Serverový zápis už není ověřený. Obnov deník a zkus to znovu.")
+                    return@launch
+                }
+                val promptEntry = snapshot?.entry ?: holder.entry
+                val baseline = snapshot?.let {
+                    EntryBaseline(true, it.id, it.revision)
+                } ?: EntryBaseline(false, null, null)
+                val profileName = profile.name?.takeIf { it.isNotBlank() } ?: repo.userName()
+                repo.generate(
+                    date = date,
+                    entry = promptEntry,
+                    userName = profileName,
+                    birthYear = profile.birthYear,
+                    onGenerated = { text ->
+                        if (draftStore.ownerId != owner) {
+                            throw SessionOwnerMismatchException()
+                        }
+                        draftStore.stage(
+                            date = date,
+                            entry = promptEntry.copy(aiReflection = text),
+                            baselineUpdatedAt = snapshot?.updatedAt,
+                            baselineExists = baseline.exists,
+                            baselineId = baseline.id,
+                            baselineRevision = baseline.revision,
+                            pendingSaveRequestId = null,
+                            pendingAiReflection = text,
+                        ).await()
+                    },
+                ).onSuccess { text ->
+                    if (holder.date != date) return@onSuccess
+                    if (entries.currentUserId() != owner) {
+                        holder.markReflectionError(AiReflectionRepository.MESSAGE_SIGNED_OUT)
+                        return@onSuccess
+                    }
+                    holder.setReflection(text, promptEntry, baseline, snapshot?.updatedAt)
+                    val request = holder.beginSaveRequest(owner, writeAiReflection = true)
+                    if (request == null) {
+                        holder.markReflectionError(CONDITIONAL_BASELINE_REQUIRED_MESSAGE)
+                        return@onSuccess
+                    }
+                    val stagedReflection = draftStore.stage(
+                        request.date,
+                        request.entry,
+                        snapshot?.updatedAt,
+                        request.baseline.exists,
+                        request.baseline.id,
+                        request.baseline.revision,
+                        request.requestId,
+                        request.entry.aiReflection.takeIf { request.writeAiReflection },
+                    )
+                    persistEntry(request, snapshot?.updatedAt, stagedReflection)
                         .onSuccess { receipt -> holder.markReflectionStored(date, receipt) }
-                        .onFailure {
-                            holder.markError(it.message ?: "Reflexi se nepodařilo uložit k zápisu.", date)
+                        .onFailure { failure ->
+                            if (failure is QueuedOfflineException || failure is ConditionalSaveUnknownException) {
+                                holder.markQueuedOffline(date)
+                                refreshPendingRecovery(date)
+                            } else {
+                                holder.markError(
+                                    failure.message ?: "Reflexi se nepodařilo uložit k zápisu.",
+                                    date,
+                                )
+                            }
                             holder.markReflectionError("Reflexi se nepodařilo bezpečně uložit k zápisu.")
                         }
-                }
-                .onFailure {
+                }.onFailure { failure ->
                     if (holder.date == date) {
-                        holder.markReflectionError(it.message ?: "Reflexi se nepodařilo vygenerovat.")
+                        val generated = failure as? GeneratedReflectionDraftException
+                        if (generated != null && entries.currentUserId() == owner) {
+                            holder.setReflection(generated.generatedText, promptEntry, baseline, snapshot?.updatedAt)
+                        }
+                        holder.markReflectionError(failure.message ?: "Reflexi se nepodařilo vygenerovat.")
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (holder.date == date) {
+                    holder.markError(failure.message ?: "Uložení se nezdařilo.", date)
+                    holder.markReflectionError(failure.message ?: "Reflexi se nepodařilo bezpečně uložit.")
+                }
+            }
         }
     }
 
@@ -872,7 +944,7 @@ fun CheckInScreen(
             photoError = LOAD_BLOCKED_MESSAGE
             return
         }
-        if (uploadingPhoto || holder.state.saving || holder.state.loading) return
+        if (uploadingPhoto || holder.state.saving || holder.state.loading || holder.state.reflectionLoading) return
         // The upload and the path it produces belong to the day that was open when
         // the picker started; a switch during the upload must not attach the photo
         // to the newly shown day.

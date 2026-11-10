@@ -45,6 +45,8 @@ class CheckInDeps(
      * generation then behaves exactly as it did before the master switch existed.
      */
     val profile: ProfileStore? = null,
+    /** Live session read for hiding an old owner's in-memory form after account switch. */
+    val sessionStore: SessionStore? = null,
 ) {
     val online: Boolean get() = entries != null
 
@@ -71,10 +73,10 @@ class CheckInDeps(
                 goals = GoalsRepository(client, session),
                 reflection = AiReflectionRepository(
                     sessionStore = sessionStore,
-                    supabase = client,
                     expectedOwnerId = ownerId,
                 ),
                 profile = ProfileStore.from(context, ownerId),
+                sessionStore = sessionStore,
             )
         }
     }

@@ -97,7 +97,7 @@ data class CheckInUiState(
      * not be read, or the local draft store itself failed. The screen uses this for
      * save and AI/photo actions; the holder's [CheckInStateHolder.beginSave] also guards.
      */
-    val canSave: Boolean get() = !saving && !loading && loadError == null && draftStoreError == null
+    val canSave: Boolean get() = !saving && !loading && !reflectionLoading && loadError == null && draftStoreError == null
 
     /**
      * True when the day must be shown passively: it is stored and the user has not
@@ -160,7 +160,7 @@ class CheckInStateHolder(
 
     /** Blocks stale form callbacks while a date navigation flush is in flight. */
     fun beginDateNavigation(): Boolean {
-        if (dateNavigationLocked || state.saving || state.loading) return false
+        if (dateNavigationLocked || state.saving || state.loading || state.reflectionLoading) return false
         dateNavigationLocked = true
         return true
     }
@@ -460,7 +460,7 @@ class CheckInStateHolder(
      * makes a double tap on "Uložit" a no-op instead of two RPC writes.
      */
     fun beginSave(): Boolean {
-        if (state.saving || state.loading || state.loadError != null || dateNavigationLocked) return false
+        if (state.saving || state.loading || state.reflectionLoading || state.loadError != null || dateNavigationLocked) return false
         invalidatePhotoUploads()
         state = state.copy(saving = true, queuedOffline = false, errorMessage = null)
         return true
@@ -470,8 +470,11 @@ class CheckInStateHolder(
     fun beginSaveRequest(
         ownerId: String,
         writeAiReflection: Boolean = false,
+        allowDuringReflection: Boolean = false,
     ): ConditionalEntrySaveRequest? {
-        if (state.saving || state.loading || state.loadError != null || dateNavigationLocked) return null
+        if (state.saving || state.loading || state.loadError != null || dateNavigationLocked ||
+            (state.reflectionLoading && !allowDuringReflection)
+        ) return null
         val baseline = EntryBaseline(state.baselineExists, state.baselineId, state.baselineRevision)
         if (!baseline.isValid) return null
         val requestId = state.pendingSaveRequestId ?: UUID.randomUUID().toString()
@@ -581,14 +584,27 @@ class CheckInStateHolder(
      * the database yet, the screen saves the entry again right after this call,
      * and until that second save lands the day is genuinely not fully stored.
      */
-    fun setReflection(text: String) {
+    fun setReflection(
+        text: String,
+        baseEntry: DiaryEntry = state.entry,
+        baseline: EntryBaseline = EntryBaseline(
+            state.baselineExists,
+            state.baselineId,
+            state.baselineRevision,
+        ),
+        baselineUpdatedAt: String? = state.baselineUpdatedAt,
+    ) {
         state = state.copy(
-            entry = state.entry.copy(aiReflection = text),
+            entry = baseEntry.copy(aiReflection = text),
             reflection = text,
             reflectionLoading = false,
             reflectionError = null,
             saved = false,
             draftDirty = true,
+            baselineUpdatedAt = baselineUpdatedAt,
+            baselineExists = baseline.exists,
+            baselineId = baseline.id,
+            baselineRevision = baseline.revision,
             pendingSaveRequestId = null,
             pendingAiReflection = text,
         )
@@ -605,7 +621,7 @@ class CheckInStateHolder(
     private fun update(entry: DiaryEntry) {
         // The save snapshot is taken before the RPC goes out; letting a control edit
         // the model mid-flight would make the payload and the visible form disagree.
-        if (state.saving || state.loading || dateNavigationLocked) return
+        if (state.saving || state.loading || state.reflectionLoading || dateNavigationLocked) return
         state = state.copy(
             entry = entry,
             saved = false,

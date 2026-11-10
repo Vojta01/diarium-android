@@ -452,7 +452,12 @@ class EntriesRepository(
                 ) {
                     return Result.failure(IllegalStateException(PENDING_SAVE_RECOVERY_BLOCKED))
                 }
-                val result = saveConditionalAuthorized(request, userId, cleanupPhotoAfterPersistence)
+                val result = saveConditionalAuthorized(
+                    request,
+                    userId,
+                    cleanupPhotoAfterPersistence,
+                    verifyReplayedReceipt = true,
+                )
                 if (result.exceptionOrNull() is ConditionalSaveUnknownException && outbox != null) {
                     if (!outbox.enqueueConditional(request)) {
                         Log.w(LOG_TAG, "conditional offline request could not be durably queued")
@@ -485,7 +490,12 @@ class EntriesRepository(
             if (authorizedUserId() != userId) {
                 Result.failure(SessionOwnerMismatchException())
             } else {
-                saveConditionalAuthorized(request, userId, cleanupPhotoAfterPersistence = true)
+                saveConditionalAuthorized(
+                    request,
+                    userId,
+                    cleanupPhotoAfterPersistence = true,
+                    verifyReplayedReceipt = true,
+                )
             }
         }
     }
@@ -494,6 +504,7 @@ class EntriesRepository(
         request: ConditionalEntrySaveRequest,
         userId: String,
         cleanupPhotoAfterPersistence: Boolean,
+        verifyReplayedReceipt: Boolean = false,
     ): Result<ConditionalSaveReceipt> {
         if (authorizedUserId() != userId || request.ownerId != userId) {
             return Result.failure(SessionOwnerMismatchException())
@@ -578,11 +589,41 @@ class EntriesRepository(
                 if (authorizedUserId() != userId) {
                     return Result.failure(SessionOwnerMismatchException())
                 }
+                val replayed = envelope.optBoolean("replayed", false)
                 val receipt = ConditionalSaveReceipt(
                     entryId = entryId,
                     revision = revision,
-                    replayed = envelope.optBoolean("replayed", false),
+                    replayed = replayed,
                 )
+                if (verifyReplayedReceipt && replayed) {
+                    val current = try {
+                        readEntrySnapshot(request.date, userId)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        if (authorizedUserId() != userId) {
+                            return Result.failure(SessionOwnerMismatchException())
+                        }
+                        return Result.failure(
+                            ConditionalSaveConflictException(
+                                REPLAYED_RECEIPT_MISMATCH,
+                                currentSnapshot = null,
+                                currentReadError = failure.message ?: CONNECT_FAILED,
+                            ),
+                        )
+                    }
+                    if (authorizedUserId() != userId) {
+                        return Result.failure(SessionOwnerMismatchException())
+                    }
+                    if (current == null || current.id != entryId || current.revision != revision) {
+                        return Result.failure(
+                            ConditionalSaveConflictException(
+                                REPLAYED_RECEIPT_MISMATCH,
+                                currentSnapshot = current,
+                            ),
+                        )
+                    }
+                }
                 val cached = envelope.optJSONObject("entry") ?: buildCacheRow(payload, entry, receipt)
                 runCatching { cacheFor(userId)?.upsertRows(listOf(cached)) }
                 if (cleanupPhotoAfterPersistence) {
@@ -1162,6 +1203,9 @@ class EntriesRepository(
          * section shows, so an offline phone reads the same everywhere in the app.
          */
         private const val CONNECT_FAILED = "Nepodařilo se připojit k serveru."
+
+        /** Historical idempotency receipts are not proof of the current row version. */
+        private const val REPLAYED_RECEIPT_MISMATCH = "replayed_receipt_current_row_unverified"
 
         private const val PHOTO_CANDIDATE_TRACK_FAILED =
             "Původní fotku nelze bezpečně evidovat. Uložení změn je zablokované a fotka zůstala zachovaná."

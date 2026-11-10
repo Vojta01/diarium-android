@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.json.JSONArray
 import org.json.JSONObject
@@ -59,6 +60,7 @@ class EntriesRepositoryWriteTest {
             .edit().clear().commit()
         context.getSharedPreferences(PhotoCandidateStore.PREFS_NAME, Context.MODE_PRIVATE)
             .edit().clear().commit()
+        runBlocking { DraftStore.from(context, USER_ID).clear(DATE) }
     }
 
     // ── photo removal ───────────────────────────────────────────────────────
@@ -863,6 +865,12 @@ class EntriesRepositoryWriteTest {
     @Test
     fun `an unknown network outcome retries the identical request id and body`() = runTest {
         var firstAttempt = true
+        val accepted = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 1)
+            .put("mood", 4)
+            .put("note", "retry-safe")
         respond = { request ->
             when {
                 request.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt -> {
@@ -873,6 +881,8 @@ class EntriesRepositoryWriteTest {
                     200,
                     savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString(),
                 )
+                request.method == "GET" && request.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(accepted).toString())
                 else -> null
             }
         }
@@ -896,6 +906,50 @@ class EntriesRepositoryWriteTest {
         assertEquals(requests[0].body, requests[1].body)
         assertEquals(REQUEST_RETRY, JSONObject(requests[0].body!!).getString("p_request_id"))
         assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") })
+    }
+
+    @Test
+    fun `foreground replay receipt is a conflict when the live row advanced`() = runTest {
+        var firstAttempt = true
+        val current = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 2)
+            .put("mood", 5)
+            .put("note", "intervening legacy write")
+        respond = { request ->
+            when {
+                request.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt -> {
+                    firstAttempt = false
+                    throw IOException("server committed before the response timed out")
+                }
+                request.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                request.method == "GET" && request.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(current).toString())
+                else -> null
+            }
+        }
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "accepted CAS payload", aiReflection = "saved reflection"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_RETRY,
+            writeAiReflection = true,
+        )
+
+        val repo = repository()
+        val first = repo.save(request)
+        val retry = repo.save(request)
+        val conflict = retry.exceptionOrNull() as? ConditionalSaveConflictException
+
+        assertTrue(first.exceptionOrNull() is ConditionalSaveUnknownException)
+        assertEquals("replayed_receipt_current_row_unverified", conflict?.reason)
+        assertEquals("intervening legacy write", conflict?.currentSnapshot?.entry?.note)
+        assertEquals(2, sent.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
+        assertTrue(sent.any { it.method == "GET" && it.url.contains("/entries?") })
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" })
     }
 
     @Test
@@ -1075,11 +1129,20 @@ class EntriesRepositoryWriteTest {
         val request = ConditionalEntrySaveRequest(
             ownerId = USER_ID,
             date = DATE,
-            entry = DiaryEntry(mood = 4, note = "accepted CAS payload"),
+            entry = DiaryEntry(mood = 4, note = "accepted CAS payload", aiReflection = "recovery reflection"),
             baseline = EntryBaseline(exists = false, id = null, revision = null),
             requestId = REQUEST_RETRY,
+            writeAiReflection = true,
         )
         val pending = PendingSaveStore.from(context, USER_ID)
+        val drafts = DraftStore.from(context, USER_ID)
+        drafts.save(
+            DATE,
+            request.entry,
+            baselineExists = false,
+            pendingSaveRequestId = request.requestId,
+            pendingAiReflection = request.entry.aiReflection,
+        )
         assertTrue(pending.enqueueConditional(request))
         val current = JSONObject()
             .put("id", ROW_ID)
@@ -1103,6 +1166,8 @@ class EntriesRepositoryWriteTest {
         assertTrue("a historical receipt is not proof the current row still matches", result is PendingSaveFlush.RecoveryRequired)
         assertEquals(request, retained?.conditionalRequest)
         assertEquals("accepted CAS payload", retained?.entry?.note)
+        assertEquals("recovery reflection", drafts.loadRecord(DATE)?.pendingAiReflection)
+        assertEquals(request.requestId, drafts.loadRecord(DATE)?.pendingSaveRequestId)
         assertTrue(retained?.recoveryReason.orEmpty().contains("replayed_receipt"))
         assertEquals("intervening legacy write", current.getString("note"))
         assertEquals(1, sent.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
@@ -1242,6 +1307,13 @@ class EntriesRepositoryWriteTest {
     @Test
     fun `an unknown reflection-save outcome replays the identical reflection payload`() = runTest {
         var firstAttempt = true
+        val accepted = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 1)
+            .put("mood", 4)
+            .put("note", "reflection owner")
+            .put("ai_reflection", "Generated reflection")
         respond = { request ->
             when {
                 request.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt -> {
@@ -1250,6 +1322,8 @@ class EntriesRepositoryWriteTest {
                 }
                 request.url.endsWith("/rpc/save_daily_entry_v2") ->
                     HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                request.method == "GET" && request.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(accepted).toString())
                 else -> null
             }
         }
@@ -1274,6 +1348,111 @@ class EntriesRepositoryWriteTest {
             "Generated reflection",
             JSONObject(requests[0].body!!).getJSONObject("p_payload").getString("ai_reflection"),
         )
+    }
+
+    @Test
+    fun `reflection text is durably staged before its conditional v2 request`() = runTest {
+        val drafts = DraftStore.from(context, USER_ID)
+        val reflection = "Generated after the prompt snapshot"
+        val snapshot = StoredEntrySnapshot(
+            entry = DiaryEntry(mood = 4, note = "account owner's note"),
+            updatedAt = "2026-11-10T12:00:00Z",
+            id = ROW_ID,
+            revision = 7,
+        )
+        var draftWasReadyAtDispatch = false
+        respond = { request ->
+            if (request.url.endsWith("/rpc/save_daily_entry_v2")) {
+                draftWasReadyAtDispatch = runBlocking {
+                    drafts.loadRecord(DATE)?.pendingAiReflection == reflection
+                }
+            }
+            null
+        }
+
+        val result = AiReflectionSaveCoordinator(repository(), drafts)
+            .save(DATE, snapshot, snapshot.entry, reflection)
+
+        assertTrue(result.isSuccess)
+        assertTrue("local text must exist before any remote mutation", draftWasReadyAtDispatch)
+        assertNull(drafts.loadRecord(DATE))
+        val rpc = sent.single { it.url.endsWith("/rpc/save_daily_entry_v2") }
+        val body = JSONObject(rpc.body!!)
+        assertEquals(ROW_ID, body.getString("p_expected_id"))
+        assertEquals(7L, body.getLong("p_expected_revision"))
+        assertEquals(reflection, body.getJSONObject("p_payload").getString("ai_reflection"))
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" })
+    }
+
+    @Test
+    fun `unknown reflection save preserves the owner draft and exact replay request`() = runTest {
+        val drafts = DraftStore.from(context, USER_ID)
+        val pending = PendingSaveStore.from(context, USER_ID)
+        val reflection = "Generated before response timeout"
+        val snapshot = StoredEntrySnapshot(
+            entry = DiaryEntry(mood = 4, note = "kept note"),
+            updatedAt = null,
+            id = ROW_ID,
+            revision = 7,
+        )
+        respond = { request ->
+            if (request.url.endsWith("/rpc/save_daily_entry_v2")) throw IOException("response timeout")
+            null
+        }
+
+        val result = AiReflectionSaveCoordinator(repository(pending), drafts)
+            .save(DATE, snapshot, snapshot.entry, reflection)
+        val draft = drafts.loadRecord(DATE)
+        val queued = pending.peekRecord(DATE)
+
+        assertTrue(result.exceptionOrNull() is ConditionalSaveUnknownException)
+        assertEquals(reflection, draft?.pendingAiReflection)
+        assertEquals(reflection, draft?.entry?.aiReflection)
+        assertEquals(queued?.conditionalRequest?.requestId, draft?.pendingSaveRequestId)
+        assertEquals(reflection, queued?.conditionalRequest?.entry?.aiReflection)
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" })
+    }
+
+    @Test
+    fun `account switch keeps generated text under its original owner and sends no write`() = runTest {
+        val drafts = DraftStore.from(context, USER_ID)
+        val entry = DiaryEntry(mood = 4, note = "private A", aiReflection = "A-only reflection")
+        drafts.stage(
+            DATE,
+            entry,
+            baselineExists = false,
+            pendingAiReflection = entry.aiReflection,
+        ).await()
+        sessionStore.save(
+            JSONObject().apply {
+                put("access_token", "jwt-account-b")
+                put("refresh_token", "refresh-b")
+                put("expires_at", System.currentTimeMillis() / 1000 + 3600)
+                put("user", JSONObject().put("id", OTHER_USER_ID))
+            },
+        )
+
+        val result = AiReflectionSaveCoordinator(repository(), drafts)
+            .save(DATE, null, entry, entry.aiReflection.orEmpty())
+
+        assertTrue(result.exceptionOrNull() is SessionOwnerMismatchException)
+        assertEquals(USER_ID, drafts.loadRecord(DATE)?.ownerId)
+        assertEquals("A-only reflection", drafts.loadRecord(DATE)?.pendingAiReflection)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun `unverified row identity keeps generated text local and sends no fallback write`() = runTest {
+        val drafts = DraftStore.from(context, USER_ID)
+        val entry = DiaryEntry(mood = 4, note = "do not overwrite")
+        val unverified = StoredEntrySnapshot(entry, updatedAt = null, id = "invalid-id", revision = 0)
+
+        val result = AiReflectionSaveCoordinator(repository(), drafts)
+            .save(DATE, unverified, entry, "Must remain local")
+
+        assertTrue(result.exceptionOrNull() is ConditionalSaveUnavailableException)
+        assertEquals("Must remain local", drafts.loadRecord(DATE)?.pendingAiReflection)
+        assertTrue(sent.isEmpty())
     }
 
     @Test

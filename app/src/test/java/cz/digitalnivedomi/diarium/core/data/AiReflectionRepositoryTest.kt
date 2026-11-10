@@ -5,7 +5,12 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import cz.digitalnivedomi.diarium.BuildConfig
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -110,27 +115,50 @@ class AiReflectionRepositoryTest {
     }
 
     @Test
-    fun `reflection generation never writes directly to the entries table`() = runTest {
-        val databaseRequests = mutableListOf<HttpRequest>()
-        val repo = AiReflectionRepository(
-            sessionStore = signedInStore(),
-            transport = transport,
-            endpoint = "https://example.invalid/api/ai/reflect",
-            supabase = SupabaseClient(
-                sessionStore = signedInStore(),
-                transport = HttpTransport { request ->
-                    databaseRequests += request
-                    HttpResponse(204, "")
-                },
-                baseUrl = "https://example.invalid/rest/v1",
-                anonKey = "test-anon",
-            ),
-            expectedOwnerId = USER_ID,
+    fun `generation hands text to the caller-owned draft barrier and performs no database write`() = runTest {
+        val staged = mutableListOf<String>()
+        val result = repository().generate(
+            DATE,
+            DiaryEntry(mood = 4),
+            onGenerated = { text -> staged += text },
         )
 
-        assertEquals("Dnes sis to užil.", repo.generate(DATE, DiaryEntry(mood = 4)).getOrNull())
+        assertEquals("Dnes sis to užil.", result.getOrNull())
+        assertEquals(listOf("Dnes sis to užil."), staged)
+        assertEquals(1, sent.size)
+        assertTrue(sent.single().url.endsWith("/api/ai/reflect"))
+    }
 
-        assertTrue("generated text must be saved only through conditional v2 CAS", databaseRequests.isEmpty())
+    @Test
+    fun `a generated reflection is carried when the local draft barrier fails`() = runTest {
+        val result = repository().generate(DATE, DiaryEntry(mood = 4)) {
+            throw IOException("disk unavailable")
+        }
+
+        val failure = result.exceptionOrNull() as GeneratedReflectionDraftException
+        assertEquals("Dnes sis to užil.", failure.generatedText)
+        assertEquals("disk unavailable", failure.cause?.message)
+    }
+
+    @Test
+    fun `caller cancellation cannot interrupt local staging after the response arrives`() = runBlocking {
+        val callbackStarted = CompletableDeferred<Unit>()
+        val releaseCallback = CompletableDeferred<Unit>()
+        val staged = CompletableDeferred<String>()
+        val job = launch {
+            repository().generate(DATE, DiaryEntry(note = "navigation pending")) { text ->
+                callbackStarted.complete(Unit)
+                releaseCallback.await()
+                staged.complete(text)
+            }
+        }
+
+        withTimeout(5_000) { callbackStarted.await() }
+        job.cancel()
+        releaseCallback.complete(Unit)
+        job.cancelAndJoin()
+
+        assertEquals("Dnes sis to užil.", staged.await())
     }
 
     @Test
@@ -243,37 +271,32 @@ class AiReflectionRepositoryTest {
     }
 
     @Test
-    fun `an in-flight owner's entry keeps its token and cannot persist with replacement account`() = runTest {
+    fun `a response after account switch is still staged only through the captured account callback`() = runTest {
         val store = signedInStore()
         val endpointRequests = mutableListOf<HttpRequest>()
+        val accountADraft = mutableListOf<String>()
         val endpointTransport = HttpTransport { request ->
             endpointRequests += request
             store.withMetaName("Other", userId = OTHER_USER_ID, token = "other-jwt")
             response
         }
-        val persistenceRequests = mutableListOf<HttpRequest>()
-        val persistenceTransport = HttpTransport { request ->
-            persistenceRequests += request
-            HttpResponse(204, "")
-        }
         val repo = AiReflectionRepository(
             sessionStore = store,
             transport = endpointTransport,
             endpoint = "https://example.invalid/api/ai/reflect",
-            supabase = SupabaseClient(
-                sessionStore = store,
-                transport = persistenceTransport,
-                baseUrl = "https://example.invalid/rest/v1",
-                anonKey = "test-anon",
-            ),
             expectedOwnerId = USER_ID,
         )
 
-        val result = repo.generate(DATE, DiaryEntry(note = "private account A entry"))
+        val result = repo.generate(DATE, DiaryEntry(note = "private account A entry")) { text ->
+            // The real caller closes over DraftStore(owner A); this test proves that
+            // it gets the result even if account B replaces the active session.
+            accountADraft += text
+        }
 
         assertEquals("Dnes sis to užil.", result.getOrNull())
         assertEquals("Bearer jwt-access-token", endpointRequests.single().headers["Authorization"])
-        assertTrue(persistenceRequests.isEmpty())
+        assertEquals(listOf("Dnes sis to užil."), accountADraft)
+        assertTrue(endpointRequests.none { it.url.contains("/entries?") })
     }
 
     @Test

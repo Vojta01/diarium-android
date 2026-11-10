@@ -3,8 +3,10 @@ package cz.digitalnivedomi.diarium.ui.home
 import android.content.Context
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.AppClients
+import cz.digitalnivedomi.diarium.core.data.AiReflectionSaveCoordinator
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
+import cz.digitalnivedomi.diarium.core.data.DraftStore
 import cz.digitalnivedomi.diarium.core.data.EntriesCacheStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
@@ -44,6 +46,13 @@ class DashboardDeps(
      * reflection card respects, plus the name/birth year sent with a generation.
      */
     val profile: ProfileStore? = null,
+    /** Owner-pinned persistence inputs for reflection generation from the dashboard. */
+    val reflectionEntries: EntriesRepository? = null,
+    val reflectionDrafts: DraftStore? = null,
+    val reflectionSaver: AiReflectionSaveCoordinator? = null,
+    /** Live session store plus the owner captured when these dependencies were built. */
+    val sessionStore: SessionStore? = null,
+    val sessionOwnerId: String? = null,
 ) {
 
     val online: Boolean get() = dashboard != null
@@ -59,23 +68,28 @@ class DashboardDeps(
             val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
             val ownerId = session.userId()
+            val pending = PendingSaveStore.from(context, ownerId)
+            val entries = EntriesRepository(
+                client,
+                session,
+                cache = ownerId?.let { EntriesCacheStore.from(context, it) },
+                pending = pending,
+                expectedOwnerId = ownerId,
+            )
+            val drafts = ownerId?.let { DraftStore.from(context, it) }
             return DashboardDeps(
-                dashboard = DashboardRepository(
-                    EntriesRepository(
-                        client,
-                        session,
-                        cache = ownerId?.let { EntriesCacheStore.from(context, it) },
-                        pending = PendingSaveStore.from(context, ownerId),
-                        expectedOwnerId = ownerId,
-                    ),
-                ),
+                dashboard = DashboardRepository(entries),
                 reflection = AiReflectionRepository(
                     sessionStore = sessionStore,
-                    supabase = client,
                     expectedOwnerId = ownerId,
                 ),
                 goals = GoalsRepository(client, SessionContext(sessionStore)),
                 profile = ProfileStore.from(context, ownerId),
+                reflectionEntries = entries,
+                reflectionDrafts = drafts,
+                reflectionSaver = drafts?.let { AiReflectionSaveCoordinator(entries, it) },
+                sessionStore = sessionStore,
+                sessionOwnerId = ownerId,
             )
         }
     }

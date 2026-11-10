@@ -28,14 +28,12 @@ import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
  *
  * The text is the server's own Czech prose, so it is rendered verbatim.
  *
- * This section reports, it does not start anything: the owner asked (2026-09-11)
- * for a form whose only action is "Uložit check-in", with the reflection written
- * as part of that save (`CheckInScreen`opens the reflection window right after the
- * write, and `AiReflectionRepository.generate` persists what it gets). So an
- * unsaved day shows nothing but a sentence saying the reflection will arrive with
- * the save, and generating/regenerating looks are offered only for a day that was
- * already stored ([canGenerate] / [hasReflection]) — the endpoint caches, so a
- * second look is cheap.
+ * This section reports, it does not start anything: generation is pinned to a
+ * server snapshot, staged in an account-scoped local draft, then persisted through
+ * the same conditional v2 CAS path as a foreground check-in. While generation is
+ * active, Save and date navigation remain locked. An unsaved day must land first;
+ * generating/regenerating looks are offered only for a stored day ([canGenerate] /
+ * [hasReflection]) — the endpoint caches, so a second look is cheap.
  */
 @Composable
 fun ReflectionSection(

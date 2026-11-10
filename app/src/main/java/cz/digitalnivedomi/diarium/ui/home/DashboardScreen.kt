@@ -36,6 +36,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -50,6 +51,14 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil.compose.AsyncImage
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
+import cz.digitalnivedomi.diarium.core.data.AiReflectionSaveCoordinator
+import cz.digitalnivedomi.diarium.core.data.ConditionalSaveUnknownException
+import cz.digitalnivedomi.diarium.core.data.DraftStore
+import cz.digitalnivedomi.diarium.core.data.EntriesRepository
+import cz.digitalnivedomi.diarium.core.data.GeneratedReflectionDraftException
+import cz.digitalnivedomi.diarium.core.data.SessionOwnerMismatchException
+import cz.digitalnivedomi.diarium.core.data.SessionContext
+import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import java.time.LocalDate
 import cz.digitalnivedomi.diarium.core.data.DashboardData
 import cz.digitalnivedomi.diarium.core.data.DashboardDay
@@ -153,6 +162,8 @@ fun DashboardScreen(
     val state = holder.state
     val data = state.data
     val repository = deps.dashboard
+    val activeOwner = deps.sessionStore?.let { SessionContext(it).userId() }
+    val reflectionOwnerId = activeOwner?.takeIf { it == deps.sessionOwnerId }
     var reloadTrigger by remember { mutableStateOf(0) }
 
     // Goals and the profile ride the dashboard's own load/reload: a failed goals
@@ -229,6 +240,10 @@ fun DashboardScreen(
                 onOpen = onOpen,
                 onReload = { reloadTrigger++ },
                 reflectionRepository = deps.reflection,
+                reflectionEntries = deps.reflectionEntries,
+                reflectionDrafts = deps.reflectionDrafts,
+                reflectionSaver = deps.reflectionSaver,
+                reflectionOwnerId = reflectionOwnerId,
                 goalsProgress = goalsProgress,
                 profile = profile,
             )
@@ -301,6 +316,10 @@ private fun DashboardContent(
     onOpen: (String) -> Unit,
     onReload: () -> Unit,
     reflectionRepository: AiReflectionRepository?,
+    reflectionEntries: EntriesRepository?,
+    reflectionDrafts: DraftStore?,
+    reflectionSaver: AiReflectionSaveCoordinator?,
+    reflectionOwnerId: String?,
     /** Null while unknown/failed — the goals card hides rather than guessing. */
     goalsProgress: List<GoalProgress>?,
     /** Null while unknown — the reflection card then keeps the AI enabled path. */
@@ -356,12 +375,16 @@ private fun DashboardContent(
         // text, so nothing shows twice.
         val anchor = data.newestRecorded ?: data.newestEntry
         val todayShowsIt = !data.todayEntry?.aiReflection.isNullOrBlank()
-        if (!todayShowsIt && (anchor != null || data.reflection != null)) {
+        if (reflectionOwnerId != null && !todayShowsIt && (anchor != null || data.reflection != null)) {
             StaggeredItem(8) {
                 ReflectionCard(
                     anchor = anchor,
                     latest = data.reflection,
                     repository = reflectionRepository,
+                    entries = reflectionEntries,
+                    drafts = reflectionDrafts,
+                    saver = reflectionSaver,
+                    ownerId = reflectionOwnerId,
                     profile = profile,
                 )
             }
@@ -1629,17 +1652,22 @@ private fun ReflectionCard(
     anchor: DashboardNewestEntry?,
     latest: DashboardReflection?,
     repository: AiReflectionRepository?,
+    entries: EntriesRepository?,
+    drafts: DraftStore?,
+    saver: AiReflectionSaveCoordinator?,
+    ownerId: String?,
     /** The on-device profile: the AI master switch and the prompt's name/birth year. */
     profile: ProfileData?,
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val anchorText = anchor?.reflection?.takeIf { it.isNotBlank() }
     val shown = anchorText ?: latest?.text
     val shownDate = if (anchorText != null) anchor?.date else latest?.date
-    var text by remember(shownDate) { mutableStateOf(shown) }
-    var label by remember(shownDate) { mutableStateOf(shownDate) }
-    var loading by remember(shownDate) { mutableStateOf(false) }
-    var error by remember(shownDate) { mutableStateOf<String?>(null) }
+    var text by remember(ownerId, shownDate) { mutableStateOf(shown) }
+    var label by remember(ownerId, shownDate) { mutableStateOf(shownDate) }
+    var loading by remember(ownerId, shownDate) { mutableStateOf(false) }
+    var error by remember(ownerId, shownDate) { mutableStateOf<String?>(null) }
 
     // Only a recorded day can have a reflection generated: an unrecorded one has
     // nothing to reflect on.
@@ -1691,27 +1719,106 @@ private fun ReflectionCard(
                         loading = true
                         error = null
                         scope.launch {
-                            // The profile's name (falling back to the session name)
-                            // and birth year travel with the prompt.
-                            repo.generate(
-                                date = missing.date,
-                                entry = missing.entry,
-                                userName = profile?.name?.ifBlank { repo.userName() }
-                                    ?: repo.userName(),
-                                birthYear = profile?.birthYear,
-                            )
-                                .onSuccess { generated ->
-                                    text = generated
-                                    label = missing.date
-                                    loading = false
+                            var expectedOwner: String? = null
+                            try {
+                                val repoEntries = entries
+                                    ?: throw IllegalStateException("Ukládání reflexe vyžaduje přihlášení.")
+                                val draftStore = drafts
+                                    ?: throw IllegalStateException("Místní návrh reflexe není dostupný.")
+                                val saveCoordinator = saver
+                                    ?: throw IllegalStateException("Bezpečné uložení reflexe není dostupné.")
+                                val owner = repoEntries.currentUserId()
+                                    ?: throw IllegalStateException(AiReflectionRepository.MESSAGE_SIGNED_OUT)
+                                expectedOwner = owner
+                                if (draftStore.ownerId != owner) throw SessionOwnerMismatchException()
+                                if (repoEntries.pendingSaveRecord(missing.date) != null ||
+                                    draftStore.loadRecord(missing.date) != null
+                                ) {
+                                    error = "Nejdřív vyřeš místní návrh dnešního zápisu."
+                                    return@launch
                                 }
-                                .onFailure { failure ->
-                                    // The repository's own Czech sentence, verbatim: a
-                                    // 429 cooldown must be shown as-is, never retried
-                                    // in a loop.
+
+                                val remote = repoEntries.loadRemoteEntrySnapshot(missing.date)
+                                val snapshot = remote.getOrElse { throw it }
+                                    ?: throw IllegalStateException("Zápis už není na serveru ověřený. Obnov přehled.")
+                                val promptEntry = snapshot.entry
+                                val generated = repo.generate(
+                                    date = missing.date,
+                                    entry = promptEntry,
+                                    userName = profile?.name?.ifBlank { repo.userName() }
+                                        ?: repo.userName(),
+                                    birthYear = profile?.birthYear,
+                                    onGenerated = { reflection ->
+                                        if (draftStore.ownerId != owner) {
+                                            throw SessionOwnerMismatchException()
+                                        }
+                                        draftStore.stage(
+                                            date = missing.date,
+                                            entry = promptEntry.copy(aiReflection = reflection),
+                                            baselineUpdatedAt = snapshot?.updatedAt,
+                                            baselineExists = snapshot != null,
+                                            baselineId = snapshot?.id,
+                                            baselineRevision = snapshot?.revision,
+                                            pendingSaveRequestId = null,
+                                            pendingAiReflection = reflection,
+                                        ).await()
+                                    },
+                                )
+                                generated.fold(
+                                    onSuccess = { reflection ->
+                                        if (repoEntries.currentUserId() != owner) {
+                                            error = AiReflectionRepository.MESSAGE_SIGNED_OUT
+                                            return@fold
+                                        }
+                                        val saved = saveCoordinator.save(
+                                            date = missing.date,
+                                            snapshot = snapshot,
+                                            fallbackEntry = promptEntry,
+                                            reflection = reflection,
+                                        )
+                                        if (saved.isSuccess) {
+                                            text = reflection
+                                            label = missing.date
+                                            error = null
+                                        } else {
+                                            val failure = saved.exceptionOrNull()
+                                            if (failure is ConditionalSaveUnknownException) {
+                                                val queued = repoEntries.pendingSaveRecord(missing.date)
+                                                val staged = draftStore.loadRecord(missing.date)
+                                                if (queued != null && staged != null &&
+                                                    queued.conditionalRequest?.requestId == staged.pendingSaveRequestId &&
+                                                    queued.isReplayable
+                                                ) {
+                                                    PendingSaveWorker.enqueue(context, owner)
+                                                }
+                                            }
+                                            if (repoEntries.currentUserId() == owner) {
+                                                text = reflection
+                                                label = missing.date
+                                                error = failure?.message ?: "Reflexi se nepodařilo bezpečně uložit."
+                                            }
+                                        }
+                                    },
+                                    onFailure = { failure ->
+                                        if (repoEntries.currentUserId() == owner) {
+                                            val stagedText = (failure as? GeneratedReflectionDraftException)?.generatedText
+                                            if (stagedText != null) {
+                                                text = stagedText
+                                                label = missing.date
+                                            }
+                                            error = failure.message ?: AiReflectionRepository.MESSAGE_GENERIC
+                                        }
+                                    },
+                                )
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (failure: Exception) {
+                                if (expectedOwner == null || entries?.currentUserId() == expectedOwner) {
                                     error = failure.message ?: AiReflectionRepository.MESSAGE_GENERIC
-                                    loading = false
                                 }
+                            } finally {
+                                loading = false
+                            }
                         }
                     }
                 }
