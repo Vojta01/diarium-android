@@ -98,6 +98,9 @@ class DashboardReflectionRecoveryScreenTest {
             compose.onNodeWithTag("dashboard_reflection_stage_retry").assertExists()
             compose.onNodeWithTag("dashboard_reflection_stage_retry").performScrollTo().performClick()
             compose.waitUntil(TIMEOUT) { fixture.saveCalls.get() == 1 }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithTag("dashboard_reflection_stage_retry").fetchSemanticsNodes().isEmpty()
+            }
 
             assertTrue("the CAS request must be dispatched only after the durable draft exists", fixture.draftReadyAtDispatch.get())
             assertTrue("the failed write was retried", fixture.draftWrites.get() >= 2)
