@@ -25,6 +25,21 @@ internal data class UsageSyncRequest(
         create(ownerId, date, phonePayloadJson, baseline, UUID.randomUUID().toString())
 
     companion object {
+        private val PHONE_PAYLOAD_KEYS = setOf(
+            "user_id",
+            "date",
+            "phone_screen_time",
+            "phone_unlocks",
+            "phone_top_apps",
+        )
+        private val RPC_BODY_KEYS = setOf(
+            "p_payload",
+            "p_expected_exists",
+            "p_expected_id",
+            "p_expected_revision",
+            "p_request_id",
+        )
+
         fun create(
             ownerId: String,
             date: String,
@@ -79,23 +94,6 @@ internal data class UsageSyncRequest(
         val number = json.opt(key) as? Number ?: return false
         val value = number.toDouble()
         return value.isFinite() && value >= 0.0 && value % 1.0 == 0.0
-    }
-
-    private companion object {
-        val PHONE_PAYLOAD_KEYS = setOf(
-            "user_id",
-            "date",
-            "phone_screen_time",
-            "phone_unlocks",
-            "phone_top_apps",
-        )
-        val RPC_BODY_KEYS = setOf(
-            "p_payload",
-            "p_expected_exists",
-            "p_expected_id",
-            "p_expected_revision",
-            "p_request_id",
-        )
     }
 }
 
