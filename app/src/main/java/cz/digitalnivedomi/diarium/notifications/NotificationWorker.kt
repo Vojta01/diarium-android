@@ -72,13 +72,19 @@ class NotificationWorker(
 
     private val prefsStore = NotificationPrefsStore(appContext)
     private val session = AppClients.sessionStore(appContext)
-    private val supabase = AppClients.supabaseClient(appContext)
+    /** Immutable account captured when AlarmManager/WorkManager scheduled this run. */
+    private val ownerId = inputData.getString(NotificationScheduler.EXTRA_OWNER_ID)
+        ?.takeIf { it.isNotBlank() }
+    private val sessionContext = SessionContext(session)
+    private val baseSupabase = AppClients.supabaseClient(appContext)
+    /** Every REST path is pinned to the captured account, including report polling. */
+    private val supabase = ownerId?.let(baseSupabase::forOwner) ?: baseSupabase
 
     /** The user's own DeepSeek key, if they added one (encrypted at rest). */
-    private val aiKeys = AiKeyStore.forContext(appContext)
+    private val aiKeys = AiKeyStore.forContext(appContext, ownerId)
 
-    /** The on-device profile — name/birth year for the prompt, plus the AI master switch. */
-    private val profileStore = ProfileStore.from(appContext)
+    /** The profile (including AI consent) is read only from the captured owner's namespace. */
+    private val profileStore = ProfileStore.from(appContext, ownerId)
 
     /**
      * On-device report generation (option C); used only when a key is stored.
@@ -90,9 +96,10 @@ class NotificationWorker(
         ReportGenerator(
             client = supabase,
             keyStore = aiKeys,
-            session = SessionContext(session),
+            session = sessionContext,
             profile = profileStore,
-            goals = GoalsRepository(supabase, SessionContext(session)),
+            goals = GoalsRepository(supabase, sessionContext),
+            expectedOwnerId = ownerId,
         )
     }
 
@@ -104,6 +111,11 @@ class NotificationWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
+            // Ownerless and account-mismatched legacy requests fail closed before
+            // notification prefs, profile, key, network, or markers are touched.
+            if (ownerId == null) return@withContext Result.failure()
+            if (!ownerStillCurrent()) return@withContext Result.success()
+
             val type = inputData.getString(NotificationScheduler.EXTRA_TYPE)
                 ?: NotificationScheduler.TYPE_REMINDER
             when (type) {
@@ -111,6 +123,7 @@ class NotificationWorker(
                 NotificationScheduler.TYPE_MORNING -> handleMorningReminder()
                 NotificationScheduler.TYPE_WEEKLY -> handleReport("weekly")
                 NotificationScheduler.TYPE_MONTHLY -> handleReport("monthly")
+                else -> return@withContext Result.failure()
             }
             Result.success()
         } catch (e: Exception) {
@@ -118,11 +131,21 @@ class NotificationWorker(
         }
     }
 
+    /** The captured identity and the current JWT subject must still agree. */
+    private fun ownerStillCurrent(): Boolean {
+        val owner = ownerId ?: return false
+        if (!NotificationScheduler.capturedOwnerMatches(owner, sessionContext.verifiedUserId())) return false
+        if (session.validAccessTokenForUser(owner) == null) return false
+        return NotificationScheduler.capturedOwnerMatches(owner, sessionContext.verifiedUserId())
+    }
+
     // ── Reminder ───────────────────────────────────────────────
 
     private fun handleReminder() {
+        if (!ownerStillCurrent()) return
         val prefs = prefsStore.load()
         if (!prefs.reminderEnabled) return
+        if (!ownerStillCurrent()) return
 
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
@@ -134,9 +157,11 @@ class NotificationWorker(
         // the evening reminder on every day the phone synced before the reminder time.
         // Unknown (network failure) stays false so the reminder is not dropped.
         val hasRecordedMood = hasMoodFor(todayIso) == true
+        if (!ownerStillCurrent()) return
 
         if (!SmartReminder.shouldNotify(prefs, todayIso, dayOfWeek, hasRecordedMood)) return
 
+        if (!ownerStillCurrent()) return
         prefsStore.setLastReminderDate(todayIso)
         showNotification(
             title = "Diarium",
@@ -159,17 +184,21 @@ class NotificationWorker(
      * missing either way.
      */
     private fun handleMorningReminder() {
+        if (!ownerStillCurrent()) return
         val prefs = prefsStore.load()
         if (!prefs.morningReminderEnabled) return
+        if (!ownerStillCurrent()) return
 
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val yesterdayIso = today.minusDays(1).toString()
 
         val hasYesterdayMood = hasMoodFor(yesterdayIso)
+        if (!ownerStillCurrent()) return
 
         if (!MorningReminder.shouldNotify(prefs, today.toString(), hasYesterdayMood)) return
 
+        if (!ownerStillCurrent()) return
         prefsStore.setLastMorningReminderDate(today.toString())
         showNotification(
             title = "Diarium",
@@ -189,13 +218,17 @@ class NotificationWorker(
     // with AI off no report is generated and no notification is posted.
 
     private suspend fun handleReport(type: String) {
+        if (ownerId == null || !ownerStillCurrent()) return
         val prefs = prefsStore.load()
+        if (!ownerStillCurrent()) return
         val enabled = if (type == "weekly") prefs.weeklyEnabled else prefs.monthlyEnabled
         if (!enabled) return
 
         // The master switch is read before anything else happens: with AI off the
         // worker returns success with no generation and no notification.
+        if (!ownerStillCurrent()) return
         if (!profileStore.load().aiEnabled) return
+        if (!ownerStillCurrent()) return
 
         val marker = if (type == "weekly") prefs.lastWeeklyNotifiedId else prefs.lastMonthlyNotifiedId
 
@@ -222,13 +255,17 @@ class NotificationWorker(
         // the 2nd, and a report written on the 1st at 13:51 is 24 h 6 min old when
         // the net runs at 13:57 — "not fresh" by six minutes, which is how the 2nd
         // got the same month again, shifted by one day.
+        if (!ownerStillCurrent()) return
         val existing = latestReportOnce(type)
+        if (!ownerStillCurrent()) return
         val existingEnd = existing?.let { if (it.isNull("period_end")) null else it.optString("period_end") }
         val existingCoversTarget = existingEnd != null && existingEnd == targetEnd.toString()
         val latest = if (existing != null && (existingCoversTarget || isFresh(existing))) {
             existing
         } else if (aiKeys.hasKey()) {
+            if (!ownerStillCurrent()) return
             val outcome = generator.generate(type, targetEnd, targetStart)
+            if (!ownerStillCurrent()) return
             if (outcome !is ReportOutcome.Generated) {
                 // No key path never reaches here (checked above); record why a
                 // failure happened so the cause is visible in logs — the poll
@@ -238,14 +275,18 @@ class NotificationWorker(
             latestReport(type, attempts = if (outcome is ReportOutcome.Generated) REPORT_POLL_ATTEMPTS else 1)
         } else {
             val requested = requestReportGeneration(type, targetEnd, targetStart)
+            if (!ownerStillCurrent()) return
             latestReport(type, attempts = if (requested) REPORT_POLL_ATTEMPTS else 1)
         } ?: return
+        if (!ownerStillCurrent()) return
         val id = latest.optString("id")
         if (id.isEmpty() || id == marker) return // nothing new yet
 
+        if (!ownerStillCurrent()) return
         if (type == "weekly") prefsStore.setLastWeeklyId(id)
         else prefsStore.setLastMonthlyId(id)
 
+        if (!ownerStillCurrent()) return
         val label = if (type == "weekly") tr("📊 Týdenní reflexe") else tr("📊 Měsíční reflexe")
         showNotification(
             title = label,
@@ -273,6 +314,7 @@ class NotificationWorker(
      * null/0 = unanswered), null = unknown (network failure).
      */
     private fun hasMoodFor(date: String): Boolean? {
+        if (!ownerStillCurrent()) return null
         return try {
             val resp = supabase.get(
                 "entries",
@@ -299,12 +341,16 @@ class NotificationWorker(
      * fatal: the notification path still polls for an already existing report.
      */
     private suspend fun requestReportGeneration(type: String, periodEnd: LocalDate, periodStart: LocalDate?): Boolean {
-        val token = session.validAccessToken() ?: return false
+        val owner = ownerId ?: return false
+        if (!ownerStillCurrent()) return false
         val profile = try {
             profileStore.load()
         } catch (_: Exception) {
             null
         }
+        if (!ownerStillCurrent()) return false
+        val token = session.validAccessTokenForUser(owner) ?: return false
+        if (!ownerStillCurrent()) return false
         return try {
             val url = buildString {
                 append("${BuildConfig.DIARIUM_URL}/api/cron/ai-report?type=$type")
@@ -322,6 +368,7 @@ class NotificationWorker(
                 .header("Authorization", "Bearer $token")
                 .get()
                 .build()
+            if (!ownerStillCurrent()) return false
             http.newCall(request).execute().use { it.isSuccessful }
         } catch (_: Exception) {
             false
@@ -332,7 +379,9 @@ class NotificationWorker(
     private suspend fun latestReport(type: String, attempts: Int = 1): JSONObject? {
         var last: JSONObject? = null
         for (attempt in 1..attempts.coerceAtLeast(1)) {
+            if (!ownerStillCurrent()) return null
             last = latestReportOnce(type)
+            if (!ownerStillCurrent()) return null
             if (last != null) return last
             if (attempt < attempts) delay(REPORT_POLL_DELAY_MS)
         }
@@ -340,6 +389,7 @@ class NotificationWorker(
     }
 
     private fun latestReportOnce(type: String): JSONObject? {
+        if (!ownerStillCurrent()) return null
         return try {
             val resp = supabase.get(
                 "ai_reports",

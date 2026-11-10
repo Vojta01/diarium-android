@@ -188,6 +188,40 @@ object StatsMath {
     private val WEEKDAY_LABELS_EN: List<String> = listOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
 
     /**
+     * Full weekday names, Monday first — the long form a day detail or a dialog row prints
+     * ("pátek" / "Friday"). Same language switch as [WEEKDAY_LABELS].
+     */
+    val WEEKDAY_FULL_NAMES: List<String>
+        get() = if (AppLanguage.isEnglish()) WEEKDAY_FULL_NAMES_EN else WEEKDAY_FULL_NAMES_CS
+
+    private val WEEKDAY_FULL_NAMES_CS: List<String> = listOf(
+        "Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle",
+    )
+
+    private val WEEKDAY_FULL_NAMES_EN: List<String> = listOf(
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    )
+
+    /** "Pátek" / "Friday" for a `java.time` day; the one place that mapping lives. */
+    fun weekdayFullName(dayOfWeek: DayOfWeek): String = WEEKDAY_FULL_NAMES[dayOfWeek.value - 1]
+
+    /**
+     * Weekday name as it reads inside a sentence — "pátek" / "Friday".
+     *
+     * [weekdayFullName] is the capitalised picker vocabulary ("Pátek", a label standing
+     * alone in the notifications dialog). Inline copy in Czech is lowercase ("pátek,
+     * 12. 9."); English keeps its capitalised names, where a weekday always is a proper
+     * noun. Casing is decided here, once, instead of at every call site.
+     */
+    fun weekdayNameInline(dayOfWeek: DayOfWeek): String {
+        val name = weekdayFullName(dayOfWeek)
+        return if (AppLanguage.isEnglish()) name else name.lowercase()
+    }
+
+    /** "Pá" / "Fr" for a `java.time` day — the two-letter form used under chart bars. */
+    fun weekdayShortName(dayOfWeek: DayOfWeek): String = WEEKDAY_LABELS[dayOfWeek.value - 1]
+
+    /**
      * Three-letter month names, January first — the captions under the year chart's
      * twelve columns. Short on purpose: twelve of them have to fit one phone width.
      */

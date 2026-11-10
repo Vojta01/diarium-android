@@ -1,6 +1,7 @@
 package cz.digitalnivedomi.diarium.ui.checkin
 
 import androidx.compose.ui.graphics.Color
+import cz.digitalnivedomi.diarium.ui.i18n.translate
 
 /**
  * The option lists for the three emoji scales, ported verbatim from the web's
@@ -21,6 +22,23 @@ val MOOD_CHOICES = listOf(
     EmojiChoice(2, "😟", "Špatně", Color(0xFFF97316)),
     EmojiChoice(1, "😡", "Hrozně", Color(0xFFEF4444)),
 )
+
+/**
+ * The mood as one rendered label: emoji plus its translated word.
+ *
+ * The two semantic parts are translated before they are joined, so the English UI reads
+ * "🙂 Good" instead of looking up the joined "🙂 Dobře" — a key no dictionary should
+ * carry, because the emoji and the word are independent. A mood outside 1–5 (0 is "not
+ * answered") gets the shared "Unanswered" label.
+ */
+internal fun moodChoiceText(mood: Int): String {
+    val choice = MOOD_CHOICES.firstOrNull { it.value == mood }
+    return if (choice == null) {
+        translate("Bez odpovědi")
+    } else {
+        "${choice.emoji} ${translate(choice.label)}"
+    }
+}
 
 /** cs.ts `mood.sleep_*`: Skvělý / Normální / Špatný. */
 val SLEEP_CHOICES = listOf(

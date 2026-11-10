@@ -18,8 +18,10 @@ import java.util.Locale
  *
  * Conventions copied from [PickersRepository] on purpose:
  *  - every call runs on [Dispatchers.IO];
- *  - a failed query returns an empty list rather than throwing, so a flaky
- *    network can never leave the screen unusable;
+ *  - a failed read of values returns an empty list rather than throwing, so a
+ *    flaky network can never leave the stats section unusable — but
+ *    [listScales] throws, because "no scales" and "could not read" must not be
+ *    confused by the seed (see [seedDefaults]);
  *  - ordering and date filtering happen **client-side**, so a column rename or
  *    an unsupported operator can never turn into a 400 from PostgREST;
  *  - writes are scoped with `user_id=eq.<jwt sub>` so one user can never touch
@@ -34,10 +36,17 @@ class ScalesRepository(
     private val session: SessionContext = SessionContext(),
 ) {
 
-    /** The user's scales, ordered by `sort_order` (ties keep the fetch order). */
+    /**
+     * The user's scales, ordered by `sort_order` (ties keep the fetch order).
+     *
+     * Unlike the other reads in this class, a failed list is thrown rather than
+     * returned as an empty list: the Scales screen turns the exception into its
+     * error + retry state, and [seedDefaults] must never interpret "the read
+     * failed" as "the user has no scales" and seed over them.
+     */
     suspend fun listScales(): List<Scale> = withContext(Dispatchers.IO) {
-        val userId = session.userId() ?: return@withContext emptyList()
-        read("scales", mapOf("user_id" to "eq.$userId"))
+        val userId = session.userId() ?: throw IllegalStateException(SIGNED_OUT)
+        readStrict("scales", mapOf("user_id" to "eq.$userId"))
             .mapNotNull { row -> row.toScale() }
             .sortedBy { it.sortOrder }
     }
@@ -156,23 +165,28 @@ class ScalesRepository(
         }
 
     /**
-     * Web-parity seeding of the two default scales.
+     * Web-parity seeding of the two default scales — **additive only**.
      *
-     * The decision of *what* to write is the pure [planSeed] function over the
-     * current rows; this only executes it: delete every row the plan rejects
-     * (renamed/misspelled, duplicated, or carrying a range that was edited away
-     * from the default), then insert every default the plan says is missing.
-     * Returns false when signed out or when any single write failed.
+     * [planSeed] decides which defaults are missing; this only inserts those. It
+     * never deletes a scale: a custom scale is the user's data (and its
+     * `scale_entries` would cascade away with it), and a drifted default is left
+     * exactly as the user configured it instead of being deleted and recreated.
+     *
+     * A failed [listScales] aborts before any write and returns false, so the
+     * screen shows its error/retry instead of seeding a user whose scales merely
+     * could not be read.
      */
     suspend fun seedDefaults(): Boolean = withContext(Dispatchers.IO) {
         val userId = session.userId() ?: return@withContext false
-        val plan = planSeed(listScales())
-        var ok = true
-        plan.toDeleteIds.forEach { id ->
-            if (!client.delete("scales", mapOf("user_id" to "eq.$userId", "id" to "eq.$id")).isSuccessful) {
-                ok = false
-            }
+        val existing = try {
+            listScales()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return@withContext false
         }
+        val plan = planSeed(existing)
+        var ok = true
         plan.toCreate.forEach { draft ->
             val body = draft.toJson().apply { put("user_id", userId) }
             if (!client.post("scales", body).isSuccessful) ok = false
@@ -186,6 +200,18 @@ class ScalesRepository(
         val resp = client.get(table, query + mapOf("select" to "*"))
         if (!resp.isSuccessful) return emptyList()
         val array = resp.asJsonArray() ?: return emptyList()
+        return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+    }
+
+    /** Like [read], but a failed query throws instead of reading as "no rows". */
+    private fun readStrict(table: String, query: Map<String, String>): List<JSONObject> {
+        val resp = client.get(table, query + mapOf("select" to "*"))
+        if (!resp.isSuccessful) {
+            throw IllegalStateException(
+                resp.errorMessage ?: "Načtení škál se nezdařilo (${resp.code}).",
+            )
+        }
+        val array = resp.asJsonArray() ?: throw IllegalStateException("Server vrátil neplatnou odpověď.")
         return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
     }
 
@@ -208,6 +234,9 @@ class ScalesRepository(
     companion object {
         const val DEFAULT_WINDOW_DAYS = 30
         const val DEFAULT_COLOR = "#6366F1"
+
+        /** Same wording the check-in save uses, so a signed-out read reads like a session problem. */
+        private const val SIGNED_OUT = "Přihlášení vypršelo, přihlas se znovu."
 
         /** First day of the window that ends on [today] and spans [days] days. */
         fun windowStart(today: LocalDate, days: Int): LocalDate =
@@ -246,8 +275,8 @@ data class ScaleStats(
 
 /**
  * The two scales the web seeds, byte-for-byte: name, emoji, range, colour and
- * sort order all have to match, because [planSeed] deletes any existing row
- * whose name is not one of these or whose range drifted from it.
+ * sort order all have to match, because [planSeed] only recognises a default by
+ * its name.
  */
 val DEFAULT_SCALES: List<ScaleDraft> = listOf(
     ScaleDraft(name = "Energie", emoji = "⚡", minValue = 1, maxValue = 5, color = "#eab308", sortOrder = 0),
@@ -257,57 +286,34 @@ val DEFAULT_SCALES: List<ScaleDraft> = listOf(
 /** What [ScalesRepository.seedDefaults] will do to the rows that exist now. */
 internal data class SeedPlan(
     val toCreate: List<ScaleDraft>,
-    val toDeleteIds: List<String>,
 )
 
 /** Name comparison used by the seed plan: trimmed and case-insensitive. */
 internal fun normalizeScaleName(name: String): String = name.trim().lowercase(Locale.ROOT)
 
 /**
- * Decides which scales a seed run creates and which it deletes, over the rows
- * that exist right now — pure, so it is unit-tested directly.
+ * Decides which scales a seed run creates, over the rows that exist right now —
+ * pure, so it is unit-tested directly.
  *
- * The rules (the web's contract):
- *  1. rows whose name is not a default are deleted (renamed / misspelled rows);
- *  2. when several rows share a default's name, only the first survives;
- *  3. a default that has no row is created;
- *  4. a default whose existing row has a different range is deleted **and**
- *     recreated, so the scale comes back with the correct range instead of
- *     silently staying wrong (and the user does not lose the scale's slot);
- *  5. a default whose row already matches is left untouched.
+ * Additive only, by design (2026-11 audit):
+ *  1. a default that has no row is created;
+ *  2. a default that already has a row is left untouched, even when its range or
+ *     colour drifted from the default — the user may have configured it that way,
+ *     and deleting/recreating it would cascade its `scale_entries` away;
+ *  3. a custom (non-default) scale is never touched, let alone deleted;
+ *  4. duplicate default-named rows are left alone: resolving them would require a
+ *     delete, and losing a scale is worse than an extra one.
+ *
+ * There is deliberately no delete list. A real reset is a separate, explicit
+ * action, never a side effect of "seed the defaults".
  */
 internal fun planSeed(
     existing: List<Scale>,
     defaults: List<ScaleDraft> = DEFAULT_SCALES,
 ): SeedPlan {
-    val creates = mutableListOf<ScaleDraft>()
-    val deletes = mutableListOf<String>()
-    val defaultNames = defaults.map { normalizeScaleName(it.name) }.toSet()
-
-    // 1. not a default by name
-    existing
-        .filter { normalizeScaleName(it.name) !in defaultNames }
-        .forEach { deletes += it.id }
-
-    // 2. duplicates of a default name
-    existing
-        .filter { normalizeScaleName(it.name) in defaultNames }
-        .groupBy { normalizeScaleName(it.name) }
-        .values
-        .forEach { sameName -> sameName.drop(1).forEach { deletes += it.id } }
-
-    // 3./4./5.
-    defaults.forEach { def ->
-        val match = existing.firstOrNull { normalizeScaleName(it.name) == normalizeScaleName(def.name) }
-        when {
-            match == null -> creates += def
-            match.minValue != def.minValue || match.maxValue != def.maxValue -> {
-                deletes += match.id
-                creates += def
-            }
-        }
-    }
-    return SeedPlan(toCreate = creates, toDeleteIds = deletes)
+    val existingNames = existing.map { normalizeScaleName(it.name) }.toSet()
+    val creates = defaults.filter { def -> normalizeScaleName(def.name) !in existingNames }
+    return SeedPlan(toCreate = creates)
 }
 
 /**

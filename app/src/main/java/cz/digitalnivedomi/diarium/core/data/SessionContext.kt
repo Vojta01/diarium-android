@@ -5,11 +5,9 @@ import org.json.JSONObject
 import java.util.Base64
 
 /**
- * Resolves the signed-in user's id from the persisted Supabase session.
- *
- * Kept here rather than on [SessionStore] so M2 leaves the auth layer untouched:
- * M1 already guarantees `user.id` (the JWT `sub`) is stored, and there is a
- * `sub`-claim fallback for sessions written by an older build.
+ * Resolves the owner pinned by the persisted session. New callback sessions use
+ * the server-returned `verified_user_id`; older sessions retain their stored owner
+ * locally for offline compatibility. Neither accessor verifies a fresh callback.
  */
 class SessionContext(private val sessionStore: SessionStore? = null) {
 
@@ -24,6 +22,13 @@ class SessionContext(private val sessionStore: SessionStore? = null) {
         if (id.isNotBlank()) return id
         return jwtSub(json.plainString("access_token"))
     }
+
+    /** Owner pin for authenticated gates, scheduled work and report dispatch. */
+    fun verifiedUserId(): String? = sessionStore?.userSubject()
+
+    /** Returns a live token only while the stored session still belongs to [ownerId]. */
+    fun validAccessTokenForUser(ownerId: String): String? =
+        sessionStore?.validAccessTokenForUser(ownerId)
 
     /**
      * The signed-in user's display name as Supabase reports it

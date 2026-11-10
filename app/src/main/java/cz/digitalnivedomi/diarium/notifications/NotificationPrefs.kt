@@ -19,7 +19,7 @@ data class NotificationPrefs(
     val monthlyEnabled: Boolean = true,
     val monthlyTimeMinutes: Int = 9 * 60,            // 09:00, 1st day
     // Screen time sync (UsageStats / Digital Wellbeing) — app-driven, no server crons
-    val screenSyncEnabled: Boolean = true,
+    val screenSyncEnabled: Boolean = false,
     val screenSyncEveningMinutes: Int = 21 * 60,     // evening snapshot of today
     val screenSyncMorningMinutes: Int = 7 * 60,      // morning backfill of yesterday
     val sound: Boolean = true,
@@ -49,7 +49,9 @@ class NotificationPrefsStore(context: Context) {
         weeklyTimeMinutes = prefs.getInt(KEY_WEEKLY_TIME, 20 * 60),
         monthlyEnabled = prefs.getBoolean(KEY_MONTHLY, true),
         monthlyTimeMinutes = prefs.getInt(KEY_MONTHLY_TIME, 9 * 60),
-        screenSyncEnabled = prefs.getBoolean(KEY_SYNC_ENABLED, true),
+        // Consent is overlaid by the authenticated owner's UsageSyncConsentStore
+        // in NotificationsSettingsDeps. Never read the old device-global bit here.
+        screenSyncEnabled = false,
         screenSyncEveningMinutes = prefs.getInt(KEY_SYNC_EVENING, 21 * 60),
         screenSyncMorningMinutes = prefs.getInt(KEY_SYNC_MORNING, 7 * 60),
         sound = prefs.getBoolean(KEY_SOUND, true),
@@ -73,7 +75,6 @@ class NotificationPrefsStore(context: Context) {
             .putInt(KEY_WEEKLY_TIME, p.weeklyTimeMinutes)
             .putBoolean(KEY_MONTHLY, p.monthlyEnabled)
             .putInt(KEY_MONTHLY_TIME, p.monthlyTimeMinutes)
-            .putBoolean(KEY_SYNC_ENABLED, p.screenSyncEnabled)
             .putInt(KEY_SYNC_EVENING, p.screenSyncEveningMinutes)
             .putInt(KEY_SYNC_MORNING, p.screenSyncMorningMinutes)
             .putBoolean(KEY_SOUND, p.sound)
@@ -117,7 +118,6 @@ class NotificationPrefsStore(context: Context) {
         private const val KEY_WEEKLY_TIME = "weekly_time"
         private const val KEY_MONTHLY = "monthly_enabled"
         private const val KEY_MONTHLY_TIME = "monthly_time"
-        private const val KEY_SYNC_ENABLED = "sync_enabled"
         private const val KEY_SYNC_EVENING = "sync_evening_time"
         private const val KEY_SYNC_MORNING = "sync_morning_time"
         private const val KEY_SOUND = "sound"

@@ -147,7 +147,6 @@ fun GlassTextField(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .testTagOrEmpty(testTag)
             .clip(shape)
             .background(Color.White.copy(alpha = 0.05f))
             .border(1.dp, Outline.copy(alpha = 0.75f), shape)
@@ -163,7 +162,7 @@ fun GlassTextField(
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth().heightIn(min = minHeight.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = minHeight.dp).testTagOrEmpty(testTag),
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = TextPrimary),
             cursorBrush = SolidColor(Indigo),
             visualTransformation = visualTransformation,

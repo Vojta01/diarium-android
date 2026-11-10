@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -44,7 +45,6 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import cz.digitalnivedomi.diarium.ui.theme.moodColor
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 /**
  * One day of the calendar, opened: what was written that day, read-only.
@@ -353,7 +353,8 @@ private fun ReflectionBox(text: String) {
 
 // --- Czech labels, ported from the web's `cs.ts` via the check-in option lists -----
 
-private val longDate = DateTimeFormatter.ofPattern("d. MMMM yyyy", Locale("cs", "CZ"))
+private val longDate: DateTimeFormatter
+    get() = UiDates.longDate()
 
 /** "10. září 2026", or the raw value if it is not a date. */
 internal fun longDateOf(date: String): String =

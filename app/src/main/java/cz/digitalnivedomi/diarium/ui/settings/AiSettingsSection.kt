@@ -35,7 +35,10 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import cz.digitalnivedomi.diarium.core.data.AiKeyStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
+import cz.digitalnivedomi.diarium.core.data.LegacySecretPresence
 import cz.digitalnivedomi.diarium.core.data.ProfileStore
+import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassTextField
 import cz.digitalnivedomi.diarium.ui.checkin.components.TogglePill
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
@@ -67,10 +70,12 @@ import kotlinx.coroutines.withContext
  * only as the fallback for accounts without a key.
  */
 class AiSettingsDeps(
-    val hasKey: () -> Boolean,
+    val keyStatus: () -> LegacySecretPresence,
     val saveKey: (String) -> Boolean,
     val removeKey: () -> Unit,
     val openKeyPage: () -> Unit,
+    /** Presence-only legacy-key state; UNKNOWN must not be rendered as absent. */
+    val legacyValueStatus: () -> LegacySecretPresence = { LegacySecretPresence.UNKNOWN },
     /** The on-device profile — the AI master switch lives there. */
     val profile: ProfileStore,
 ) {
@@ -79,22 +84,25 @@ class AiSettingsDeps(
 
         /** No DataStore, no browser — the card still composes (previews, unit tests). */
         fun offline(): AiSettingsDeps = AiSettingsDeps(
-            hasKey = { false },
+            keyStatus = { LegacySecretPresence.ABSENT },
             saveKey = { false },
             removeKey = {},
             openKeyPage = {},
-            profile = ProfileStore.forDataStore(TransientPreferencesDataStore()),
+            legacyValueStatus = { LegacySecretPresence.ABSENT },
+            profile = ProfileStore.forDataStore(TransientPreferencesDataStore(), "offline"),
         )
 
         /** The real thing: the encrypted store + an ACTION_VIEW browser intent. */
         fun forContext(context: Context): AiSettingsDeps {
-            val store = AiKeyStore.forContext(context)
+            val session = SessionContext(AppClients.sessionStore(context))
+            val store = AiKeyStore.forContext(context, session.userId())
             return AiSettingsDeps(
-                hasKey = { store.hasKey() },
+                keyStatus = { store.keyStatus() },
                 saveKey = { raw -> store.saveKey(raw) },
                 removeKey = { store.clear() },
+                legacyValueStatus = { store.legacyValueStatus() },
                 openKeyPage = { openKeyPage(context) },
-                profile = ProfileStore.from(context),
+                profile = ProfileStore.from(context, session.userId()),
             )
         }
 
@@ -140,14 +148,16 @@ private class TransientPreferencesDataStore : DataStore<Preferences> {
  */
 @Composable
 fun AiSettingsSection(deps: AiSettingsDeps, modifier: Modifier = Modifier) {
-    var hasKey by remember { mutableStateOf<Boolean?>(null) }
-    var aiEnabled by remember { mutableStateOf(true) }
+    var keyStatus by remember { mutableStateOf(LegacySecretPresence.UNKNOWN) }
+    var legacyKeyStatus by remember { mutableStateOf(LegacySecretPresence.UNKNOWN) }
+    var aiEnabled by remember { mutableStateOf(false) }
     var field by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val haptics = rememberHaptics()
 
     LaunchedEffect(Unit) {
-        hasKey = withContext(Dispatchers.IO) { deps.hasKey() }
+        keyStatus = withContext(Dispatchers.IO) { deps.keyStatus() }
+        legacyKeyStatus = withContext(Dispatchers.IO) { deps.legacyValueStatus() }
         // The master switch lives in the profile store; read once, like the key state.
         aiEnabled = withContext(Dispatchers.IO) { deps.profile.load().aiEnabled }
     }
@@ -198,23 +208,57 @@ fun AiSettingsSection(deps: AiSettingsDeps, modifier: Modifier = Modifier) {
         )
         VSpace(12)
 
-        // State line: "Klíč uložen" / "Žádný klíč" (plus the nudge).
+        // State line: saved, absent, or not safely verifiable.
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(if (hasKey == true) SuccessGreen else TextTertiary),
+                    .background(if (keyStatus == LegacySecretPresence.PRESENT) SuccessGreen else TextTertiary),
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                text = if (hasKey == true) "Klíč uložen" else "Žádný klíč",
+                text = when (keyStatus) {
+                    LegacySecretPresence.PRESENT -> "Klíč uložen"
+                    LegacySecretPresence.ABSENT -> "Žádný klíč"
+                    LegacySecretPresence.UNKNOWN -> "Stav klíče nelze ověřit"
+                },
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (hasKey == true) SuccessGreen else TextSecondary,
+                color = if (keyStatus == LegacySecretPresence.PRESENT) SuccessGreen else TextSecondary,
                 modifier = Modifier.testTag("ai_key_state"),
             )
         }
-        if (hasKey == false) {
+        if (keyStatus == LegacySecretPresence.UNKNOWN) {
+            VSpace(8)
+            Text(
+                text = "Stav uloženého klíče se nepodařilo ověřit. Nezadávej ho znovu, dokud nebude možné úložiště bezpečně přečíst.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.testTag("ai_key_status_unknown"),
+            )
+        }
+        when (legacyKeyStatus) {
+            LegacySecretPresence.PRESENT -> {
+                VSpace(8)
+                Text(
+                    text = "Starší klíč bez přiřazeného účtu zůstal v telefonu nezměněný, ale aplikace ho nepoužije ani nezobrazí. Zadej znovu klíč, jehož vlastnictví můžeš ověřit; před smazáním dat aplikace zachovej toto zařízení.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.testTag("ai_legacy_key_quarantined"),
+                )
+            }
+            LegacySecretPresence.UNKNOWN -> {
+                VSpace(8)
+                Text(
+                    text = "Nepodařilo se bezpečně ověřit, zda je uložený starší klíč. Data nebyla změněna a neověřený klíč se nepoužije.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    modifier = Modifier.testTag("ai_legacy_key_status_unknown"),
+                )
+            }
+            LegacySecretPresence.ABSENT -> Unit
+        }
+        if (keyStatus == LegacySecretPresence.ABSENT) {
             VSpace(4)
             Text(
                 text = "Přidej si AI klíč — přehledy se pak generují přímo v telefonu.",
@@ -240,7 +284,7 @@ fun AiSettingsSection(deps: AiSettingsDeps, modifier: Modifier = Modifier) {
                         val saved = withContext(Dispatchers.IO) { deps.saveKey(value) }
                         if (saved) {
                             field = ""
-                            hasKey = true
+                            keyStatus = LegacySecretPresence.PRESENT
                             haptics.success()
                         }
                     }
@@ -256,11 +300,11 @@ fun AiSettingsSection(deps: AiSettingsDeps, modifier: Modifier = Modifier) {
                 onClick = {
                     scope.launch {
                         withContext(Dispatchers.IO) { deps.removeKey() }
-                        hasKey = false
+                        keyStatus = LegacySecretPresence.ABSENT
                         haptics.light()
                     }
                 },
-                enabled = hasKey == true,
+                enabled = keyStatus == LegacySecretPresence.PRESENT,
                 modifier = Modifier.testTag("ai_key_remove"),
             ) {
                 Text("Odebrat")

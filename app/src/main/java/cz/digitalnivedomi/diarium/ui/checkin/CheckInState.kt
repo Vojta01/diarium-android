@@ -23,14 +23,27 @@ data class CheckInUiState(
     val loading: Boolean = false,
     val saving: Boolean = false,
     val saved: Boolean = false,
+    /** True only after a user edit since the last server/local recovery load. */
+    val draftDirty: Boolean = false,
     /**
-     * True after a save that went to the offline outbox („Uloženo v telefonu —
-     * odešle se, jakmile budeš online.") instead of the server. Deliberately not
-     * [saved]: the reflection window needs the server, so opening it would lie;
-     * the day is nevertheless safe on the phone and the worker will send it.
+     * True when a save is in the local outbox. It is not [saved] and is never
+     * presented as server-synced; the worker retains it for explicit recovery.
      */
     val queuedOffline: Boolean = false,
+    /** The server revision captured when this edit began; null means unverified. */
+    val baselineUpdatedAt: String? = null,
+    /** Whether a server row existed when this edit began; null means unverified. */
+    val baselineExists: Boolean? = null,
     val errorMessage: String? = null,
+    /** A local draft read/write failed; retry before treating this day as editable. */
+    val draftStoreError: String? = null,
+    /**
+     * The stored day could not be read (offline, HTTP error, bad body). The form may
+     * still show a draft, but nothing may be written back: saving an entry built
+     * from an unread day is exactly how a network blip used to erase the stored
+     * mood, stress and arrays. Cleared only by a successful [CheckInStateHolder.load].
+     */
+    val loadError: String? = null,
     /**
      * True when the open day came from the database — the day already has an entry —
      * and false for a day that only exists as a draft or not at all. A stored day opens
@@ -70,6 +83,13 @@ data class CheckInUiState(
     val hasContent: Boolean get() = entry.hasContent()
 
     /**
+     * Nothing may be written while a save is in flight, the selected server day could
+     * not be read, or the local draft store itself failed. The screen uses this for
+     * save and AI/photo actions; the holder's [CheckInStateHolder.beginSave] also guards.
+     */
+    val canSave: Boolean get() = !saving && !loading && loadError == null && draftStoreError == null
+
+    /**
      * True when the day must be shown passively: it is stored and the user has not
      * asked to edit it. The check-in tab then reads like the history tab's day card
      * with an "Upravit" action instead of an editable form.
@@ -93,10 +113,20 @@ data class CheckInUiState(
  * and goes through [update], which clears the "saved" flag so a change after a
  * save re-arms the draft autosave.
  */
-class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
+class CheckInStateHolder(
+    initialDate: String = LocalDate.now().toString(),
+    initiallyLoading: Boolean = false,
+) {
 
-    var state: CheckInUiState by mutableStateOf(CheckInUiState(date = initialDate))
+    var state: CheckInUiState by mutableStateOf(
+        CheckInUiState(date = initialDate, loading = initiallyLoading),
+    )
         private set
+
+    /** Upload callbacks are valid only for the latest upload on the current day. */
+    private var photoUploadGeneration = 0L
+    /** Blocks stale UI callbacks while a date switch waits for its draft transaction. */
+    private var dateNavigationLocked = false
 
     val date: String get() = state.date
     val entry: DiaryEntry get() = state.entry
@@ -118,18 +148,36 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         pendingEdit = true
     }
 
-    /** Switching day clears the form; the screen reloads entry/draft for it. */
+    /** Blocks stale form callbacks while a date navigation flush is in flight. */
+    fun beginDateNavigation(): Boolean {
+        if (dateNavigationLocked || state.saving || state.loading) return false
+        dateNavigationLocked = true
+        return true
+    }
+
+    fun endDateNavigation() {
+        dateNavigationLocked = false
+    }
+
+    /** Switching day clears the form and locks it until the screen loads that day. */
     fun setDate(date: String) {
+        invalidatePhotoUploads()
         // The flag belongs to one requested arrival only — a day switch without a
         // fresh [requestEdit] must never open the form on its own.
         pendingEdit = false
         state = state.copy(
             date = date,
             entry = DiaryEntry.EMPTY,
+            loading = true,
             saving = false,
             saved = false,
+            draftDirty = false,
             queuedOffline = false,
+            baselineUpdatedAt = null,
+            baselineExists = null,
             errorMessage = null,
+            loadError = null,
+            draftStoreError = null,
             // A day is opened passively (or as a fresh form) whichever day it is; the
             // "Upravit" flag and the finished/hint flags never survive a day switch.
             storedEntry = false,
@@ -155,6 +203,7 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
 
     /** Opens the form on the day being shown ("Upravit" on the passive view). */
     fun startEditing() {
+        if (state.loading || state.saving || dateNavigationLocked) return
         state = state.copy(editing = true, saved = false)
     }
 
@@ -168,16 +217,29 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         return true
     }
 
-    fun load(entry: DiaryEntry, stored: Boolean = false) {
+    fun load(
+        entry: DiaryEntry,
+        stored: Boolean = false,
+        baselineUpdatedAt: String? = null,
+        baselineExists: Boolean? = stored,
+        queuedOffline: Boolean = false,
+        editingOverride: Boolean? = null,
+    ) {
+        invalidatePhotoUploads()
         state = state.copy(
             entry = entry,
             loading = false,
             saved = false,
-            queuedOffline = false,
+            draftDirty = false,
+            queuedOffline = queuedOffline,
+            baselineUpdatedAt = baselineUpdatedAt,
+            baselineExists = baselineExists,
+            loadError = null,
+            draftStoreError = null,
             storedEntry = stored,
             // A requested arrival (see [requestEdit]) opens the stored day straight
             // in the form; an ordinary (re)load stays passive.
-            editing = pendingEdit,
+            editing = editingOverride ?: pendingEdit,
             // The day already has a reflection when the row carried one — showing
             // it straight away is what the web does on load.
             reflection = entry.aiReflection,
@@ -191,7 +253,63 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         pendingEdit = false
     }
 
+    /**
+     * The stored day could not be read. A draft (if one exists) is still restored so
+     * the user's in-progress text is not thrown away, but the day is marked
+     * unsavable: [CheckInUiState.canSave] is false until a [load] succeeds, so a
+     * failed read can never be followed by an empty write over the real row.
+     *
+     * A day that is not stored is unaffected by the failure in the sense that there
+     * is nothing to overwrite, but we cannot know that while the read fails — the
+     * screen offers retry instead of guessing.
+     */
+    fun markLoadFailed(
+        message: String,
+        draft: DiaryEntry? = null,
+        queuedOffline: Boolean = false,
+        baselineUpdatedAt: String? = null,
+        baselineExists: Boolean? = null,
+    ) {
+        invalidatePhotoUploads()
+        state = state.copy(
+            entry = draft ?: DiaryEntry.EMPTY,
+            loading = false,
+            saving = false,
+            saved = false,
+            queuedOffline = queuedOffline,
+            baselineUpdatedAt = baselineUpdatedAt,
+            baselineExists = baselineExists,
+            errorMessage = null,
+            loadError = message,
+            draftStoreError = null,
+            storedEntry = false,
+            editing = true,
+            reflection = draft?.aiReflection,
+            reflectionLoading = false,
+            reflectionError = null,
+            showReflectionDialog = false,
+        )
+        pendingEdit = false
+    }
+
+    /**
+     * A local draft could not be read or safely written. Keep the current in-memory
+     * entry and dirty flag intact; a retry must not reinterpret this as an empty day.
+     */
+    fun markDraftStoreFailed(message: String) {
+        state = state.copy(
+            loading = false,
+            saving = false,
+            saved = false,
+            errorMessage = null,
+            loadError = message,
+            draftStoreError = message,
+        )
+    }
+
     fun setLoading(loading: Boolean) {
+        // Preserve the failure through a retry. The load effect uses it to snapshot
+        // offline edits before a response can replace the form; only [load] clears it.
         state = state.copy(loading = loading)
     }
 
@@ -232,8 +350,47 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         update(state.entry.copy(note = text))
     }
 
+    /**
+     * Sets or removes the day's photo. Passing null records an explicit
+     * [DiaryEntry.clearPhoto] intent only when the day actually had a photo — an
+     * ordinary edit of a day without one must never send a clearing PATCH. Picking a
+     * new photo drops the intent again.
+     */
     fun setPhotoPath(path: String?) {
-        update(state.entry.copy(photoPath = path))
+        invalidatePhotoUploads()
+        val clean = path?.takeIf { it.isNotBlank() }
+        val entry = state.entry
+        val pathToDelete = entry.photoPathToDelete
+            ?: entry.photoPath?.takeIf { it != clean }
+        update(
+            if (clean == null) {
+                entry.copy(
+                    photoPath = null,
+                    clearPhoto = pathToDelete != null || entry.clearPhoto,
+                    photoPathToDelete = pathToDelete,
+                )
+            } else {
+                entry.copy(
+                    photoPath = clean,
+                    clearPhoto = false,
+                    photoPathToDelete = pathToDelete,
+                )
+            },
+        )
+    }
+
+    /** Starts an upload and returns its stale-callback guard. */
+    fun beginPhotoUpload(): Long {
+        photoUploadGeneration += 1
+        return photoUploadGeneration
+    }
+
+    /** True only while [token] still belongs to the day and upload that started it. */
+    fun isPhotoUploadCurrent(token: Long, expectedDate: String): Boolean =
+        token == photoUploadGeneration && expectedDate == state.date
+
+    private fun invalidatePhotoUploads() {
+        photoUploadGeneration += 1
     }
 
     fun toggleWeather(key: String) {
@@ -241,17 +398,45 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
         update(state.entry.copy(weather = if (key in weather) weather - key else weather + key))
     }
 
+    /**
+     * Sets a scale value; 0 clears it. Clearing records the scale id in
+     * [DiaryEntry.clearedScaleIds] so the save can delete the mirrored
+     * `scale_entries` row — dropping it from `scale_values` alone would leave the
+     * day in that scale's statistics. Only a scale that actually had a value gets
+     * the intent, so touching an untouched slider at 0 can never delete anything.
+     */
     fun setScale(scaleId: String, value: Int) {
         val scales = state.entry.scaleValues
+        val cleared = state.entry.clearedScaleIds
         update(
-            state.entry.copy(
-                scaleValues = if (value <= 0) scales - scaleId else scales + (scaleId to value),
-            ),
+            if (value <= 0) {
+                state.entry.copy(
+                    scaleValues = scales - scaleId,
+                    clearedScaleIds = if (scaleId in scales) cleared + scaleId else cleared,
+                )
+            } else {
+                state.entry.copy(
+                    scaleValues = scales + (scaleId to value),
+                    clearedScaleIds = cleared - scaleId,
+                )
+            },
         )
     }
 
-    fun markSaving() {
+    /**
+     * Starts a save. Returns false when one is already in flight, which is what
+     * makes a double tap on "Uložit" a no-op instead of two RPC writes.
+     */
+    fun beginSave(): Boolean {
+        if (state.saving || state.loading || state.loadError != null || dateNavigationLocked) return false
+        invalidatePhotoUploads()
         state = state.copy(saving = true, queuedOffline = false, errorMessage = null)
+        return true
+    }
+
+    /** Kept for callers that only need the flag; [beginSave] is the guarded form. */
+    fun markSaving() {
+        beginSave()
     }
 
     /**
@@ -260,25 +445,33 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
      * [CheckInUiState.showReflectionDialog] on, which is what makes it exactly
      * once per save — and why a recomposition, a rotation or a later return to
      * the tab (a fresh holder) cannot bring it back.
+     *
+     * [expectedDate] pins the result to the day the save was started for: a save
+     * that finishes after the user switched days must not mark the new day saved,
+     * open its reflection window or clear its "Upravit" state.
      */
-    fun markSaved() {
+    fun markSaved(expectedDate: String? = null) {
+        if (expectedDate != null && expectedDate != state.date) return
         state = state.copy(
+            entry = state.entry.copy(clearPhoto = false, photoPathToDelete = null),
             saving = false,
             saved = true,
+            draftDirty = false,
             queuedOffline = false,
+            baselineUpdatedAt = null,
+            baselineExists = true,
             errorMessage = null,
             showReflectionDialog = true,
         )
     }
 
     /**
-     * The save never reached the server: the day sits in the offline outbox and
-     * `PendingSaveWorker` will flush it. Nothing error-shaped here — the form
-     * shows the „v telefonu" note instead; [finished] stays false, so the host
-     * does not navigate away from a check-in the owner may still want to review.
+     * The save is local only. The outbox retains it for user-directed recovery; it
+     * must not be treated as remotely saved or assumed to replay automatically.
      */
-    fun markQueuedOffline() {
-        state = state.copy(saving = false, queuedOffline = true, errorMessage = null)
+    fun markQueuedOffline(expectedDate: String? = null) {
+        if (expectedDate != null && expectedDate != state.date) return
+        state = state.copy(saving = false, saved = false, draftDirty = false, queuedOffline = true, errorMessage = null)
     }
 
     /** The user closed the reflection window; another save is what brings it back. */
@@ -294,12 +487,22 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
      * regenerate from inside the dialog must not resurrect a window the user
      * already dismissed, and a manual "Napsat reflexi" should not pop it open.
      */
-    fun markReflectionStored() {
-        state = state.copy(saving = false, saved = true, errorMessage = null)
+    fun markReflectionStored(expectedDate: String? = null) {
+        if (expectedDate != null && expectedDate != state.date) return
+        state = state.copy(
+            entry = state.entry.copy(clearPhoto = false, photoPathToDelete = null),
+            saving = false,
+            saved = true,
+            draftDirty = false,
+            baselineUpdatedAt = null,
+            baselineExists = true,
+            errorMessage = null,
+        )
     }
 
-    fun markError(message: String?) {
-        state = state.copy(saving = false, queuedOffline = false, errorMessage = message)
+    fun markError(message: String?, expectedDate: String? = null) {
+        if (expectedDate != null && expectedDate != state.date) return
+        state = state.copy(saving = false, errorMessage = message)
     }
 
     /** The AI request is in flight; a previous failure is dropped (one state at a time). */
@@ -318,6 +521,7 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
             reflectionLoading = false,
             reflectionError = null,
             saved = false,
+            draftDirty = true,
         )
     }
 
@@ -330,6 +534,9 @@ class CheckInStateHolder(initialDate: String = LocalDate.now().toString()) {
     }
 
     private fun update(entry: DiaryEntry) {
-        state = state.copy(entry = entry, saved = false, queuedOffline = false)
+        // The save snapshot is taken before the RPC goes out; letting a control edit
+        // the model mid-flight would make the payload and the visible form disagree.
+        if (state.saving || state.loading || dateNavigationLocked) return
+        state = state.copy(entry = entry, saved = false, draftDirty = true, queuedOffline = false)
     }
 }

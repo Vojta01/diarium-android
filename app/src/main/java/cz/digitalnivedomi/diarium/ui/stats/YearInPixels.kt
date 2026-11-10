@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,8 +33,10 @@ import cz.digitalnivedomi.diarium.core.data.StatsRepository
 import cz.digitalnivedomi.diarium.core.stats.StatsDay
 import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.core.stats.YearMonthGrid
+import cz.digitalnivedomi.diarium.ui.i18n.translate
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
 import cz.digitalnivedomi.diarium.ui.checkin.MOOD_CHOICES
+import cz.digitalnivedomi.diarium.ui.checkin.moodChoiceText
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.checkin.components.testTagOrEmpty
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
@@ -246,15 +249,18 @@ private fun MonthCard(
     }
 }
 
-/** "10. 9. 2026 — 🙂 Dobře", or the untracked / unanswered wording. */
-private fun cellLabel(date: String, mood: Int): String {
+/**
+ * "10. 9. 2026 — 🙂 Dobře", or the untracked / unanswered wording.
+ *
+ * The date is already formatted in the UI language and both the mood label and the
+ * unanswered phrase are translated before they are joined to it, so an English card
+ * never shows "10 Sep 2026 — 🙂 Dobře" or "10 Sep 2026 — bez odpovědi".
+ */
+internal fun cellLabel(date: String, mood: Int): String {
     val parsed = CheckInDates.parse(date)
     val formatted = parsed?.format(dayMonthYear) ?: date
-    if (mood <= 0) return "$formatted — bez odpovědi"
-    val choice = MOOD_CHOICES.firstOrNull { it.value == mood }
-    val emoji = choice?.emoji ?: "⚪"
-    val label = choice?.label ?: "Neznámá"
-    return "$formatted — $emoji $label"
+    if (mood <= 0) return translate("$formatted — bez odpovědi")
+    return "$formatted — ${moodChoiceText(mood)}"
 }
 
 /** Emoji + label for the legend, in the web's 5 → 1 order. */
@@ -312,7 +318,8 @@ private fun LegendCard() {
     }
 }
 
-private val dayMonthYear = DateTimeFormatter.ofPattern("d. M. yyyy", Locale("cs", "CZ"))
+private val dayMonthYear: DateTimeFormatter
+    get() = UiDates.numericDate()
 
 private fun belongsTo(month: YearMonthGrid, date: String): Boolean =
     month.weeks.flatten().any { it.date == date }

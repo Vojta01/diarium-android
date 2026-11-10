@@ -1,7 +1,9 @@
 package cz.digitalnivedomi.diarium.sync
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
+import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -9,7 +11,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import cz.digitalnivedomi.diarium.BuildConfig
-import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
+import cz.digitalnivedomi.diarium.core.data.AppClients
+import java.util.Base64
 import java.util.Calendar
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
@@ -28,61 +31,125 @@ class SyncScheduler {
         private const val WORK_EVENING = "diarium.sync.evening"
         private const val WORK_MORNING = "diarium.sync.morning"
         private const val WORK_INIT = "diarium.sync.init"
+        private const val WORK_AUTH_BACKFILL = "diarium.sync.auth_backfill"
         const val WORK_BOOT = "diarium.sync.boot"
+        const val TAG_USAGE_SYNC = "diarium.usage.sync"
 
+        private enum class BackfillReason { DUE, AUTH, NONE }
+
+        /** Startup path: schedule only for the current owner with their consent. */
         fun ensureScheduled(context: Context) {
-            val wm = WorkManager.getInstance(context)
-            val notifPrefs = cz.digitalnivedomi.diarium.notifications.NotificationPrefsStore(context).load()
+            schedule(context, BackfillReason.DUE)
+        }
 
-            // The offline outbox flushes regardless of the screen-sync toggle: a
-            // queued check-in must reach the server even when usage sync is off.
-            // (App-driven timing — the app schedules this, no server cron exists.)
-            if (PendingSaveStore.from(context).hasAny()) {
-                PendingSaveWorker.enqueue(context)
-            }
+        /** Account replacement invalidates every old request before binding new ones. */
+        fun onSessionChanged(context: Context, expectedOwnerId: String) {
+            cancelUsageWork(context)
+            schedule(context, BackfillReason.AUTH, expectedOwnerId)
+        }
 
-            if (!notifPrefs.screenSyncEnabled) {
-                // Sync disabled by the user in app settings — cancel both jobs
-                wm.cancelUniqueWork(WORK_EVENING)
-                wm.cancelUniqueWork(WORK_MORNING)
+        /** Re-arm recurring work after reboot and queue a pinned catch-up request. */
+        fun onReboot(context: Context) {
+            schedule(context, BackfillReason.NONE)
+            val ownerId = eligibleOwner(context) ?: return
+            enqueueBackfill(context, WORK_BOOT, ownerId, initialDelaySeconds = 0)
+        }
+
+        /**
+         * Cancel every screen-time chain; stale workers also fail their runtime gates.
+         * Cancellation prevents future dispatches, but cannot recall a request already
+         * handed to the HTTP transport.
+         */
+        fun cancelUsageWork(context: Context) {
+            val workManager = WorkManager.getInstance(context)
+            listOf(WORK_EVENING, WORK_MORNING, WORK_INIT, WORK_AUTH_BACKFILL, WORK_BOOT)
+                .forEach { workManager.cancelUniqueWork(it) }
+            workManager.cancelAllWorkByTag(TAG_USAGE_SYNC)
+        }
+
+        /** The boot receiver and tests share the same immutable owner payload. */
+        internal fun bootBackfillInputData(ownerId: String): Data =
+            UsageSyncWorker.inputData(mode = "backfill", ownerId = ownerId)
+
+        private fun schedule(
+            context: Context,
+            backfillReason: BackfillReason,
+            expectedOwnerId: String? = null,
+        ) {
+            val currentOwnerId = AppClients.sessionStore(context).userSubject()
+            val ownerId = currentOwnerId
+                ?.takeIf { expectedOwnerId == null || it == expectedOwnerId }
+                ?.takeIf { UsageSyncConsentStore(context).isEnabledFor(it) }
+            if (ownerId == null) {
+                cancelUsageWork(context)
                 return
             }
 
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
+            val prefs = cz.digitalnivedomi.diarium.notifications.NotificationPrefsStore(context).load()
+            scheduleDaily(
+                context = context,
+                name = WORK_EVENING,
+                hour = prefs.screenSyncEveningMinutes / 60,
+                minute = prefs.screenSyncEveningMinutes % 60,
+                mode = "today",
+                ownerId = ownerId,
+            )
+            scheduleDaily(
+                context = context,
+                name = WORK_MORNING,
+                hour = prefs.screenSyncMorningMinutes / 60,
+                minute = prefs.screenSyncMorningMinutes % 60,
+                mode = "yesterday",
+                ownerId = ownerId,
+            )
 
-            // Evening: today's snapshot (user-configurable time from app settings)
-            scheduleDaily(context, WORK_EVENING, notifPrefs.screenSyncEveningMinutes / 60, notifPrefs.screenSyncEveningMinutes % 60, "today")
-            // Morning: yesterday backfill (user-configurable time from app settings)
-            scheduleDaily(context, WORK_MORNING, notifPrefs.screenSyncMorningMinutes / 60, notifPrefs.screenSyncMorningMinutes % 60, "yesterday")
+            // Diary outbox records are review-only until the server offers an atomic
+            // compare-and-swap write. Do not schedule a no-op worker as fake sync.
 
-            // One-time backfill of the last 7 days — re-run whenever the app is
-            // opened (version change OR last run older than 6 h). This makes the
-            // chart self-heal after updates instead of relying on a single
-            // install-time enqueue that WorkManager may sit on.
-            val prefs = context.getSharedPreferences("diarium_sync", Context.MODE_PRIVATE)
-            val lastVersion = prefs.getString("last_backfill_version", null)
-            val lastRun = prefs.getLong("last_backfill_at", 0L)
-            val currentVersion = BuildConfig.VERSION_NAME
-            val due = lastVersion != currentVersion || (System.currentTimeMillis() - lastRun) > 6 * 3600_000L
-
-            if (due) {
-                prefs.edit()
-                    .putString("last_backfill_version", currentVersion)
-                    .putLong("last_backfill_at", System.currentTimeMillis())
-                    .apply()
-
-                val init = OneTimeWorkRequestBuilder<UsageSyncWorker>()
-                    .setInitialDelay(45, TimeUnit.SECONDS)
-                    .setConstraints(constraints)
-                    .setInputData(androidx.work.Data.Builder().putString("mode", "backfill").build())
-                    .build()
-                wm.enqueueUniqueWork(WORK_INIT, ExistingWorkPolicy.REPLACE, init)
+            when (backfillReason) {
+                BackfillReason.NONE -> Unit
+                BackfillReason.AUTH -> {
+                    markBackfillScheduled(context, ownerId)
+                    enqueueBackfill(context, WORK_AUTH_BACKFILL, ownerId, initialDelaySeconds = 0)
+                }
+                BackfillReason.DUE -> if (isBackfillDue(context, ownerId)) {
+                    markBackfillScheduled(context, ownerId)
+                    enqueueBackfill(context, WORK_INIT, ownerId, initialDelaySeconds = 45)
+                }
             }
         }
 
-        private fun scheduleDaily(context: Context, name: String, hour: Int, minute: Int, mode: String) {
+        private fun eligibleOwner(context: Context): String? {
+            val ownerId = AppClients.sessionStore(context).userSubject() ?: return null
+            return ownerId.takeIf { UsageSyncConsentStore(context).isEnabledFor(it) }
+        }
+
+        private fun enqueueBackfill(
+            context: Context,
+            name: String,
+            ownerId: String,
+            initialDelaySeconds: Long,
+        ) {
+            val request = OneTimeWorkRequestBuilder<UsageSyncWorker>()
+                .setInputData(bootBackfillInputData(ownerId))
+                .setConstraints(networkConstraints())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .addTag(TAG_USAGE_SYNC)
+                .apply {
+                    if (initialDelaySeconds > 0) setInitialDelay(initialDelaySeconds, TimeUnit.SECONDS)
+                }
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(name, ExistingWorkPolicy.REPLACE, request)
+        }
+
+        private fun scheduleDaily(
+            context: Context,
+            name: String,
+            hour: Int,
+            minute: Int,
+            mode: String,
+            ownerId: String,
+        ) {
             val now = Calendar.getInstance()
             val next = Calendar.getInstance().apply {
                 timeZone = TimeZone.getDefault()
@@ -93,22 +160,50 @@ class SyncScheduler {
                 if (!after(now)) add(Calendar.DAY_OF_YEAR, 1)
             }
             val delay = next.timeInMillis - now.timeInMillis
-
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-
-            val req = PeriodicWorkRequestBuilder<UsageSyncWorker>(24, TimeUnit.HOURS)
+            val request = PeriodicWorkRequestBuilder<UsageSyncWorker>(24, TimeUnit.HOURS)
                 .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-                .setConstraints(constraints)
-                .addTag(name)
-                .setInputData(androidx.work.Data.Builder().putString("mode", mode).build())
+                .setConstraints(networkConstraints())
+                .addTag(TAG_USAGE_SYNC)
+                .setInputData(UsageSyncWorker.inputData(mode = mode, ownerId = ownerId))
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 name,
                 ExistingPeriodicWorkPolicy.UPDATE,
-                req
+                request,
             )
         }
+
+        private fun networkConstraints(): Constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        internal fun isBackfillDue(context: Context, ownerId: String): Boolean {
+            val prefs = context.getSharedPreferences("diarium_sync", Context.MODE_PRIVATE)
+            val ownerKey = ownerToken(ownerId)
+            val lastVersion = prefs.getString("last_backfill_version.$ownerKey", null)
+            val lastRun = prefs.getLong("last_backfill_at.$ownerKey", 0L)
+            return lastVersion != BuildConfig.VERSION_NAME ||
+                (System.currentTimeMillis() - lastRun) > 6 * 3600_000L
+        }
+
+        internal fun markBackfillScheduled(context: Context, ownerId: String) {
+            val ownerKey = ownerToken(ownerId)
+            context.getSharedPreferences("diarium_sync", Context.MODE_PRIVATE).edit()
+                .putString("last_backfill_version.$ownerKey", BuildConfig.VERSION_NAME)
+                .putLong("last_backfill_at.$ownerKey", System.currentTimeMillis())
+                .apply()
+        }
+
+        /** Clear only the opted-out account's queued-backfill marker. */
+        internal fun resetBackfillState(context: Context, ownerId: String) {
+            val ownerKey = ownerToken(ownerId)
+            context.getSharedPreferences("diarium_sync", Context.MODE_PRIVATE).edit()
+                .remove("last_backfill_version.$ownerKey")
+                .remove("last_backfill_at.$ownerKey")
+                .apply()
+        }
+
+        private fun ownerToken(ownerId: String): String =
+            Base64.getUrlEncoder().withoutPadding().encodeToString(ownerId.toByteArray(Charsets.UTF_8))
     }
 }

@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var authState: AuthStateHolder
     private lateinit var authManager: AuthManager
 
-    /** `diarium://auth-callback#access_token=…` handed up to the auth layer. */
+    /** `diarium://auth-callback?state=…&code=…` handed to the auth layer. */
     private val authDeepLink = mutableStateOf<String?>(null)
 
     /** In-app route a tapped notification asked to open (extra `open_route`). */
@@ -68,7 +68,10 @@ class MainActivity : ComponentActivity() {
         AppLanguage.init(this)
 
         sessionStore = AppClients.sessionStore(this)
-        authState = AuthStateHolder(sessionStore)
+        authState = AuthStateHolder(sessionStore) {
+            NotificationScheduler.rescheduleAll(applicationContext)
+            SyncScheduler.cancelUsageWork(applicationContext)
+        }
         // onSessionSaved flips the Compose gate; a cold start with a stored
         // session is already AUTHENTICATED from the SessionStore.
         authManager = AuthManager(this, sessionStore, onSessionSaved = { authState.refresh() })

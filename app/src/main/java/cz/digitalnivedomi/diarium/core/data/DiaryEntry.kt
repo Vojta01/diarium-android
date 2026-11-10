@@ -48,7 +48,27 @@ data class DiaryEntry(
     val gratitude: List<String> = listOf("", "", ""),
     val note: String = "",
     val photoPath: String? = null,
+    /**
+     * The form removed this day's photo. The intent is explicit (and persisted in
+     * drafts/the offline outbox) because `photoPath == null` alone cannot tell
+     * "there never was a photo" from "the user just removed it": only the latter
+     * may clear `entries.photo_path`. The actual previous path is retained separately
+     * until the row update succeeds, so cleanup never guesses a legacy filename.
+     */
+    val clearPhoto: Boolean = false,
+    /**
+     * Existing object path to clean up only after [photoPath] (or the removal) is
+     * persisted. It also travels through drafts and the offline outbox so a retry
+     * cannot delete the old image before the new row is safely stored.
+     */
+    val photoPathToDelete: String? = null,
     val scaleValues: Map<String, Int> = emptyMap(),
+    /**
+     * Scales whose value the form cleared back to 0. Their `scale_entries` rows
+     * must be deleted after a successful save, otherwise the day keeps showing
+     * up in that scale's statistics even though the check-in no longer has it.
+     */
+    val clearedScaleIds: Set<String> = emptySet(),
     val weather: List<String> = emptyList(),
     val phoneScreenTime: Int? = null,
     val phoneUnlocks: Int? = null,
@@ -74,11 +94,15 @@ data class DiaryEntry(
             activities.isNotEmpty() || habits.values.any { it } ||
             note.isNotBlank() || gratitude.any { it.isNotBlank() } ||
             scaleValues.values.any { it > 0 } || !photoPath.isNullOrBlank() ||
-            weather.isNotEmpty()
+            weather.isNotEmpty() || clearPhoto || clearedScaleIds.isNotEmpty()
 
     /**
      * camelCase JSON — the draft blob persisted under `diarium_draft_{date}`,
      * matching the web's localStorage shape so drafts stay interchangeable.
+     *
+     * The two removal intents travel with it: a draft (or an offline outbox
+     * entry) that forgot "photo removed" or "scale cleared" would restore the
+     * day as if nothing had been deleted and silently resurrect the old value.
      */
     fun toJson(): JSONObject = JSONObject().apply {
         put("mood", mood)
@@ -90,7 +114,12 @@ data class DiaryEntry(
         put("gratitude", JSONArray(gratitude))
         put("note", note)
         if (!photoPath.isNullOrBlank()) put("photoPath", photoPath)
+        if (clearPhoto) put("clearPhoto", true)
+        photoPathToDelete?.takeIf { it.isNotBlank() }?.let { put("photoPathToDelete", it) }
         put("scaleValues", JSONObject(scaleValues))
+        if (clearedScaleIds.isNotEmpty()) {
+            put("clearedScaleIds", JSONArray(clearedScaleIds.sorted()))
+        }
         put("weather", JSONArray(weather))
         // No aiReflection: the draft mirrors the form's inputs only, so restoring
         // a draft can never resurrect or lose a server-generated reflection.
@@ -118,7 +147,10 @@ data class DiaryEntry(
             gratitude = json.optArrayTolerant("gratitude").slotList(GRATITUDE_SLOTS),
             note = json.plainString("note"),
             photoPath = json.plainString("photoPath").takeIf { it.isNotBlank() },
+            clearPhoto = json.optBoolean("clearPhoto", false),
+            photoPathToDelete = json.plainString("photoPathToDelete").takeIf { it.isNotBlank() },
             scaleValues = json.optJSONObject("scaleValues").intMap(),
+            clearedScaleIds = json.optArrayTolerant("clearedScaleIds").stringList().toSet(),
             weather = json.optArrayTolerant("weather").stringList(),
         )
     }

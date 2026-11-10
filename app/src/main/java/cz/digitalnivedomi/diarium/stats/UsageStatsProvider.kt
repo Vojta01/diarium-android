@@ -19,6 +19,12 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 
+/** Testable source of usage access and per-day stats for the sync repository. */
+interface UsageStatsSource {
+    fun hasUsageAccess(): Boolean
+    fun dayUsage(date: String): DayUsage
+}
+
 /**
  * Reads the exact Android usage statistics the Digital Wellbeing screen shows —
  * per-app foreground time, total time, and unlock count.
@@ -33,7 +39,7 @@ import java.util.TimeZone
  * algorithm this file used to inline (see `UsageStatsProvider.kt:117–233` before
  * M6) — it was lifted, not rewritten, so the Digital Wellbeing parity is unchanged.
  */
-class UsageStatsProvider(private val context: Context) {
+class UsageStatsProvider(private val context: Context) : UsageStatsSource {
 
     /** [DayUsageFolder.DEFAULT_IGNORED] — one source of truth, still exposed here. */
     private val ignored = DayUsageFolder.DEFAULT_IGNORED
@@ -51,7 +57,7 @@ class UsageStatsProvider(private val context: Context) {
 
     /** Whether the user has granted "usage access" to this app. */
     @Suppress("DEPRECATION")
-    fun hasUsageAccess(): Boolean {
+    override fun hasUsageAccess(): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             appOps.unsafeCheckOpNoThrow(
@@ -129,7 +135,7 @@ class UsageStatsProvider(private val context: Context) {
      * [closeAt]: for today the window ends *now*, not at midnight — see
      * [DayUsageFolder.closeAt] for the 15h54m regression that rule guards.
      */
-    fun dayUsage(date: String): DayUsage {
+    override fun dayUsage(date: String): DayUsage {
         val dayStart = startOfDay(date)
         val dayEnd = dayStart + DayUsageFolder.DAY_MILLIS
         val closeAt = DayUsageFolder.closeAt(dayEnd, System.currentTimeMillis())

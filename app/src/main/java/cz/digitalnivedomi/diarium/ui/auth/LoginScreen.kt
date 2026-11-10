@@ -21,6 +21,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -72,6 +73,7 @@ fun LoginScreen(
     isSigningIn: Boolean = false,
     onSignIn: () -> Unit = {},
     errorMessage: String? = null,
+    onClearStoredSession: (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -144,6 +146,16 @@ fun LoginScreen(
                 text = if (isSigningIn) GoogleSignInBusyLabel else GoogleSignInLabel,
                 style = MaterialTheme.typography.titleMedium,
             )
+        }
+
+        if (onClearStoredSession != null) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(
+                onClick = onClearStoredSession,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Vymazat uložené přihlášení")
+            }
         }
 
         if (isSigningIn) {

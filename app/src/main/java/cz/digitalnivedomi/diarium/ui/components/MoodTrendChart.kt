@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -86,8 +87,9 @@ enum class MoodTrendCaption {
 /** Height of the chart track: the tallest bar fills it. */
 private val CHART_TRACK = 120.dp
 
-/** Czech numeric date, used for the daily edge captions. */
-private val shortDate = DateTimeFormatter.ofPattern("d. M. yyyy", Locale("cs", "CZ"))
+/** Numeric date in the UI language, used for the daily edge captions. */
+private val shortDate: DateTimeFormatter
+    get() = UiDates.numericDate()
 
 /** "5. 9. 2026", or the raw value if it is not a date. */
 private fun shortDateOf(date: String): String = CheckInDates.parse(date)?.format(shortDate) ?: date

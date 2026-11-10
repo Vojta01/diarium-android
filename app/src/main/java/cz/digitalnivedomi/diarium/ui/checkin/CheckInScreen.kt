@@ -1,6 +1,9 @@
 package cz.digitalnivedomi.diarium.ui.checkin
 
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
@@ -22,9 +26,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -33,17 +44,19 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
+import cz.digitalnivedomi.diarium.core.data.DraftRecord
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.core.data.NoteTemplate
+import cz.digitalnivedomi.diarium.core.data.PendingSave
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
 import cz.digitalnivedomi.diarium.core.data.QueuedOfflineException
 import cz.digitalnivedomi.diarium.core.data.Scale
+import cz.digitalnivedomi.diarium.core.data.StoredEntrySnapshot
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
 import cz.digitalnivedomi.diarium.core.data.phoneScreenTimeMinutes
 import cz.digitalnivedomi.diarium.core.media.PhotoCompressor
-import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import cz.digitalnivedomi.diarium.ui.checkin.components.ActivitiesSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.CheckInGoalsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.DateNav
@@ -53,7 +66,6 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.GratitudeSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.HabitEditorDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.HabitsSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.MoodSection
-import cz.digitalnivedomi.diarium.ui.checkin.components.MoveDateDialog
 import cz.digitalnivedomi.diarium.ui.checkin.components.NoteSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.PhotoSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.PrimaryButton
@@ -67,15 +79,22 @@ import cz.digitalnivedomi.diarium.ui.checkin.components.StressSection
 import cz.digitalnivedomi.diarium.ui.checkin.components.WeatherSection
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
+import cz.digitalnivedomi.diarium.ui.i18n.translate
 import cz.digitalnivedomi.diarium.ui.history.DayDetail
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.IOException
+import java.time.LocalDate
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One-page daily check-in — native port of the web's `OnePageCheckIn.tsx`.
@@ -101,16 +120,33 @@ fun CheckInScreen(
      * dashboard, not on the form — and this screen only reports the moment.
      */
     onFinished: () -> Unit = {},
+    /** The day the form treats as today; a parameter so a screenshot can pin it. */
+    today: LocalDate = LocalDate.now(),
+    /** Whether the post-midnight auto-step-back is active; false pins a screenshot. */
+    lateNight: Boolean = CheckInDates.isAfterMidnight(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val holder = remember { CheckInStateHolder() }
-    val state = holder.state
-
     val entriesRepo = deps.entries
     val reflectionRepo = deps.reflection
     val pickersRepo = deps.pickers
     val drafts = deps.drafts
+    // A holder and every recovery state are scoped to the same account as the
+    // repositories. Switching accounts cannot flush one user's current form into
+    // another user's local draft namespace.
+    val ownerId = drafts?.ownerId ?: entriesRepo?.pendingOwnerId
+    val holder = remember(today, ownerId) {
+        CheckInStateHolder(today.toString(), initiallyLoading = true)
+    }
+    val state = holder.state
+    // Recovery must be visible to lifecycle flushes: an unresolved comparison may
+    // never replace its preserved local draft.
+    var draftRecovery by remember(ownerId, state.date) { mutableStateOf<DraftRecoveryView?>(null) }
+    var draftRecoveryChoice by remember(ownerId, state.date) { mutableStateOf(DraftRecoveryChoice.UNRESOLVED) }
+    var pendingRecovery by remember(ownerId, state.date) { mutableStateOf<PendingRecoveryView?>(null) }
+    var pendingRecoveryChoice by remember(ownerId, state.date) { mutableStateOf(PendingRecoveryChoice.LOCAL) }
+    var dateNavigationInProgress by remember(ownerId) { mutableStateOf(false) }
+    val dateNavigationGuard = remember(ownerId) { AtomicBoolean(false) }
     val goalsRepo: GoalsRepository? = deps.goals
 
     /**
@@ -124,22 +160,106 @@ fun CheckInScreen(
     fun flushDraft() {
         val d = drafts ?: return
         val s = holder.state
-        if (s.saved || !s.entry.hasContent()) return
-        d.flush(s.date, s.entry)
+        if (d.ownerId != ownerId) return
+        if (!s.draftDirty || s.saved || s.saving || s.draftStoreError != null || !s.entry.hasContent()) return
+        if (draftRecovery != null || pendingRecovery != null) return
+        val flush = d.flush(s.date, s.entry, s.baselineUpdatedAt, s.baselineExists)
+        flush.invokeOnCompletion { failure ->
+            if (failure != null && failure !is CancellationException) {
+                // The write outlives this screen's coroutine. Report failure back on
+                // the UI thread while the process is alive, preserving the dirty form
+                // and leaving the explicit retry action available.
+                Handler(Looper.getMainLooper()).post {
+                    val current = holder.state
+                    if (current.date == s.date && current.draftDirty && !current.saved) {
+                        holder.markDraftStoreFailed(DRAFT_STORE_WRITE_FAILED_MESSAGE)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun persistDraftBeforeNavigation(snapshot: CheckInUiState): Result<Unit> {
+        val d = drafts ?: return Result.success(Unit)
+        if (d.ownerId != ownerId || !snapshot.draftDirty || snapshot.saved ||
+            !snapshot.entry.hasContent() || draftRecovery != null || pendingRecovery != null
+        ) {
+            return Result.success(Unit)
+        }
+        return try {
+            val completed = withTimeoutOrNull(DRAFT_NAVIGATION_TIMEOUT_MS) {
+                d.save(
+                    snapshot.date,
+                    snapshot.entry,
+                    snapshot.baselineUpdatedAt,
+                    snapshot.baselineExists,
+                )
+                true
+            } ?: false
+            if (completed) {
+                Result.success(Unit)
+            } else {
+                Result.failure(IllegalStateException(DRAFT_NAVIGATION_TIMEOUT_MESSAGE))
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            Result.failure(IllegalStateException(DRAFT_NAVIGATION_FAILED_MESSAGE))
+        }
+    }
+
+    val currentFlushDraft by rememberUpdatedState { flushDraft() }
+
+    suspend fun refreshPendingRecovery(date: String) {
+        val repo = entriesRepo ?: return
+        val record = repo.pendingSaveRecord(date)
+        if (record == null) {
+            pendingRecovery = null
+            return
+        }
+        val remote = repo.loadRemoteEntrySnapshot(date)
+        pendingRecovery = PendingRecoveryView(
+            record = record,
+            remote = remote.getOrNull(),
+            remoteError = remote.exceptionOrNull()?.message,
+        )
+        pendingRecoveryChoice = PendingRecoveryChoice.LOCAL
     }
 
     // A day picked elsewhere (the calendar tab, the dashboard's "Dnes" card): land the
     // form on it. The host is told the request was used so it can clear it — a later
     // plain visit to "Dnes" has to start on today again.
-    LaunchedEffect(requestedDate) {
+    LaunchedEffect(requestedDate, ownerId) {
         if (requestedDate != null) {
-            // The day being left gets its pending draft flushed before the switch.
-            flushDraft()
-            holder.setDate(requestedDate)
-            // A day opened from another screen is meant to be edited, not read —
-            // the double tap was the owner's complaint (2026-10-01).
-            holder.requestEdit()
-            onRequestedDateConsumed()
+            val snapshot = holder.state
+            val ownsNavigationLock = !snapshot.draftDirty || dateNavigationGuard.compareAndSet(false, true)
+            if (!ownsNavigationLock || (snapshot.draftDirty && !holder.beginDateNavigation())) {
+                if (ownsNavigationLock && snapshot.draftDirty) dateNavigationGuard.set(false)
+                holder.markError(DRAFT_NAVIGATION_FAILED_MESSAGE, snapshot.date)
+                return@LaunchedEffect
+            }
+            dateNavigationInProgress = snapshot.draftDirty
+            try {
+                val result = persistDraftBeforeNavigation(snapshot)
+                if (result.isFailure) {
+                    holder.markError(
+                        result.exceptionOrNull()?.message ?: DRAFT_NAVIGATION_FAILED_MESSAGE,
+                        snapshot.date,
+                    )
+                    return@LaunchedEffect
+                }
+                holder.setDate(requestedDate)
+                // A day opened from another screen is meant to be edited, not read —
+                // the double tap was the owner's complaint (2026-10-01).
+                holder.requestEdit()
+                onRequestedDateConsumed()
+            } finally {
+                if (snapshot.draftDirty) {
+                    holder.endDateNavigation()
+                    dateNavigationGuard.set(false)
+                }
+                dateNavigationInProgress = false
+            }
         }
     }
 
@@ -151,11 +271,51 @@ fun CheckInScreen(
     // Read-only goal progress: null while unknown (the section hides), a list once
     // [GoalsRepository.loadProgress] has answered — computed from the diary.
     var goalProgress by remember { mutableStateOf<List<GoalProgress>?>(null) }
-    var uploadingPhoto by remember { mutableStateOf(false) }
+    var activePhotoUpload by remember { mutableStateOf<Long?>(null) }
+    val uploadingPhoto = activePhotoUpload != null
+    val currentUploadingPhoto = rememberUpdatedState(uploadingPhoto)
+    // A selected-day read, save, photo upload or date-flush owns the form until its snapshot is safe.
+    val busy = state.loading || state.saving || uploadingPhoto || dateNavigationInProgress
+    // Bumped by the load error's retry button: the load effect keys on it as well as
+    // the date, so a failed read can be attempted again without leaving the day.
+    var reloadToken by remember { mutableStateOf(0) }
+    fun retryDayLoad() {
+        val snapshot = holder.state
+        traceDraftRecovery("retry click loading=${snapshot.loading} dirty=${snapshot.draftDirty} storeError=${snapshot.draftStoreError != null}")
+        if (snapshot.loading) return
+        holder.setLoading(true)
+        val staged = drafts?.takeIf { it.ownerId == ownerId }?.let { store ->
+            if (snapshot.draftDirty && !snapshot.saved && snapshot.entry.hasContent()) {
+                store.stage(snapshot.date, snapshot.entry, snapshot.baselineUpdatedAt, snapshot.baselineExists)
+            } else {
+                null
+            }
+        }
+        scope.launch {
+            traceDraftRecovery("retry launch staged=${staged != null}")
+            try {
+                staged?.await()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                holder.markDraftStoreFailed(DRAFT_STORE_WRITE_FAILED_MESSAGE)
+                return@launch
+            }
+            traceDraftRecovery("retry stage complete; bump reload")
+            reloadToken++
+        }
+    }
     // Why the last photo pick failed, shown right under the buttons (the shared
     // ErrorBanner sits at the top of the form, far above the photo section, so a
     // photo failure was invisible while the user was scrolled down).
     var photoError by remember { mutableStateOf<String?>(null) }
+
+    // A late result from an upload for the previous date must not update this form
+    // (nor leave its spinner active) after the date changes.
+    LaunchedEffect(state.date) {
+        activePhotoUpload = null
+        photoError = null
+    }
 
     // Goals this save pushed over their target. Shown one at a time, at most three;
     // the queue also gates the reflection dialog, so both never stack.
@@ -170,11 +330,6 @@ fun CheckInScreen(
     var habitEditor by remember { mutableStateOf<HabitDef?>(null) }
     var habitEditorOpen by remember { mutableStateOf(false) }
     var habitSaving by remember { mutableStateOf(false) }
-    // The "Změnit datum" flow: the picker, the day it came back with, and whether that
-    // day already holds an entry (which turns the dialog into its overwrite step).
-    var moveDialogOpen by remember { mutableStateOf(false) }
-    var moveTarget by remember { mutableStateOf<String?>(null) }
-
     // Pickers + goal progress once per screen. The progress is read-only and
     // computed from the diary, so the check-in only ever displays it.
     LaunchedEffect(deps) {
@@ -190,23 +345,138 @@ fun CheckInScreen(
         }
     }
 
-    // Entry for the selected day: DB first, then draft, then empty (web rules). A day
-    // that came from the database is *stored*, which is what makes the screen show the
-    // passive day view instead of the form.
-    LaunchedEffect(state.date) {
+    // Entry load is deliberately split into the owner-scoped draft/outbox and the
+    // actual server row. A local overlay alone cannot show the user what changed on
+    // another device, and a read failure must never be mistaken for an empty day.
+    LaunchedEffect(ownerId, state.date, reloadToken, entriesRepo, drafts) {
+        traceDraftRecovery("load effect token=$reloadToken")
         holder.setLoading(true)
-        val fromDb = entriesRepo?.loadEntry(state.date)
-        val restored = fromDb ?: drafts?.load(state.date) ?: DiaryEntry.EMPTY
-        // A day reads passively only when it is a *record* — mood filled in (the owner's
-        // rule, see isRecordedDay). A row that only carries the phone's synced screen
-        // time is a day nobody journaled yet, so it opens as the form.
-        holder.load(restored, stored = isRecordedDay(fromDb?.mood))
+        val repo = entriesRepo
+        val savedDraft = try {
+            drafts?.loadRecord(state.date)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            traceDraftRecovery("draft read failed")
+            draftRecovery = null
+            pendingRecovery = null
+            holder.markDraftStoreFailed(DRAFT_STORE_READ_FAILED_MESSAGE)
+            return@LaunchedEffect
+        }
+        val queued = repo?.pendingSaveRecord(state.date)
+        pendingRecoveryChoice = PendingRecoveryChoice.LOCAL
+        if (repo == null) {
+            pendingRecovery = null
+            if (savedDraft != null) {
+                draftRecovery = DraftRecoveryView(
+                    record = savedDraft,
+                    remote = null,
+                    remoteError = SERVER_UNAVAILABLE_MESSAGE,
+                )
+                draftRecoveryChoice = DraftRecoveryChoice.UNRESOLVED
+                holder.load(
+                    savedDraft.entry,
+                    stored = true,
+                    baselineUpdatedAt = savedDraft.baselineUpdatedAt,
+                    baselineExists = savedDraft.baselineExists,
+                    editingOverride = false,
+                )
+            } else {
+                draftRecovery = null
+                holder.load(DiaryEntry.EMPTY, stored = false, baselineExists = false)
+            }
+            return@LaunchedEffect
+        }
 
-        // Just after midnight the day being written up is still the one that ended, and
-        // the app used to file that whole check-in under the new date. Step back once,
-        // and only while today is untouched — a day with any content is never moved.
-        if (!lateNightChecked && !isRecordedDay(fromDb?.mood) && !restored.hasContent() &&
-            state.date == CheckInDates.today() && CheckInDates.isAfterMidnight()
+        traceDraftRecovery("remote read starting")
+        val loaded = repo.loadRemoteEntrySnapshot(state.date)
+        if (loaded.isFailure) {
+            val failure = loaded.exceptionOrNull()?.message ?: LOAD_FAILED_MESSAGE
+            val retryEntry = holder.state.entry.takeIf { holder.state.loadError != null && it.hasContent() }
+            val local = savedDraft?.let { it.copy(entry = retryEntry ?: it.entry) }
+                ?: queued?.let {
+                    DraftRecord(
+                        ownerId = it.ownerId,
+                        date = it.date,
+                        entry = retryEntry ?: it.entry,
+                        baselineUpdatedAt = it.baselineUpdatedAt,
+                        baselineExists = it.baselineExists,
+                    )
+                }
+            pendingRecovery = queued?.let { PendingRecoveryView(it, null, failure) }
+            draftRecovery = savedDraft?.let { DraftRecoveryView(local ?: it, null, failure) }
+            if (draftRecovery != null) draftRecoveryChoice = DraftRecoveryChoice.UNRESOLVED
+            holder.markLoadFailed(
+                message = failure,
+                draft = local?.entry ?: retryEntry,
+                queuedOffline = queued != null,
+                baselineUpdatedAt = local?.baselineUpdatedAt,
+                baselineExists = local?.baselineExists,
+            )
+            return@LaunchedEffect
+        }
+
+        val remote = loaded.getOrNull()
+        val retryEntry = holder.state.entry.takeIf { holder.state.loadError != null && it.hasContent() }
+        val effectiveDraft = savedDraft?.let { it.copy(entry = retryEntry ?: it.entry) }
+            ?: retryEntry?.let {
+                DraftRecord(
+                    ownerId = repo.currentUserId().orEmpty(),
+                    date = state.date,
+                    entry = it,
+                    baselineUpdatedAt = null,
+                    baselineExists = null,
+                )
+            }
+        val conflictingDraft = effectiveDraft?.takeIf {
+            it.conflictsWith(remoteExists = remote != null, remoteUpdatedAt = remote?.updatedAt)
+        }
+        draftRecovery = conflictingDraft?.let { DraftRecoveryView(it, remote, null) }
+        draftRecoveryChoice = if (conflictingDraft != null) {
+            DraftRecoveryChoice.UNRESOLVED
+        } else {
+            DraftRecoveryChoice.LOCAL
+        }
+        pendingRecovery = queued?.let { PendingRecoveryView(it, remote, null) }
+
+        repo.cleanupPhotoCandidates(
+            state.date,
+            preservePaths = setOfNotNull(remote?.entry?.photoPath, effectiveDraft?.entry?.photoPath, queued?.entry?.photoPath),
+        )
+
+        val localEntry = effectiveDraft?.entry ?: queued?.entry
+        val unresolved = conflictingDraft != null
+        val displayed = if (unresolved) {
+            remote?.entry ?: DiaryEntry.EMPTY
+        } else {
+            localEntry ?: remote?.entry ?: DiaryEntry.EMPTY
+        }
+        val stored = unresolved || (localEntry == null && isRecordedDay(remote?.entry?.mood))
+        val baselineUpdatedAt = when {
+            unresolved -> remote?.updatedAt
+            effectiveDraft != null -> effectiveDraft.baselineUpdatedAt
+            queued != null -> queued.baselineUpdatedAt
+            else -> remote?.updatedAt
+        }
+        val baselineExists = when {
+            unresolved -> remote != null
+            effectiveDraft != null -> effectiveDraft.baselineExists
+            queued != null -> queued.baselineExists
+            else -> remote != null
+        }
+        val localNeedsEditing = localEntry != null && !unresolved
+        holder.load(
+            displayed,
+            stored = stored,
+            baselineUpdatedAt = baselineUpdatedAt,
+            baselineExists = baselineExists,
+            queuedOffline = queued != null,
+            editingOverride = if (unresolved) false else localNeedsEditing,
+        )
+
+        // The after-midnight step applies only to a genuinely untouched remote day.
+        if (!lateNightChecked && !isRecordedDay(remote?.entry?.mood) &&
+            localEntry == null && state.date == today.toString() && lateNight
         ) {
             lateNightChecked = true
             holder.startLateNight()
@@ -219,30 +489,78 @@ fun CheckInScreen(
     }
 
     // Debounced draft autosave (the web's localStorage `diarium_draft_{date}`).
-    LaunchedEffect(state.date, state.entry, state.saved) {
+    LaunchedEffect(ownerId, drafts, state.date, state.entry, state.saved, state.saving, state.draftDirty, state.baselineUpdatedAt, state.baselineExists, draftRecovery, pendingRecovery) {
         if (drafts == null) return@LaunchedEffect
-        if (state.saved || !state.entry.hasContent()) return@LaunchedEffect
+        if (state.saved || state.saving || !state.draftDirty || !state.entry.hasContent()) return@LaunchedEffect
+        if (draftRecovery != null || pendingRecovery != null) return@LaunchedEffect
+        if (state.draftStoreError != null) return@LaunchedEffect
         delay(1200)
-        drafts.save(state.date, state.entry)
+        try {
+            drafts.save(state.date, state.entry, state.baselineUpdatedAt, state.baselineExists)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            holder.markDraftStoreFailed(DRAFT_STORE_WRITE_FAILED_MESSAGE)
+        }
     }
 
-    // The pending debounced draft must not die with the process (2026-09-25 fix):
-    // ON_STOP is the last callback the app is guaranteed to get before it can be killed.
-    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { flushDraft() }
+    // ON_STOP starts the last best-effort local write. Its result is observed above,
+    // but Android may kill the process before an asynchronous DataStore transaction
+    // finishes; this callback is not a promise of process-death durability.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { currentFlushDraft() }
 
     // Leaving the screen inside the app (a tab switch) disposes it — same flush.
-    DisposableEffect(Unit) { onDispose { flushDraft() } }
+    DisposableEffect(ownerId, drafts, holder) { onDispose { flushDraft() } }
 
     /**
      * The RPC call itself, shared by [save] and [generateReflection]: the AI
      * endpoint builds today's prompt from the stored row, so the reflection flow
      * has to await the very write the save button performs.
+     *
+     * Date and entry are parameters, not reads of [holder]: a save is a snapshot of
+     * what the user saw when the button was pressed. Reading the holder again after
+     * the RPC (or during it) is how a save used to land on a day the user had
+     * already switched away from.
      */
-    suspend fun persistEntry(): Result<Unit> {
+    suspend fun persistEntry(
+        date: String,
+        entry: DiaryEntry,
+        baselineUpdatedAt: String?,
+        baselineExists: Boolean?,
+        stagedDraft: Deferred<Unit>? = null,
+    ): Result<Unit> {
         val repo = entriesRepo
             ?: return Result.failure(IllegalStateException("Ukládání vyžaduje přihlášení."))
-        val date = holder.date
-        return repo.save(holder.entry, date).onSuccess { drafts?.clear(date) }
+        try {
+            (stagedDraft ?: drafts?.takeIf { it.ownerId == ownerId }?.stage(
+                date,
+                entry,
+                baselineUpdatedAt,
+                baselineExists,
+            ))?.await()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            return Result.failure(failure)
+        }
+        val saved = repo.save(
+            entry,
+            date,
+            baselineUpdatedAt = baselineUpdatedAt,
+            baselineExists = baselineExists,
+        )
+        if (saved.isSuccess) {
+            try {
+                drafts?.clearIfUnchanged(date, entry)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: IOException) {
+                // The remote write succeeded; keep the local copy for recovery and
+                // log only the exception type, never the journal or user data.
+                Log.w("CheckInDraft", "Local cleanup failed after server save (${failure.javaClass.simpleName})")
+            }
+        }
+        return saved
     }
 
     val haptics = rememberHaptics()
@@ -253,16 +571,48 @@ fun CheckInScreen(
     }
 
     fun save() {
+        if (dateNavigationGuard.get()) return
         val repo = entriesRepo
         if (repo == null) {
             holder.markError("Ukládání vyžaduje přihlášení.")
             return
         }
-        holder.markSaving()
+        if (draftRecovery != null || pendingRecovery != null) {
+            holder.markError(DRAFT_CONFLICT_BLOCKED_MESSAGE)
+            return
+        }
+        // A failed read means we do not know what is stored: writing now would
+        // replace it with an empty/draft payload. The retry is the only way forward.
+        val loadError = holder.state.loadError
+        if (loadError != null) {
+            holder.markError(LOAD_BLOCKED_MESSAGE)
+            return
+        }
+        // The load is still in flight: its answer would replace whatever is on screen,
+        // so a save now would write a form the user has not actually seen.
+        if (holder.state.loading) return
+        // The snapshot the whole save works from — date and entry together.
+        val date = holder.date
+        val entry = holder.entry
+        val baselineUpdatedAt = holder.state.baselineUpdatedAt
+        val baselineExists = holder.state.baselineExists
+        // beginSave() is the double-tap guard: the second tap sees saving=true.
+        if (!holder.beginSave()) return
+        // Start an app-scope local write before launching the cancellable RPC job.
+        // The debounce effect is cancelled by saving=true, so it cannot be the
+        // durability guarantee for this snapshot.
+        val stagedDraft = drafts?.takeIf { it.ownerId == ownerId }?.stage(
+            date,
+            entry,
+            baselineUpdatedAt,
+            baselineExists,
+        )
         scope.launch {
-            val result = persistEntry()
+            val result = persistEntry(date, entry, baselineUpdatedAt, baselineExists, stagedDraft)
             if (result.isSuccess) {
-                holder.markSaved()
+                // Pinned to the date the save started for: a switch during the RPC
+                // leaves the new day untouched.
+                holder.markSaved(date)
                 // The diary just changed under the goals: recompute the read-only
                 // progress so the section reflects the save without a reload.
                 val progressBefore = goalProgress
@@ -279,68 +629,15 @@ fun CheckInScreen(
             } else {
                 val error = result.exceptionOrNull()
                 if (error is QueuedOfflineException) {
-                    // Offline: the day is safe in the outbox (PendingSaveStore).
-                    // The card says „Uloženo v telefonu…"; the reflection window
-                    // stays closed on purpose — it needs the server.
-                    holder.markQueuedOffline()
-                    drafts?.clear(holder.date)
-                    PendingSaveWorker.enqueue(context)
+                    // The outbox is local-only: automatic replay cannot be made safe
+                    // without an atomic server compare-and-swap. The recovery panel
+                    // keeps the unsynced copy visible; never claim it was sent.
+                    holder.markQueuedOffline(date)
+                    refreshPendingRecovery(date)
                 } else {
-                    holder.markError(error?.message ?: "Uložení se nezdařilo.")
+                    holder.markError(error?.message ?: "Uložení se nezdařilo.", date)
                 }
             }
-        }
-    }
-
-    /**
-     * The move itself: the entry is written to the target day first, the old row is
-     * deleted after — a failed write can then never cost the owner his check-in. A
-     * failed delete is said out loud instead of being swallowed: the entry has moved,
-     * but a stale copy would silently duplicate the day.
-     */
-    fun performMove(target: String) {
-        val repo = entriesRepo ?: return
-        val entry = holder.entry
-        val from = holder.date
-        scope.launch {
-            holder.markSaving()
-            val written = repo.save(entry, target)
-            if (written.isFailure) {
-                holder.markError(written.exceptionOrNull()?.message ?: "Přesun se nezdařil.")
-                return@launch
-            }
-            if (repo.delete(from).isFailure) {
-                holder.markError("Zápis je přesunutý, ale původní den se nepodařilo smazat.")
-            }
-            drafts?.clear(from)
-            // The entry moved between days, so the days that logged an activity
-            // changed: recompute the read-only goal progress from the diary.
-            goalProgress = goalsRepo?.loadProgress()
-            moveDialogOpen = false
-            moveTarget = null
-            // Landing on the target day re-reads it, so the screen shows the moved entry
-            // as the stored day it now is.
-            holder.setDate(target)
-        }
-    }
-
-    /**
-     * "Změnit datum": the picker came back with a day. A target that already holds an
-     * entry turns the dialog into its overwrite step rather than silently replacing it.
-     */
-    fun requestMove(target: String) {
-        if (target == holder.date) {
-            moveDialogOpen = false
-            return
-        }
-        val repo = entriesRepo
-        if (repo == null) {
-            holder.markError("Přesun vyžaduje přihlášení.")
-            return
-        }
-        scope.launch {
-            val occupied = repo.loadEntry(target)?.hasContent() == true
-            if (occupied) moveTarget = target else performMove(target)
         }
     }
 
@@ -355,73 +652,119 @@ fun CheckInScreen(
      * generated text is then written by a second save — that pass is the only one
      * whose payload carries `ai_reflection`.
      *
+     * The whole flow is pinned to the day it started on ([date] + [entry]): if the
+     * user switches days while the request is in flight, the result is dropped
+     * instead of being written to (and saved under) the newly open day.
+     *
      * The on-device profile decides first: with the AI master switch off
      * (Nastavení → AI) no request is fired at all, the window just says so.
      */
     fun generateReflection() {
+        if (dateNavigationGuard.get()) return
         val repo = reflectionRepo
         if (repo == null) {
             holder.markReflectionError(AiReflectionRepository.MESSAGE_CONNECT)
             return
         }
+        if (holder.state.loadError != null) {
+            holder.markReflectionError(LOAD_BLOCKED_MESSAGE)
+            return
+        }
+        if (draftRecovery != null || pendingRecovery != null) {
+            holder.markReflectionError(DRAFT_CONFLICT_BLOCKED_MESSAGE)
+            return
+        }
         // A second tap while the pre-save or the request runs would duplicate the
         // work; the endpoint caches, but the button must not look idle.
-        if (holder.state.reflectionLoading || holder.state.saving) return
+        if (holder.state.reflectionLoading || holder.state.saving || holder.state.loading) return
+        val date = holder.date
+        val entry = holder.entry
+        val baselineUpdatedAt = holder.state.baselineUpdatedAt
+        val baselineExists = holder.state.baselineExists
         scope.launch {
             // The master switch is read once, before anything is saved or sent:
             // with AI off the whole flow is skipped.
             val profile = deps.profile?.load()
-            if (profile != null && !profile.aiEnabled) {
+            if (profile?.aiEnabled != true) {
                 holder.markReflectionError(AI_DISABLED_MESSAGE)
                 return@launch
             }
 
-            if (holder.state.hasContent && !holder.state.saved) {
-                holder.markSaving()
-                val stored = persistEntry()
+            if (entry.hasContent() && !holder.state.saved) {
+                if (!holder.beginSave()) return@launch
+                val stagedDraft = drafts?.takeIf { it.ownerId == ownerId }?.stage(
+                    date,
+                    entry,
+                    baselineUpdatedAt,
+                    baselineExists,
+                )
+                val stored = persistEntry(date, entry, baselineUpdatedAt, baselineExists, stagedDraft)
                 if (stored.isFailure) {
                     if (stored.exceptionOrNull() is QueuedOfflineException) {
                         // Offline: the entry is in the outbox. The reflection is a
                         // server call, so it waits for the flush — say so instead of
                         // an error the user cannot act on.
-                        holder.markQueuedOffline()
-                        drafts?.clear(holder.date)
-                        PendingSaveWorker.enqueue(context)
-                        holder.markReflectionError("Zápis je uložený v telefonu — reflexi vygeneruješ po připojení.")
+                        holder.markQueuedOffline(date)
+                        refreshPendingRecovery(date)
+                        holder.markReflectionError("Zápis je uložený jen v tomto telefonu; reflexe teď není dostupná.")
                     } else {
-                        holder.markError(stored.exceptionOrNull()?.message ?: "Uložení se nezdařilo.")
+                        holder.markError(stored.exceptionOrNull()?.message ?: "Uložení se nezdařilo.", date)
                         holder.markReflectionError("Nejdřív je potřeba uložit dnešní zápis.")
                     }
                     return@launch
                 }
+                // The day switched while the pre-save ran: do not touch the new day.
+                if (holder.date != date) return@launch
                 // Not markSaved(): the manual flow must not pop the window open by
                 // itself, only the save button does.
-                holder.markReflectionStored()
+                holder.markReflectionStored(date)
             }
 
             holder.markReflectionLoading()
-            val date = holder.date
             // The owner's own name (and birth year) make the reflection personal; the
             // session's name stays the fallback for a profile that has none.
             val profileName = profile?.name?.takeIf { it.isNotBlank() } ?: repo.userName()
-            repo.generate(date, holder.entry, profileName, profile?.birthYear)
+            repo.generate(date, entry, profileName, profile?.birthYear)
                 .onSuccess { text ->
+                    // The request is for the captured day; applying it to another
+                    // day would both mislabel the text and save it under the wrong date.
+                    if (holder.date != date) return@onSuccess
                     holder.setReflection(text)
-                    persistEntry()
-                        .onSuccess { holder.markReflectionStored() }
+                    val reflectedEntry = holder.entry
+                    val stagedReflection = drafts?.takeIf { it.ownerId == ownerId }?.stage(
+                        date,
+                        reflectedEntry,
+                        baselineUpdatedAt,
+                        baselineExists,
+                    )
+                    persistEntry(date, reflectedEntry, baselineUpdatedAt, baselineExists, stagedReflection)
+                        .onSuccess { holder.markReflectionStored(date) }
                         .onFailure {
                             holder.markReflectionError("Reflexi se nepodařilo uložit k zápisu.")
                         }
                 }
                 .onFailure {
-                    holder.markReflectionError(it.message ?: "Reflexi se nepodařilo vygenerovat.")
+                    if (holder.date == date) {
+                        holder.markReflectionError(it.message ?: "Reflexi se nepodařilo vygenerovat.")
+                    }
                 }
         }
     }
 
     fun uploadPhoto(uri: Uri) {
+        if (dateNavigationGuard.get()) return
         val repo = entriesRepo ?: return
-        uploadingPhoto = true
+        if (holder.state.loadError != null) {
+            photoError = LOAD_BLOCKED_MESSAGE
+            return
+        }
+        if (uploadingPhoto || holder.state.saving || holder.state.loading) return
+        // The upload and the path it produces belong to the day that was open when
+        // the picker started; a switch during the upload must not attach the photo
+        // to the newly shown day.
+        val date = holder.date
+        val uploadToken = holder.beginPhotoUpload()
+        activePhotoUpload = uploadToken
         scope.launch {
             val bytes = withContext(Dispatchers.IO) {
                 PhotoCompressor.compress(context, uri)
@@ -432,16 +775,24 @@ fun CheckInScreen(
                         context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                     }.getOrNull()?.takeIf { it.size <= PhotoCompressor.MAX_BYTES }
             }
+            if (!holder.isPhotoUploadCurrent(uploadToken, date)) {
+                if (activePhotoUpload == uploadToken) activePhotoUpload = null
+                return@launch
+            }
             if (bytes == null) {
-                uploadingPhoto = false
+                if (activePhotoUpload == uploadToken) activePhotoUpload = null
                 photoError = "Fotku se nepodařilo načíst z telefonu."
                 return@launch
             }
-            val result = repo.uploadPhoto(holder.date, bytes)
-            uploadingPhoto = false
+            val result = repo.uploadPhoto(date, bytes)
+            if (activePhotoUpload == uploadToken) activePhotoUpload = null
+            if (!holder.isPhotoUploadCurrent(uploadToken, date)) return@launch
             if (result.url != null) {
                 photoError = null
                 holder.setPhotoPath(result.url)
+                // P1 is a distinct staged candidate after P2 succeeds. Reconcile
+                // only after the upload and owner-scoped reference read; keep P2.
+                repo.cleanupPhotoCandidates(date, preservePaths = setOf(result.url))
             } else {
                 photoError = "Fotku se nepodařilo nahrát (${result.error ?: "neznámá chyba"})."
             }
@@ -466,6 +817,11 @@ fun CheckInScreen(
             // Keep the focused field above the keyboard (the app draws
             // edge-to-edge, so nothing else reserves the IME inset).
             .imePadding()
+            // A save/upload snapshot is taken when the action starts; letting any
+            // control (mood, note, scales, date) change underneath it would make the
+            // payload disagree with the form. The whole form is frozen instead, and
+            // DateNav/PhotoSection also render their own disabled state.
+            .consumeInputsWhile(busy)
             .padding(horizontal = 16.dp),
     ) {
         Spacer(Modifier.height(10.dp))
@@ -477,12 +833,167 @@ fun CheckInScreen(
         )
         Spacer(Modifier.height(14.dp))
 
+        if (state.loading) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.semantics {
+                        contentDescription = translate("Načítám zápisy…")
+                    },
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Načítám zápisy…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary,
+                )
+            }
+            return@Column
+        }
+
         state.errorMessage?.let { message ->
             ErrorBanner(message)
             Spacer(Modifier.height(10.dp))
         }
 
-        DateNav(date = state.date, onDateChange = { holder.setDate(it) })
+        state.loadError?.let { message ->
+            ErrorBanner(message)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = if (state.draftStoreError != null) {
+                    "Místní návrh zatím není uložený. Obsah zůstává zobrazený; zkus to znovu před odchodem."
+                } else {
+                    "Ukládání je zablokované, dokud se den nenačte."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton(text = "🔄 Zkusit znovu", testTag = "checkin_load_retry") {
+                retryDayLoad()
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+
+        draftRecovery?.let { recovery ->
+            val canChooseCopy = recovery.remoteError == null && state.loadError == null
+            DraftRecoveryPanel(
+                recovery = recovery,
+                choice = draftRecoveryChoice,
+                canChooseCopy = canChooseCopy,
+                onReviewLocal = {
+                    if (canChooseCopy) {
+                        draftRecoveryChoice = DraftRecoveryChoice.LOCAL
+                        holder.load(
+                            entry = recovery.record.entry,
+                            stored = recovery.remote != null && isRecordedDay(recovery.remote.entry.mood),
+                            baselineUpdatedAt = recovery.record.baselineUpdatedAt,
+                            baselineExists = recovery.record.baselineExists,
+                            editingOverride = true,
+                        )
+                    }
+                },
+                onReviewServer = {
+                    if (canChooseCopy) {
+                        draftRecoveryChoice = DraftRecoveryChoice.SERVER
+                        val snapshot = recovery.remote
+                        holder.load(
+                            entry = snapshot?.entry ?: DiaryEntry.EMPTY,
+                            stored = snapshot != null && isRecordedDay(snapshot.entry.mood),
+                            baselineUpdatedAt = snapshot?.updatedAt,
+                            baselineExists = snapshot != null,
+                            editingOverride = false,
+                        )
+                    }
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+
+        pendingRecovery?.let { recovery ->
+            val canChooseCopy = recovery.remoteError == null && state.loadError == null
+            PendingRecoveryPanel(
+                recovery = recovery,
+                choice = pendingRecoveryChoice,
+                canChooseCopy = canChooseCopy,
+                onShowLocal = {
+                    if (canChooseCopy) {
+                        pendingRecoveryChoice = PendingRecoveryChoice.LOCAL
+                        holder.load(
+                            entry = recovery.record.entry,
+                            baselineUpdatedAt = recovery.record.baselineUpdatedAt,
+                            baselineExists = recovery.record.baselineExists,
+                            queuedOffline = true,
+                            editingOverride = true,
+                        )
+                    }
+                },
+                onShowServer = {
+                    if (canChooseCopy) {
+                        pendingRecoveryChoice = PendingRecoveryChoice.SERVER
+                        val snapshot = recovery.remote
+                        holder.load(
+                            entry = snapshot?.entry ?: DiaryEntry.EMPTY,
+                            stored = snapshot != null && isRecordedDay(snapshot.entry.mood),
+                            baselineUpdatedAt = snapshot?.updatedAt,
+                            baselineExists = snapshot != null,
+                            editingOverride = false,
+                        )
+                    }
+                },
+                onRetry = if (recovery.remoteError != null && state.loadError == null) {
+                    { retryDayLoad() }
+                } else {
+                    null
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+
+        DateNav(
+            date = state.date,
+            onDateChange = { nextDate ->
+                if (nextDate != holder.date && !busy && holder.state.loadError == null &&
+                    !holder.state.loading && !holder.state.saving && !currentUploadingPhoto.value &&
+                    dateNavigationGuard.compareAndSet(false, true)
+                ) {
+                    val snapshot = holder.state
+                    if (!snapshot.draftDirty) {
+                        try {
+                            holder.setDate(nextDate)
+                        } finally {
+                            dateNavigationGuard.set(false)
+                        }
+                    } else if (holder.beginDateNavigation()) {
+                        dateNavigationInProgress = true
+                        scope.launch {
+                            try {
+                                val result = persistDraftBeforeNavigation(snapshot)
+                                if (holder.date != snapshot.date) return@launch
+                                if (result.isSuccess) {
+                                    holder.setDate(nextDate)
+                                } else {
+                                    holder.markError(
+                                        result.exceptionOrNull()?.message ?: DRAFT_NAVIGATION_FAILED_MESSAGE,
+                                        snapshot.date,
+                                    )
+                                }
+                            } finally {
+                                holder.endDateNavigation()
+                                dateNavigationGuard.set(false)
+                                dateNavigationInProgress = false
+                            }
+                        }
+                    } else {
+                        dateNavigationGuard.set(false)
+                    }
+                }
+            },
+            today = today,
+            enabled = !busy && state.loadError == null,
+        )
 
         if (state.lateNightHint) {
             Spacer(Modifier.height(10.dp))
@@ -495,16 +1006,35 @@ fun CheckInScreen(
         }
         Spacer(Modifier.height(16.dp))
 
+        if (draftRecovery != null || pendingRecovery != null) {
+            // Recovery copies are review-only. A form here would invite edits that
+            // cannot be safely saved and could obscure which persisted copy is being
+            // inspected. Both source records remain untouched.
+            Spacer(Modifier.height(48.dp))
+            return@Column
+        }
+
+        if (state.draftStoreError != null) {
+            // Never render an empty editable form when the durable local source itself
+            // could not be read. Any in-memory content stays visible, read-only.
+            if (state.entry.hasContent()) {
+                RecoveryCopyPreview("Návrh zachovaný v tomto telefonu", state.entry)
+            }
+            Spacer(Modifier.height(48.dp))
+            return@Column
+        }
+
         // A stored day reads passively: the check-in tab is where the day is *seen* until
         // the owner asks to change it. An unwritten day opens straight into the form.
         if (state.showsPassiveDay) {
-            StoredDayView(
-                date = state.date,
-                entry = state.entry,
-                scales = scales,
-                onEdit = { holder.startEditing() },
-                onMoveDate = { moveDialogOpen = true },
-            )
+            if (draftRecovery == null) {
+                StoredDayView(
+                    date = state.date,
+                    entry = state.entry,
+                    scales = scales,
+                    onEdit = { holder.startEditing() },
+                )
+            }
             Spacer(Modifier.height(48.dp))
             return@Column
         }
@@ -578,6 +1108,7 @@ fun CheckInScreen(
         PhotoSection(
             photoPath = state.entry.photoPath,
             uploading = uploadingPhoto,
+            enabled = !busy && !state.loading && state.loadError == null,
             error = photoError,
             onPhotoSelected = { uploadPhoto(it) },
             onRemove = {
@@ -617,14 +1148,18 @@ fun CheckInScreen(
             onGenerate = { generateReflection() },
             // Only a day that is really stored can have a reflection filled in
             // later; an unsaved (or empty) day just says the save will write it.
-            canGenerate = state.entry.hasContent(),
+            // A day whose load failed or whose save is in flight is not writable.
+            canGenerate = state.entry.hasContent() && state.canSave && !uploadingPhoto &&
+                draftRecovery == null && pendingRecovery == null,
         )
 
-        PrimaryButton(
-            text = if (state.saving) "⏳ Ukládám..." else "✓ Uložit check-in",
-            enabled = !state.saving,
-            testTag = "save_button",
-        ) { save() }
+        if (draftRecovery == null && pendingRecovery == null) {
+            PrimaryButton(
+                text = if (state.saving) "⏳ Ukládám..." else "✓ Uložit check-in",
+                enabled = state.canSave && !uploadingPhoto,
+                testTag = "save_button",
+            ) { save() }
+        }
 
         if (state.saved) {
             Spacer(Modifier.height(10.dp))
@@ -646,9 +1181,8 @@ fun CheckInScreen(
             }
         }
 
-        if (state.queuedOffline) {
-            // Saved while offline: it reads as saved (it is — on the phone), with
-            // the send note instead of the reflection window. See PendingSaveWorker.
+        if (state.queuedOffline && pendingRecovery == null) {
+            // The record remains local and reviewable; this status never means it reached the server.
             Spacer(Modifier.height(10.dp))
             GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -660,7 +1194,7 @@ fun CheckInScreen(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = "Uloženo v telefonu — odešle se, jakmile budeš online.",
+                        text = "Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextPrimary,
                     )
@@ -700,20 +1234,6 @@ fun CheckInScreen(
                 celebrationQueue =
                     if (celebrationSeen >= 3) emptyList() else celebrationQueue.drop(1)
             },
-        )
-    }
-
-    // ── "Změnit datum": move a stored entry to another day ──
-    if (moveDialogOpen) {
-        MoveDateDialog(
-            currentDate = state.date,
-            conflictDate = moveTarget,
-            onDismiss = {
-                moveDialogOpen = false
-                moveTarget = null
-            },
-            onPickDate = { target -> requestMove(target) },
-            onConfirmOverwrite = { moveTarget?.let { performMove(it) } },
         )
     }
 
@@ -801,7 +1321,6 @@ private fun StoredDayView(
     entry: DiaryEntry,
     scales: List<Scale>,
     onEdit: () -> Unit,
-    onMoveDate: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         DayDetail(
@@ -822,10 +1341,358 @@ private fun StoredDayView(
                 modifier = Modifier.weight(1f),
                 testTag = "checkin_edit",
             ) { onEdit() }
-            SecondaryButton(text = "🗓 Změnit datum", testTag = "checkin_move") { onMoveDate() }
+            SecondaryButton(
+                text = "🗓 Přesun vypnutý",
+                enabled = false,
+                testTag = "checkin_move_disabled",
+                onClick = {},
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Přesun není bezpečný bez atomické ochrany obou dnů. Oba zápisy zůstávají beze změny.",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+        )
+    }
+}
+
+private enum class DraftRecoveryChoice { UNRESOLVED, LOCAL, SERVER }
+private enum class PendingRecoveryChoice { LOCAL, SERVER }
+
+private data class DraftRecoveryView(
+    val record: DraftRecord,
+    val remote: StoredEntrySnapshot?,
+    val remoteError: String?,
+)
+
+private data class PendingRecoveryView(
+    val record: PendingSave,
+    val remote: StoredEntrySnapshot?,
+    val remoteError: String?,
+)
+
+/** Shows both persisted copies and makes comparison a deliberate, non-writing action. */
+@Composable
+private fun DraftRecoveryPanel(
+    recovery: DraftRecoveryView,
+    choice: DraftRecoveryChoice,
+    canChooseCopy: Boolean,
+    onReviewLocal: () -> Unit,
+    onReviewServer: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+            Text(
+                text = if (recovery.remoteError != null) {
+                    "Serverovou kopii se nepodařilo načíst"
+                } else {
+                    "Místní návrh se liší od uloženého dne"
+                },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (recovery.remoteError != null) {
+                    "Místní návrh zůstává uložený. Nejdřív zkus znovu načíst serverovou kopii."
+                } else {
+                    "Na tento den jsou dvě verze. Vyber, kterou chceš prohlédnout. Obě kopie zůstanou zachované."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+            if (recovery.remoteError == null && recovery.remote == null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Na serveru pro tento den už žádný záznam není.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Volba pouze zobrazí kopii; nic neodešle a žádnou kopii nesmaže.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            when (choice) {
+                DraftRecoveryChoice.LOCAL -> Text(
+                    text = "Prohlížíš místní návrh. Kopie na serveru se nezměnila.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+                DraftRecoveryChoice.SERVER -> Text(
+                    text = "Prohlížíš serverovou verzi. Místní návrh zůstává uložený v telefonu.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+                DraftRecoveryChoice.UNRESOLVED -> Unit
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (recovery.remoteError != null) {
+                    "Ukládání je zablokované, dokud se nepodaří načíst serverovou kopii."
+                } else {
+                    "Ukládání je zablokované, protože server neumí bezpečně porovnat verze."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton(
+                text = "Prohlédnout místní návrh",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .recoveryChoiceSemantics("Prohlédnout místní návrh"),
+                enabled = canChooseCopy,
+                testTag = "checkin_review_local_draft",
+                onClick = onReviewLocal,
+            )
+            Spacer(Modifier.height(6.dp))
+            val serverChoiceLabel = if (recovery.remote == null && recovery.remoteError == null) {
+                "Prohlédnout prázdný stav serveru"
+            } else {
+                "Prohlédnout uložený den"
+            }
+            SecondaryButton(
+                text = serverChoiceLabel,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .recoveryChoiceSemantics(serverChoiceLabel),
+                enabled = canChooseCopy,
+                testTag = "checkin_review_server",
+                onClick = onReviewServer,
+            )
+        }
+        RecoveryCopyPreview("Návrh v tomto telefonu", recovery.record.entry)
+        if (recovery.remote != null) {
+            RecoveryCopyPreview("Uložený den na serveru", recovery.remote.entry)
+        } else if (recovery.remoteError == null) {
+            RecoveryCopyPreview("Uložený den na serveru", DiaryEntry.EMPTY)
         }
     }
 }
 
+/** Shows an unsynced local outbox copy and the server copy without dispatching either. */
+@Composable
+private fun PendingRecoveryPanel(
+    recovery: PendingRecoveryView,
+    choice: PendingRecoveryChoice,
+    canChooseCopy: Boolean,
+    onShowLocal: () -> Unit,
+    onShowServer: () -> Unit,
+    onRetry: (() -> Unit)?,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+            Text(
+                text = "Nesynchronizovaný zápis v tomto telefonu",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (recovery.remoteError != null) {
+                    "Serverovou kopii se nepodařilo načíst. Místní kopie zůstává uložená."
+                } else if (recovery.remote == null) {
+                    "Na serveru pro tento den není žádný záznam. Výběr nic neodešle ani nesmaže."
+                } else {
+                    "Vyber, kterou kopii chceš prohlédnout. Výběr nic neodešle ani nesmaže."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            if (choice == PendingRecoveryChoice.LOCAL) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Prohlížíš místní zápis. Kopie na serveru se nezměnila.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+            } else if (recovery.remoteError == null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Prohlížíš serverovou verzi. Místní zápis zůstává uložený v telefonu.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (recovery.remoteError != null) {
+                    "Ukládání je zablokované, dokud se nepodaří načíst serverovou kopii."
+                } else {
+                    "Ukládání je zablokované, protože server neumí bezpečně porovnat verze."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            onRetry?.let { retry ->
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(
+                    text = "🔄 Zkusit znovu",
+                    testTag = "checkin_pending_retry",
+                    onClick = retry,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton(
+                text = "Prohlédnout místní zápis",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .recoveryChoiceSemantics("Prohlédnout místní zápis"),
+                enabled = canChooseCopy,
+                testTag = "checkin_pending_show_local",
+                onClick = onShowLocal,
+            )
+            Spacer(Modifier.height(6.dp))
+            val serverChoiceLabel = if (recovery.remote == null && recovery.remoteError == null) {
+                "Prohlédnout prázdný stav serveru"
+            } else {
+                "Prohlédnout kopii na serveru"
+            }
+            SecondaryButton(
+                text = serverChoiceLabel,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .recoveryChoiceSemantics(serverChoiceLabel),
+                enabled = canChooseCopy,
+                testTag = "checkin_pending_show_server",
+                onClick = onShowServer,
+            )
+        }
+        RecoveryCopyPreview("Zápis uložený jen v telefonu", recovery.record.entry)
+        if (recovery.remote != null) {
+            RecoveryCopyPreview("Uložený den na serveru", recovery.remote.entry)
+        } else if (recovery.remoteError == null) {
+            RecoveryCopyPreview("Uložený den na serveru", DiaryEntry.EMPTY)
+        }
+    }
+}
+
+private fun Modifier.recoveryChoiceSemantics(label: String): Modifier = semantics(mergeDescendants = true) {
+    role = Role.Button
+    contentDescription = translate(label)
+}
+
+@Composable
+private fun RecoveryCopyPreview(title: String, entry: DiaryEntry) {
+    GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = TextPrimary,
+        )
+        Spacer(Modifier.height(8.dp))
+        val rows = recoverySummaryRows(entry)
+        if (rows.isEmpty()) {
+            Text("Záznam neobsahuje žádné údaje.", color = TextSecondary)
+        } else {
+            rows.forEach { (label, value) ->
+                Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                Text(value, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                Spacer(Modifier.height(6.dp))
+            }
+        }
+    }
+}
+
+private fun recoverySummaryRows(entry: DiaryEntry): List<Pair<String, String>> = buildList {
+    add("Nálada" to if (entry.mood > 0) "${entry.moodEmoji} ${entry.mood}/5".trim() else "—")
+    add("Spánek" to entry.sleepQuality.takeIf { it > 0 }?.toString().orEmpty().ifBlank { "—" })
+    add("Stres" to entry.stress.takeIf { it > 0 }?.toString().orEmpty().ifBlank { "—" })
+    add("Aktivity" to entry.activities.filter { it.isNotBlank() }.joinToString(", ").ifBlank { "—" })
+    add(
+        "Návyky" to entry.habits.entries.joinToString(", ") { (name, done) ->
+            "$name: ${if (done) "Splněno" else "Nesplněno"}"
+        }.ifBlank { "—" },
+    )
+    add("Vděčnost" to entry.filteredGratitude().joinToString(" · ").ifBlank { "—" })
+    add("Počasí" to entry.weather.filter { it.isNotBlank() }.joinToString(", ").ifBlank { "—" })
+    add("Poznámka" to entry.note.ifBlank { "—" })
+    add("Fotka" to if (entry.photoPath.isNullOrBlank()) "Nepřiložena" else "Přiložena")
+    if (entry.positiveScaleValues().isNotEmpty()) {
+        add("Škály" to entry.positiveScaleValues().entries.joinToString(", ") { (id, value) -> "$id: $value" })
+    }
+    entry.phoneScreenTimeMinutes?.let { add("Čas na obrazovce" to "$it min") }
+    entry.phoneUnlocks?.let { add("Odemknutí" to it.toString()) }
+    if (entry.phoneTopApps.isNotEmpty()) {
+        add("Nejpoužívanější aplikace" to entry.phoneTopApps.joinToString(", ") { it.app })
+    }
+    entry.aiReflection?.takeIf { it.isNotBlank() }?.let { add("AI reflexe" to it) }
+}
+
+/** A DataStore write is asynchronous, but navigation must remain bounded and cancellable. */
+private fun traceDraftRecovery(message: String) {
+    runCatching {
+        java.io.File("/root/.hermes/profiles/coding/cache/scratch/checkin-trace.txt")
+            .appendText("$message\\n")
+    }
+}
+
+private const val DRAFT_NAVIGATION_TIMEOUT_MS = 3_000L
+private const val DRAFT_NAVIGATION_TIMEOUT_MESSAGE =
+    "Uložení místního návrhu trvalo příliš dlouho. Změna data byla zrušena — zkus to znovu."
+private const val DRAFT_NAVIGATION_FAILED_MESSAGE =
+    "Místní návrh se nepodařilo uložit. Změna data byla zrušena — zkus to znovu."
+
 /** Shown when the reflection flow is asked to run while the AI master switch is off. */
 private const val AI_DISABLED_MESSAGE = "AI je vypnutá — zapneš ji v Nastavení."
+
+private const val DRAFT_STORE_READ_FAILED_MESSAGE = "Načtení se nezdařilo"
+private const val DRAFT_STORE_WRITE_FAILED_MESSAGE = "Uložení se nezdařilo."
+
+/** A server read is required before the server copy can be reviewed. */
+private const val SERVER_UNAVAILABLE_MESSAGE = "Serverovou kopii se nepodařilo načíst."
+
+/** Review does not reconcile versions; writes stay blocked without an atomic server compare-and-swap. */
+private const val DRAFT_CONFLICT_BLOCKED_MESSAGE =
+    "Ukládání je zablokované, protože server neumí bezpečně porovnat verze."
+
+/** Fallback sentence for a read that failed without a message of its own. */
+private const val LOAD_FAILED_MESSAGE = "Zápis se nepodařilo načíst."
+
+/**
+ * Refusal shown by every write path while the stored day is unknown. Deliberately
+ * actionable: the retry button is the only way out, because writing now would
+ * overwrite a day we could not read.
+ */
+private const val LOAD_BLOCKED_MESSAGE =
+    "Den se nepodařilo načíst — zkus to znovu, než budeš ukládat."
+
+/**
+ * Freezes every pointer target under this modifier while a day is loading, a save or
+ * photo upload is in flight, or a date change is waiting on its local draft. The form
+ * must not accept input that a pending server read could replace.
+ *
+ * A parent consuming events in the initial pass is the one place that covers every
+ * section without adding an `enabled` parameter to nine separate composables.
+ */
+private fun Modifier.consumeInputsWhile(blocked: Boolean): Modifier =
+    if (!blocked) {
+        this
+    } else {
+        pointerInput(blocked) {
+            awaitPointerEventScope {
+                while (true) {
+                    awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                }
+            }
+        }
+    }

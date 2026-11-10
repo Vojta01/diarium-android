@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.ui.i18n.Text
+import cz.digitalnivedomi.diarium.ui.i18n.translate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -224,6 +226,11 @@ private fun GoalPeriodSquare(
  * „3/8 období ✓ (38 %) · série 🔥5" for the caption under the squares, or null when
  * there is nothing to report at all.
  *
+ * The two parts are translated before they are joined: the dictionary knows each part
+ * as a whole sentence, but not the arbitrary "period summary · streak" combination a
+ * goal can produce. Composing after translation keeps every reachable wording covered
+ * without a rule for each pairing.
+ *
  * The percentage is left out while nothing is known ([knownPeriods] == 0) instead of
  * being printed as 0/0 or a division by zero; the streak appears only while one is
  * alive, and says nothing about a run of zero.
@@ -232,23 +239,19 @@ internal fun goalSummaryText(metPeriods: Int, knownPeriods: Int, streak: Int): S
     val parts = buildList {
         if (knownPeriods > 0) {
             val percent = (metPeriods * 100f / knownPeriods).roundToInt()
-            add("$metPeriods/$knownPeriods období ✓ ($percent %)")
+            add(translate("$metPeriods/$knownPeriods období ✓ ($percent %)"))
         }
-        if (streak > 0) add("série 🔥$streak")
+        if (streak > 0) add(translate("série 🔥$streak"))
     }
     return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
 }
 
-/** The three-letter Czech month for a period's start ("Kvě" for any May date). */
+/** The three-letter month for a period's start ("Kvě" / "May" for any May date). */
 internal fun monthShortLabel(isoDate: String): String {
     val month = isoDate.drop(5).take(2).toIntOrNull() ?: return ""
-    return MONTHS_SHORT.getOrElse(month - 1) { "" }
+    if (month !in 1..12) return ""
+    return StatsMath.monthShortName(month)
 }
-
-private val MONTHS_SHORT = listOf(
-    "Led", "Úno", "Bře", "Dub", "Kvě", "Čvn",
-    "Čvc", "Srp", "Zář", "Říj", "Lis", "Pro",
-)
 
 /**
  * Activity-key → emoji for the card's title row.

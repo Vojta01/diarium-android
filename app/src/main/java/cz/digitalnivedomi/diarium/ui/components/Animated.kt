@@ -216,14 +216,42 @@ fun AnimatedCounter(
     durationMillis: Int = MotionTokens.slowMillis,
 ) {
     AnimatedCounter(
-        value = value.toDouble(),
+        value = value,
+        label = { prefix + it.toString() + suffix },
         modifier = modifier,
         style = style,
         color = color,
-        decimals = 0,
-        prefix = prefix,
-        suffix = suffix,
         durationMillis = durationMillis,
+    )
+}
+
+/**
+ * [AnimatedCounter] whose whole label is built by [label] from the frame's count.
+ *
+ * Use this when the number carries a pluralised unit ("17 dní" / "17 days"): the label
+ * function is the single place the count is rendered, so a suffix that also carries the
+ * count cannot duplicate it.
+ */
+@Composable
+fun AnimatedCounter(
+    value: Int,
+    label: (Int) -> String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.headlineMedium,
+    color: Color = TextPrimary,
+    durationMillis: Int = MotionTokens.slowMillis,
+) {
+    val animated by animateFloatAsState(
+        targetValue = value.toFloat(),
+        animationSpec = tween(durationMillis = durationMillis, easing = MotionTokens.decelerateEasing),
+        label = "animatedCounter",
+    )
+    Text(
+        text = label(animated.roundToInt()),
+        modifier = modifier,
+        style = style,
+        color = color,
+        maxLines = 1,
     )
 }
 

@@ -36,9 +36,10 @@ class OnboardingDeps(
             val sessionStore = AppClients.sessionStore(context)
             val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
+            val ownerId = session.userId()
             return OnboardingDeps(
-                profile = ProfileStore.from(context),
-                aiKeys = AiKeyStore.forContext(context),
+                profile = ProfileStore.from(context, ownerId),
+                aiKeys = AiKeyStore.forContext(context, ownerId),
                 pickers = PickersRepository(client, session),
                 goals = GoalsRepository(client, session),
                 openUrl = { url ->

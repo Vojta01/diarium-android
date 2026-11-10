@@ -29,9 +29,9 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import java.io.File
 
 /**
- * Fotka — camera or gallery. The picked image is uploaded to the public
- * `diary-photos` bucket at `{uid}/{date}.jpg` and only its public URL is stored
- * in `entries.photo_path` (never image bytes in the DB).
+ * Fotka — camera or gallery. The picked image is staged at a unique path in the
+ * public `diary-photos` bucket; its URL is written to `entries.photo_path` only
+ * when the entry save succeeds (never image bytes in the DB).
  */
 @Composable
 fun PhotoSection(
@@ -40,6 +40,8 @@ fun PhotoSection(
     onPhotoSelected: (Uri) -> Unit,
     onRemove: () -> Unit,
     error: String? = null,
+    /** False while the day is saving/uploading or its stored row could not be read. */
+    enabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -61,6 +63,7 @@ fun PhotoSection(
             SecondaryButton(
                 text = "📷 Vyfotit",
                 modifier = Modifier.weight(1f),
+                enabled = enabled && !uploading,
                 testTag = "photo_camera",
             ) {
                 val dir = File(context.cacheDir, "checkin_photos").apply { mkdirs() }
@@ -76,6 +79,7 @@ fun PhotoSection(
             SecondaryButton(
                 text = "🖼️ Z galerie",
                 modifier = Modifier.weight(1f),
+                enabled = enabled && !uploading,
                 testTag = "photo_gallery",
             ) {
                 galleryLauncher.launch(
@@ -103,7 +107,11 @@ fun PhotoSection(
                         .clip(RoundedCornerShape(14.dp)),
                 )
                 Spacer(Modifier.height(8.dp))
-                SecondaryButton(text = "🗑 Odebrat", testTag = "photo_remove") { onRemove() }
+                SecondaryButton(
+                    text = "🗑 Odebrat",
+                    enabled = enabled && !uploading,
+                    testTag = "photo_remove",
+                ) { onRemove() }
             }
 
             else -> Text(

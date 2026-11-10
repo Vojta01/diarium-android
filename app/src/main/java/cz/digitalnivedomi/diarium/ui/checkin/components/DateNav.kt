@@ -39,6 +39,7 @@ import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
+import java.time.LocalDate
 
 /**
  * Day header: ◀ / displayed date / ▶ plus a Czech date picker.
@@ -52,19 +53,32 @@ fun DateNav(
     date: String,
     onDateChange: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /** The day "forward" is measured against; a parameter so a screenshot can pin it. */
+    today: LocalDate = LocalDate.now(),
+    /**
+     * False while a save or photo upload is in flight: the action works from a
+     * snapshot of the day it started on, so the day must not change underneath it.
+     */
+    enabled: Boolean = true,
 ) {
     var pickerOpen by remember { mutableStateOf(false) }
-    val canGoForward = date < CheckInDates.today()
+    val canGoForward = enabled && date < today.toString()
 
     GlassCard(modifier = modifier, accent = Indigo) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            GlassIconButton("◀", testTag = "date_prev") { onDateChange(CheckInDates.shift(date, -1)) }
+            GlassIconButton(
+                text = "◀",
+                testTag = "date_prev",
+                accent = if (enabled) Indigo else TextTertiary,
+            ) {
+                if (enabled) onDateChange(CheckInDates.shift(date, -1))
+            }
             Column(
                 modifier = Modifier.weight(1f),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    text = CheckInDates.display(date),
+                    text = CheckInDates.display(date, today),
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
                 )
@@ -74,7 +88,7 @@ fun DateNav(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
                         .background(Color.White.copy(alpha = 0.06f))
-                        .clickable { pickerOpen = true }
+                        .clickable(enabled = enabled) { pickerOpen = true }
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                 ) {
                     Text("📅 Vybrat datum", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
@@ -99,9 +113,12 @@ fun DateNav(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        pickerState.selectedDateMillis?.let { onDateChange(CheckInDates.fromEpochMillis(it)) }
+                        if (enabled) {
+                            pickerState.selectedDateMillis?.let { onDateChange(CheckInDates.fromEpochMillis(it)) }
+                        }
                         pickerOpen = false
                     },
+                    enabled = enabled,
                 ) { Text("Vybrat") }
             },
             dismissButton = {
@@ -169,6 +186,7 @@ fun PrimaryButton(
 fun SecondaryButton(
     text: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     testTag: String? = null,
     onClick: () -> Unit,
 ) {
@@ -178,10 +196,14 @@ fun SecondaryButton(
             .testTagOrEmpty(testTag)
             .clip(shape)
             .background(Color.White.copy(alpha = 0.08f))
-            .clickable { onClick() }
+            .clickable(enabled = enabled) { onClick() }
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge, color = TextPrimary)
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (enabled) TextPrimary else TextTertiary,
+        )
     }
 }
 

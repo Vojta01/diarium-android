@@ -2,19 +2,30 @@ package cz.digitalnivedomi.diarium.core.data
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import cz.digitalnivedomi.diarium.auth.SessionStore
 import kotlinx.coroutines.test.runTest
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.io.IOException
 import java.net.URLDecoder
 import java.time.LocalDate
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The whole on-device generation path, with both HTTP edges faked: the Supabase
@@ -115,7 +126,7 @@ class ReportGeneratorTest {
         // 3) The row is inserted with the user JWT and the full period.
         val insert = supabaseRequests.single { it.method == "POST" }
         assertEquals("$BASE_URL/ai_reports", insert.url)
-        assertEquals("Bearer jwt-access-token", insert.headers["Authorization"])
+        assertEquals("Bearer ${accessToken(USER_ID, "jwt-access-token")}", insert.headers["Authorization"])
         val row = JSONObject(insert.body!!)
         assertEquals(USER_ID, row.getString("user_id"))
         assertEquals("weekly", row.getString("type"))
@@ -179,6 +190,110 @@ class ReportGeneratorTest {
         assertEquals("Napotřetí.", row.getString("content"))
     }
 
+    @Test
+    fun `account switch while a report read is blocked stops the remaining requests`() = runBlocking {
+        useRealisticFixtures()
+        val enteredEntries = CountDownLatch(1)
+        val releaseEntries = CountDownLatch(1)
+        val requests = Collections.synchronizedList(mutableListOf<HttpRequest>())
+        val deepSeekCalls = Collections.synchronizedList(mutableListOf<HttpRequest>())
+        val store = signedInStore(USER_ID, "token-account-a")
+        val transport = HttpTransport { request ->
+            requests += request
+            if (request.url.startsWith("$BASE_URL/entries?")) {
+                enteredEntries.countDown()
+                check(releaseEntries.await(5, TimeUnit.SECONDS))
+            }
+            when {
+                request.url.startsWith("$BASE_URL/entries?") -> HttpResponse(200, entriesJson)
+                request.url.startsWith("$BASE_URL/scales?") -> HttpResponse(200, scalesJson)
+                request.url.startsWith("$BASE_URL/habit_catalog?") -> HttpResponse(200, catalogJson)
+                request.url.startsWith("$BASE_URL/user_habits?") -> HttpResponse(200, userHabitsJson)
+                request.url.startsWith("$BASE_URL/app_settings?") -> HttpResponse(200, appSettingsJson)
+                request.url == "$BASE_URL/ai_reports" -> HttpResponse(201, "[]")
+                else -> HttpResponse(404, "[]")
+            }
+        }
+        val client = SupabaseClient(
+            sessionStore = store,
+            transport = transport,
+            baseUrl = BASE_URL,
+            anonKey = "anon-test-key",
+        ).forOwner(USER_ID)
+        val generator = ReportGenerator(
+            client = client,
+            keyStore = AiKeyStore(FakeSlot("sk-test-key"), USER_ID),
+            session = SessionContext(store),
+            deepSeek = HttpTransport { request ->
+                deepSeekCalls += request
+                HttpResponse(200, completion("must not be sent after switch"))
+            },
+            deepSeekUrl = DEEPSEEK_URL,
+            today = { LocalDate.of(2026, 10, 12) },
+            retryDelayMs = 0,
+            expectedOwnerId = USER_ID,
+        )
+        val outcome = AtomicReference<ReportOutcome?>()
+        val failure = AtomicReference<Throwable?>()
+        val worker = Thread {
+            try {
+                outcome.set(runBlocking { generator.generate("weekly") })
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+
+        worker.start()
+        assertTrue("report did not reach the fake entries network", enteredEntries.await(5, TimeUnit.SECONDS))
+        store.save(signedInStore(OTHER_USER_ID, "token-account-b").let { JSONObject(it.sessionJson()!!) })
+        releaseEntries.countDown()
+        worker.join(5_000)
+
+        assertFalse("report worker thread should complete", worker.isAlive)
+        assertNull(failure.get())
+        assertTrue(outcome.get() is ReportOutcome.Failed)
+        assertEquals("only the pre-switch Account A request is allowed", 1, requests.size)
+        val dispatched = requests.single()
+        assertTrue(dispatched.url.contains("user_id=eq.$USER_ID"))
+        assertEquals("Bearer ${accessToken(USER_ID, "token-account-a")}", dispatched.headers["Authorization"])
+        assertTrue("no prompt may be sent after the account switch", deepSeekCalls.isEmpty())
+        assertFalse("no report row may be written after the account switch", requests.any { it.method == "POST" })
+    }
+
+    @Test
+    fun `a scheduled owner mismatch fails before any read or AI request`() = runTest {
+        val store = signedInStore(OTHER_USER_ID, "token-account-b")
+        val requests = mutableListOf<HttpRequest>()
+        val deepSeekCalls = mutableListOf<HttpRequest>()
+        val client = SupabaseClient(
+            sessionStore = store,
+            transport = HttpTransport { request ->
+                requests += request
+                HttpResponse(200, "[]")
+            },
+            baseUrl = BASE_URL,
+            anonKey = "anon-test-key",
+        )
+        val generator = ReportGenerator(
+            client = client,
+            keyStore = AiKeyStore(FakeSlot("sk-test-key"), USER_ID),
+            session = SessionContext(store),
+            deepSeek = HttpTransport { request ->
+                deepSeekCalls += request
+                HttpResponse(200, completion("must not run"))
+            },
+            deepSeekUrl = DEEPSEEK_URL,
+            expectedOwnerId = USER_ID,
+        )
+
+        val outcome = generator.generate("weekly")
+
+        assertTrue(outcome is ReportOutcome.Failed)
+        assertEquals(ReportGenerator.OWNER_CHANGED, (outcome as ReportOutcome.Failed).reason)
+        assertTrue("no Supabase request may use a switched account", requests.isEmpty())
+        assertTrue("no AI prompt may be sent for the wrong owner", deepSeekCalls.isEmpty())
+    }
+
     // ── failure paths ───────────────────────────────────────────────────────
 
     @Test
@@ -230,7 +345,7 @@ class ReportGeneratorTest {
 
     @Test
     fun `without a key nothing is sent anywhere`() = runTest {
-        val outcome = generator(keyStore = AiKeyStore(FakeSlot(null))).generate("weekly")
+        val outcome = generator(keyStore = AiKeyStore(FakeSlot(null), USER_ID)).generate("weekly")
 
         assertEquals(ReportOutcome.NoKey, outcome)
         assertTrue(supabaseRequests.isEmpty())
@@ -253,6 +368,19 @@ class ReportGeneratorTest {
     // ── personalisation wiring ──────────────────────────────────────────────
 
     @Test
+    fun `profile DataStore IO failure fails report safely instead of being silently ignored`() = runTest {
+        useRealisticFixtures()
+        deepSeekPlan = listOf(HttpResponse(200, completion("must not be generated")))
+        val profile = ProfileStore.forDataStore(FailedProfileDataStore(), USER_ID)
+
+        val outcome = generator(profile = profile).generate("weekly")
+
+        assertEquals(ReportOutcome.Failed(ReportGenerator.CONNECT_FAILED), outcome)
+        assertTrue("a profile read failure must stop the report before DeepSeek", deepSeekRequests.isEmpty())
+        assertFalse("a failed profile load must not insert a report", supabaseRequests.any { it.method == "POST" })
+    }
+
+    @Test
     fun `the wired profile and goals reach the model's prompt`() = runTest {
         useRealisticFixtures()
         goalsJson = JSONArray().put(
@@ -267,8 +395,8 @@ class ReportGeneratorTest {
         ).toString()
         deepSeekPlan = listOf(HttpResponse(200, completion("ok")))
 
-        val profile = ProfileStore.from(context)
-        profile.saveName("Vojta")
+        val profile = ProfileStore.from(context, USER_ID)
+        profile.saveName("Private local name")
         profile.saveBirthYear(1990)
         val client = SupabaseClient(
             sessionStore = signedInStore(),
@@ -279,7 +407,7 @@ class ReportGeneratorTest {
 
         val outcome = ReportGenerator(
             client = client,
-            keyStore = AiKeyStore(FakeSlot("sk-test-key")),
+            keyStore = AiKeyStore(FakeSlot("sk-test-key"), USER_ID),
             session = SessionContext(signedInStore()),
             deepSeek = deepSeekTransport,
             deepSeekUrl = DEEPSEEK_URL,
@@ -292,9 +420,7 @@ class ReportGeneratorTest {
         assertEquals(ReportOutcome.Generated, outcome)
         val userPrompt = JSONObject(deepSeekRequests.single().body!!)
             .getJSONArray("messages").getJSONObject(1).getString("content")
-        assertTrue(userPrompt.startsWith("👤 Uživatel: Vojta (narozen 1990)\n"))
-        // sport is logged on 10-05 and 10-06; the weekly report covers
-        // 10-05..10-11, so that calendar week is complete: 2/3 with a 2-day streak.
+        assertTrue(userPrompt.startsWith("👤 Uživatel: Private local name (narozen 1990)\n"))
         assertTrue(userPrompt.contains("- Běhání: 2/3 (týden) — zbývá 1; série 🔥2"))
     }
 
@@ -341,8 +467,9 @@ class ReportGeneratorTest {
         .toString()
 
     private fun generator(
-        keyStore: AiKeyStore = AiKeyStore(FakeSlot("sk-test-key")),
+        keyStore: AiKeyStore = AiKeyStore(FakeSlot("sk-test-key"), USER_ID),
         today: LocalDate = LocalDate.of(2026, 10, 12),
+        profile: ProfileStore? = null,
     ): ReportGenerator = ReportGenerator(
         client = SupabaseClient(
             sessionStore = signedInStore(),
@@ -356,37 +483,59 @@ class ReportGeneratorTest {
         deepSeekUrl = DEEPSEEK_URL,
         today = { today },
         retryDelayMs = 0,
+        profile = profile,
     )
 
     /** In-memory slot so the generator test needs no Keystore. */
     private class FakeSlot(private var value: String?) : SecretSlot {
-        override fun read(): String? = value
-        override fun write(value: String) {
+        override fun read(ownerId: String): String? = value
+        override fun write(ownerId: String, value: String) {
             this.value = value
         }
 
-        override fun erase() {
+        override fun erase(ownerId: String) {
             value = null
         }
     }
 
     /** A signed-in session; a cleared one means "before login / after logout". */
-    private fun signedInStore(): SessionStore = SessionStore(context).apply {
+    private fun signedInStore(
+        userId: String = USER_ID,
+        token: String = "jwt-access-token",
+    ): SessionStore = SessionStore(context).apply {
         save(
             JSONObject().apply {
-                put("access_token", "jwt-access-token")
-                put("refresh_token", "refresh-1")
+                put("access_token", accessToken(userId, token))
+                put("refresh_token", "refresh-$userId")
                 put("expires_at", System.currentTimeMillis() / 1000 + 3600)
-                put("user", JSONObject().put("id", USER_ID))
+                put("user", JSONObject().put("id", userId))
             },
         )
+    }
+
+    private fun accessToken(userId: String, marker: String): String {
+        val encoder = java.util.Base64.getUrlEncoder().withoutPadding()
+        val header = encoder.encodeToString("""{"alg":"HS256","typ":"JWT"}""".toByteArray())
+        val payload = encoder.encodeToString(
+            JSONObject().put("sub", userId).put("test_marker", marker).toString().toByteArray(),
+        )
+        return "$header.$payload.test-signature"
     }
 
     private fun decoded(request: HttpRequest): String =
         URLDecoder.decode(request.url.substringAfter('?'), Charsets.UTF_8.name())
 
+    private class FailedProfileDataStore : DataStore<Preferences> {
+        override val data: Flow<Preferences> = flow { throw IOException("private profile path unavailable") }
+
+        override suspend fun updateData(
+            transform: suspend (Preferences) -> Preferences,
+        ): Preferences = throw IOException("private profile path unavailable")
+    }
+
     private companion object {
         const val USER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
+        const val OTHER_USER_ID = "a1b2c3d4-e5f6-47a8-9012-3456789abcde"
         const val BASE_URL = "https://example.supabase.co/rest/v1"
         const val DEEPSEEK_URL = "https://deepseek.test/chat/completions"
     }

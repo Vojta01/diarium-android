@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.reports
 
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -44,6 +45,13 @@ object ReportsState {
 
     const val TITLE = "AI Přehledy"
     const val SUBTITLE = "Týdenní a měsíční souhrn deníku, který pro tebe napíše AI."
+
+    /**
+     * Shown only in the English UI: the report body is Czech because the generation
+     * prompt asks DeepSeek for Czech prose. Without this line an English screen full of
+     * Czech paragraphs looks like a translation bug rather than a documented limit.
+     */
+    const val LANGUAGE_NOTE = "AI píše přehledy česky. Rozhraní zůstává v tvém jazyce."
 
     const val LOADING_LABEL = "Načítám přehledy…"
     const val LOAD_FAILED_TITLE = "Načtení se nezdařilo"
@@ -96,35 +104,40 @@ object ReportsState {
     }
 
     /**
-     * The covered period as a Czech range: the year is printed once when both ends share
-     * it ("1. 9. – 8. 9. 2026") and on both sides when the range crosses a new year
-     * ("29. 12. 2025 – 4. 1. 2026"). A date that does not parse is shown as it arrived
-     * instead of being dropped, and nothing ever prints "null".
+     * The covered period as a range in the selected UI language: the year is printed
+     * once when both ends share it ("1. 9. – 8. 9. 2026" / "1 Sep – 8 Sep 2026") and
+     * on both sides when the range crosses a new year. A date that does not parse is
+     * shown as it arrived instead of being dropped, and nothing ever prints "null".
      */
     fun periodLabel(start: String, end: String): String {
         val from = parseDate(start)
         val to = parseDate(end)
         return when {
             from != null && to != null ->
-                if (from.year == to.year) "${dayMonth(from)} – ${full(to)}"
-                else "${full(from)} – ${full(to)}"
+                if (from.year == to.year) {
+                    "${UiDates.dayMonth().format(from)} – ${UiDates.numericDate().format(to)}"
+                } else {
+                    "${UiDates.numericDate().format(from)} – ${UiDates.numericDate().format(to)}"
+                }
 
             // One end (or both) unreadable: fall back to the raw text, minus blanks.
             else -> listOf(
-                from?.let { full(it) } ?: start.trim(),
-                to?.let { full(it) } ?: end.trim(),
+                from?.let { UiDates.numericDate().format(it) } ?: start.trim(),
+                to?.let { UiDates.numericDate().format(it) } ?: end.trim(),
             ).filter { it.isNotEmpty() }.joinToString(" – ")
         }
     }
 
     /**
-     * When the report was minted, in Prague time: "Vygenerováno 8. 9. 2026 v 19:40".
+     * When the report was minted, in Prague time: "Vygenerováno 8. 9. 2026 v 19:40"
+     * in Czech, "Generated 8 Sep 2026 at 19:40" in English (the label words come from
+     * the normal translation layer; the date comes from [UiDates]).
      * An empty string for anything that does not parse — the caption is simply left out.
      */
     fun createdLabel(createdAt: String): String {
         val moment = pragueDateTime(createdAt) ?: return ""
         val time = String.format(Locale.ROOT, "%02d:%02d", moment.hour, moment.minute)
-        return "Vygenerováno ${full(moment)} v $time"
+        return "Vygenerováno ${UiDates.numericDate().format(moment)} v $time"
     }
 
     /**
@@ -249,15 +262,6 @@ object ReportsState {
 
     private fun parseDate(raw: String): LocalDate? =
         runCatching { LocalDate.parse(raw.trim()) }.getOrNull()
-
-    /** The day and month with a trailing dot ("1. 9."), the shape Czech ranges use. */
-    private fun dayMonth(date: LocalDate): String = "${date.dayOfMonth}. ${date.monthValue}."
-
-    private fun full(date: LocalDate): String =
-        "${date.dayOfMonth}. ${date.monthValue}. ${date.year}"
-
-    private fun full(date: ZonedDateTime): String =
-        "${date.dayOfMonth}. ${date.monthValue}. ${date.year}"
 
     /**
      * A timestamp from the server, in Prague time — offset or `Z` both work, and a naive

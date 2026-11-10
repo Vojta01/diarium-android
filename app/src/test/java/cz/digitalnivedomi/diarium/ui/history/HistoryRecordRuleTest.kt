@@ -165,6 +165,23 @@ class HistoryRecordRuleTest {
     }
 
     @Test
+    fun `the empty month sentence names the month in proper Czech`() {
+        assertEquals(
+            "V měsíci Září 2026 nemáš žádný záznam. Klikni na den v kalendáři a zapiš, jaký byl.",
+            monthEmptyText("Září 2026"),
+        )
+    }
+
+    @Test
+    fun `the synced-only month sentence is one proper Czech sentence`() {
+        assertEquals(
+            "V měsíci Září 2026 máš jen data stažená z telefonu (screen time, odemknutí). " +
+                "Bez vyplněné nálady se den jako zápis nepočítá — klikni na den a doplň check-in.",
+            monthSyncedOnlyText("Září 2026"),
+        )
+    }
+
+    @Test
     fun `the detail's short marker is the agreed Czech hint`() {
         assertEquals("bez nálady — check-in nevyplněn", UNRECORDED_HINT)
     }

@@ -39,10 +39,11 @@ class AiReflectionRepositoryTest {
         response
     }
 
-    private fun repository(store: SessionStore?): AiReflectionRepository = AiReflectionRepository(
+    private fun repository(store: SessionStore?, ownerId: String? = null): AiReflectionRepository = AiReflectionRepository(
         sessionStore = store,
         transport = transport,
         endpoint = BuildConfig.AI_REFLECT_URL,
+        expectedOwnerId = ownerId,
     )
 
     private fun repository() = repository(signedInStore())
@@ -207,6 +208,51 @@ class AiReflectionRepositoryTest {
     }
 
     @Test
+    fun `an owner-bound reflection cannot dispatch after the session is replaced`() = runTest {
+        val store = signedInStore()
+        val result = repository(store, ownerId = USER_ID).also {
+            store.withMetaName("Other", userId = OTHER_USER_ID, token = "other-jwt")
+        }.generate(DATE, DiaryEntry(note = "private entry"))
+
+        assertEquals(AiReflectionRepository.MESSAGE_SIGNED_OUT, result.exceptionOrNull()?.message)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun `an in-flight owner's entry keeps its token and cannot persist with replacement account`() = runTest {
+        val store = signedInStore()
+        val endpointRequests = mutableListOf<HttpRequest>()
+        val endpointTransport = HttpTransport { request ->
+            endpointRequests += request
+            store.withMetaName("Other", userId = OTHER_USER_ID, token = "other-jwt")
+            response
+        }
+        val persistenceRequests = mutableListOf<HttpRequest>()
+        val persistenceTransport = HttpTransport { request ->
+            persistenceRequests += request
+            HttpResponse(204, "")
+        }
+        val repo = AiReflectionRepository(
+            sessionStore = store,
+            transport = endpointTransport,
+            endpoint = "https://example.invalid/api/ai/reflect",
+            supabase = SupabaseClient(
+                sessionStore = store,
+                transport = persistenceTransport,
+                baseUrl = "https://example.invalid/rest/v1",
+                anonKey = "test-anon",
+            ),
+            expectedOwnerId = USER_ID,
+        )
+
+        val result = repo.generate(DATE, DiaryEntry(note = "private account A entry"))
+
+        assertEquals("Dnes sis to užil.", result.getOrNull())
+        assertEquals("Bearer jwt-access-token", endpointRequests.single().headers["Authorization"])
+        assertTrue(persistenceRequests.isEmpty())
+    }
+
+    @Test
     fun `the name is sent only when the session knows it`() = runTest {
         repository(SessionStore(context).withMetaName(null)).generate(DATE, DiaryEntry())
         assertFalse(JSONObject(sent.single().body!!).has("userName"))
@@ -252,16 +298,20 @@ class AiReflectionRepositoryTest {
     private fun signedOutStore(): SessionStore = SessionStore(context).apply { clear() }
 
     /** A signed-in session; [name] null means the metadata carries no `full_name`. */
-    private fun SessionStore.withMetaName(name: String?): SessionStore = apply {
+    private fun SessionStore.withMetaName(
+        name: String?,
+        userId: String = USER_ID,
+        token: String = "jwt-access-token",
+    ): SessionStore = apply {
         save(
             JSONObject().apply {
-                put("access_token", "jwt-access-token")
+                put("access_token", token)
                 put("refresh_token", "refresh-1")
                 put("expires_at", System.currentTimeMillis() / 1000 + 3600)
                 put(
                     "user",
                     JSONObject().apply {
-                        put("id", USER_ID)
+                        put("id", userId)
                         if (name != null) {
                             put("user_metadata", JSONObject().put("full_name", name))
                         }
@@ -274,5 +324,6 @@ class AiReflectionRepositoryTest {
     private companion object {
         const val DATE = "2026-09-10"
         const val USER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
+        const val OTHER_USER_ID = "6f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a13"
     }
 }

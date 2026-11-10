@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,9 +35,7 @@ import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import cz.digitalnivedomi.diarium.ui.theme.WarningAmber
-import java.time.DayOfWeek
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 /**
  * ▲ Nejlepší den / ▼ Nejhorší den — the window's two mood extremes as one premium
@@ -191,24 +190,17 @@ private fun BestWorstDayCard(
 }
 
 /** Czech numeric date, "5. 9. 2026"; the raw value when it is not a date. */
-private val bwDatePattern: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("d. M. yyyy", Locale("cs", "CZ"))
+private val bwDatePattern: DateTimeFormatter
+    get() = UiDates.numericDate()
 
 private fun bwDate(date: String): String =
     CheckInDates.parse(date)?.format(bwDatePattern) ?: date
 
-/** Czech weekday name, lowercase — "pátek", empty when the value is not a date. */
-private fun bwWeekday(date: String): String =
-    when (CheckInDates.parse(date)?.dayOfWeek) {
-        DayOfWeek.MONDAY -> "pondělí"
-        DayOfWeek.TUESDAY -> "úterý"
-        DayOfWeek.WEDNESDAY -> "středa"
-        DayOfWeek.THURSDAY -> "čtvrtek"
-        DayOfWeek.FRIDAY -> "pátek"
-        DayOfWeek.SATURDAY -> "sobota"
-        DayOfWeek.SUNDAY -> "neděle"
-        null -> ""
-    }
+/** Weekday name in the UI language — "pátek" / "Friday", empty when it is not a date. */
+private fun bwWeekday(date: String): String {
+    val dayOfWeek = CheckInDates.parse(date)?.dayOfWeek ?: return ""
+    return StatsMath.weekdayNameInline(dayOfWeek)
+}
 
 /** Czech plural for an activity count: 1 aktivita, 2–4 aktivity, 5+ aktivit. */
 private fun activityWord(count: Int): String = when {

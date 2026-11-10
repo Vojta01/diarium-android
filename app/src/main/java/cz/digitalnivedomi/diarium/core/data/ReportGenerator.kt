@@ -86,6 +86,8 @@ class ReportGenerator(
      * for the report's period; null (or a failed read) simply omits the section.
      */
     private val goals: GoalsRepository? = null,
+    /** Immutable account captured by scheduled work; null only for direct callers. */
+    private val expectedOwnerId: String? = null,
 ) {
 
     suspend fun generate(
@@ -108,9 +110,15 @@ class ReportGenerator(
     }
 
     private suspend fun generateBlocking(type: String, requestedEnd: LocalDate?, requestedStart: LocalDate?): ReportOutcome {
-        // No key, no call — the worker then walks the server-fallback path.
+        // Owner identity is established before touching the owner-scoped key or profile.
+        val activeOwner = session.verifiedUserId() ?: return ReportOutcome.Failed(SIGNED_OUT)
+        val userId = expectedOwnerId?.takeIf { it.isNotBlank() } ?: activeOwner
+        if (activeOwner != userId || !ownerStillCurrent(userId)) {
+            return ReportOutcome.Failed(OWNER_CHANGED)
+        }
+        // No key, no call — the worker then walks the owner-pinned server fallback path.
         val apiKey = keyStore.key() ?: return ReportOutcome.NoKey
-        val userId = session.userId() ?: return ReportOutcome.Failed(SIGNED_OUT)
+        val ownerClient = client.forOwner(userId)
 
         // A late report must describe the week it was scheduled for, not the
         // week that started after it. A weekly run therefore defaults to the
@@ -133,23 +141,30 @@ class ReportGenerator(
         val fromDate = periodStart.toString()
         val periodEndIso = periodEnd.toString()
 
-        val entries = readEntries(userId, fromDate, periodEndIso)
+        val entries = readEntries(ownerClient, userId, fromDate, periodEndIso)
             ?: return ReportOutcome.Failed("entries read failed")
+        if (!ownerStillCurrent(userId)) return ReportOutcome.Failed(OWNER_CHANGED)
         if (entries.size < MIN_ENTRIES) return ReportOutcome.NotEnoughData
 
-        val scaleNameMap = readScaleNames(userId)
-        val habitMap = readHabitMap(userId)
+        val scaleNameMap = readScaleNames(ownerClient, userId)
+        if (!ownerStillCurrent(userId)) return ReportOutcome.Failed(OWNER_CHANGED)
+        val habitMap = readHabitMap(ownerClient, userId)
+        if (!ownerStillCurrent(userId)) return ReportOutcome.Failed(OWNER_CHANGED)
 
-        // Personalisation is best-effort: a failed profile read drops the header
-        // (null), a failed goals read drops the section (empty list) — neither
-        // may cost the user their report. Cancellation still propagates.
+        // Personalisation is best-effort, but only read for the captured owner
+        // while that same owner remains active. No additional prompt data is added.
         val profileData = try {
             profile?.load()
         } catch (e: CancellationException) {
             throw e
+        } catch (e: IOException) {
+            // A broken local profile file is a report failure, not a blank profile
+            // to silently substitute into a potentially sensitive prompt.
+            throw e
         } catch (_: Exception) {
             null
         }
+        if (!ownerStillCurrent(userId)) return ReportOutcome.Failed(OWNER_CHANGED)
         val goalsProgress = try {
             goals?.loadProgress(asOf = periodEnd)
         } catch (e: CancellationException) {
@@ -157,6 +172,7 @@ class ReportGenerator(
         } catch (_: Exception) {
             emptyList()
         }.orEmpty()
+        if (!ownerStillCurrent(userId)) return ReportOutcome.Failed(OWNER_CHANGED)
 
         val userPrompt = ReportPromptBuilder.buildPeriodPrompt(
             entries = entries,
@@ -167,10 +183,12 @@ class ReportGenerator(
             birthYear = profileData?.birthYear,
             goals = goalsProgress,
         )
-        val model = resolveModel()
+        val model = resolveModel(ownerClient)
+        if (!ownerStillCurrent(userId)) return ReportOutcome.Failed(OWNER_CHANGED)
 
-        val analysis = requestAnalysis(apiKey, type, model, userPrompt)
-            ?: return ReportOutcome.Failed(EMPTY_ANALYSIS)
+        val analysis = requestAnalysis(apiKey, type, model, userPrompt, userId)
+        if (!ownerStillCurrent(userId)) return ReportOutcome.Failed(OWNER_CHANGED)
+        analysis ?: return ReportOutcome.Failed(EMPTY_ANALYSIS)
 
         val body = JSONObject().apply {
             put("user_id", userId)
@@ -179,18 +197,31 @@ class ReportGenerator(
             put("period_end", periodEndIso)
             put("content", analysis)
         }
-        val inserted = client.post(TABLE, body)
+        if (!ownerStillCurrent(userId)) return ReportOutcome.Failed(OWNER_CHANGED)
+        val inserted = ownerClient.post(TABLE, body)
         if (!inserted.isSuccessful) {
             return ReportOutcome.Failed("save failed (${inserted.code})")
         }
         return ReportOutcome.Generated
     }
 
+    /** Re-check before dispatch; refreshing a token is allowed only for this exact owner. */
+    private fun ownerStillCurrent(ownerId: String): Boolean {
+        if (session.verifiedUserId() != ownerId) return false
+        if (session.validAccessTokenForUser(ownerId) == null) return false
+        return session.verifiedUserId() == ownerId
+    }
+
     // ── reads (user JWT, RLS-scoped) ────────────────────────────────────────
 
     /** The window's entries, oldest first; null when the read itself failed. */
-    private fun readEntries(userId: String, fromDate: String, toDate: String): List<ReportEntry>? {
-        val resp = client.get(
+    private fun readEntries(
+        ownerClient: SupabaseClient,
+        userId: String,
+        fromDate: String,
+        toDate: String,
+    ): List<ReportEntry>? {
+        val resp = ownerClient.get(
             "entries",
             mapOf(
                 "user_id" to "eq.$userId",
@@ -210,9 +241,9 @@ class ReportGenerator(
     }
 
     /** `scales.id` → `name`; a failure degrades to an empty map (route parity). */
-    private fun readScaleNames(userId: String): Map<String, String> {
+    private fun readScaleNames(ownerClient: SupabaseClient, userId: String): Map<String, String> {
         return try {
-            val resp = client.get("scales", mapOf("user_id" to "eq.$userId", "select" to "id,name"))
+            val resp = ownerClient.get("scales", mapOf("user_id" to "eq.$userId", "select" to "id,name"))
             if (!resp.isSuccessful) return emptyMap()
             val rows = resp.asJsonArray() ?: return emptyMap()
             val out = LinkedHashMap<String, String>()
@@ -229,13 +260,13 @@ class ReportGenerator(
     }
 
     /** Catalogue defaults merged with the user's active rows (route's merge). */
-    private fun readHabitMap(userId: String): Map<String, ReportHabit> {
+    private fun readHabitMap(ownerClient: SupabaseClient, userId: String): Map<String, ReportHabit> {
         return try {
-            val catalogResp = client.get(
+            val catalogResp = ownerClient.get(
                 "habit_catalog",
                 mapOf("is_default" to "eq.true", "select" to "key,label,is_negative"),
             )
-            val userResp = client.get(
+            val userResp = ownerClient.get(
                 "user_habits",
                 mapOf("user_id" to "eq.$userId", "select" to "key,label,is_negative,is_active"),
             )
@@ -257,9 +288,9 @@ class ReportGenerator(
      * with the user JWT; while `app_settings` carries RLS with no policy, the
      * read returns an empty array and the fallback applies (same value today).
      */
-    private fun resolveModel(): String {
+    private fun resolveModel(ownerClient: SupabaseClient): String {
         return try {
-            val resp = client.get(
+            val resp = ownerClient.get(
                 "app_settings",
                 mapOf("key" to "eq.deepseek_model", "select" to "value", "limit" to "1"),
             )
@@ -283,10 +314,12 @@ class ReportGenerator(
         type: String,
         model: String,
         userPrompt: String,
+        ownerId: String,
     ): String? {
         var analysis = ""
         for (attempt in 1..MAX_ATTEMPTS) {
             if (analysis.isNotEmpty()) break
+            if (!ownerStillCurrent(ownerId)) return null
             val resp = deepSeek.execute(
                 HttpRequest(
                     method = "POST",
@@ -364,6 +397,7 @@ class ReportGenerator(
 
         const val CONNECT_FAILED = "Nepodařilo se připojit k serveru."
         const val SIGNED_OUT = "Přihlášení vypršelo, přihlas se znovu."
+        const val OWNER_CHANGED = "Přihlášení se změnilo během generování."
         const val GENERATE_FAILED = "Generování přehledu se nezdařilo."
         const val EMPTY_ANALYSIS = "AI vrátila prázdnou odpověď i po opakování."
 

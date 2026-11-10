@@ -41,12 +41,13 @@ class AiReflectionRepository(
     private val endpoint: String = BuildConfig.AI_REFLECT_URL,
     /**
      * The authenticated PostgREST client that writes the generated text back to
-     * the day's row. Defaults to a client over the same session, so the two
-     * production wirings ([cz.digitalnivedomi.diarium.ui.checkin.CheckInDeps],
-     * [cz.digitalnivedomi.diarium.ui.home.DashboardDeps]) keep working untouched;
-     * tests inject a client whose transport is faked.
+     * the day's row. Production wiring supplies an owner-bound client; tests
+     * leave it null unless explicitly exercising persistence, so they never
+     * reach a configured production endpoint.
      */
-    private val supabase: SupabaseClient? = sessionStore?.let { SupabaseClient(it) },
+    private val supabase: SupabaseClient? = null,
+    /** Captured composition owner; old screens cannot dispatch another account's entry. */
+    private val expectedOwnerId: String? = null,
 ) {
 
     /**
@@ -70,9 +71,16 @@ class AiReflectionRepository(
         birthYear: Int? = null,
     ): Result<String> =
         withContext(Dispatchers.IO) {
-            val token = sessionStore?.validAccessToken()
             val userId = SessionContext(sessionStore).userId()
-            if (token == null || userId == null) {
+            if (userId == null || (expectedOwnerId != null && userId != expectedOwnerId)) {
+                return@withContext Result.failure(IllegalStateException(MESSAGE_SIGNED_OUT))
+            }
+            val token = if (expectedOwnerId != null) {
+                sessionStore?.validAccessTokenForUser(expectedOwnerId)
+            } else {
+                sessionStore?.validAccessTokenForUser(userId)
+            }
+            if (token == null) {
                 return@withContext Result.failure(IllegalStateException(MESSAGE_SIGNED_OUT))
             }
             val headers = linkedMapOf(
@@ -113,7 +121,12 @@ class AiReflectionRepository(
      * The signed-in user's display name for the prompt, from the session — null
      * when it is not there, never invented and never fetched over the network.
      */
-    fun userName(): String? = SessionContext(sessionStore).userName()
+    fun userName(): String? =
+        if (expectedOwnerId == null || SessionContext(sessionStore).userId() == expectedOwnerId) {
+            SessionContext(sessionStore).userName()
+        } else {
+            null
+        }
 
     /**
      * Writes [text] into the `(user_id, date)` row through PostgREST, with the
@@ -127,8 +140,14 @@ class AiReflectionRepository(
      */
     private fun persistReflection(userId: String, date: String, text: String) {
         val client = supabase ?: return
+        val ownerClient = try {
+            client.forOwner(userId)
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "reflection PATCH failed: ${e.javaClass.simpleName}")
+            return
+        }
         try {
-            val response = client.patch(
+            val response = ownerClient.patch(
                 path = ENTRIES_PATH,
                 body = reflectionPatchBody(text),
                 query = reflectionPatchQuery(userId, date),

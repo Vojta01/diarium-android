@@ -4,6 +4,14 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import java.io.File
+
+/** A read failure is not evidence that a key is absent. */
+enum class LegacySecretPresence {
+    PRESENT,
+    ABSENT,
+    UNKNOWN,
+}
 
 /**
  * The narrow storage slot behind [AiKeyStore]. Production uses
@@ -12,9 +20,15 @@ import androidx.security.crypto.MasterKey
  * Android Keystore.
  */
 interface SecretSlot {
-    fun read(): String?
-    fun write(value: String)
-    fun erase()
+    fun read(ownerId: String): String?
+    fun write(ownerId: String, value: String)
+    fun erase(ownerId: String)
+
+    /** Presence for an account; an adapter without a non-ambiguous probe is UNKNOWN. */
+    fun valueStatus(ownerId: String): LegacySecretPresence = LegacySecretPresence.UNKNOWN
+
+    /** Presence-only legacy inspection; an implementation without a safe probe is UNKNOWN. */
+    fun legacyValueStatus(): LegacySecretPresence = LegacySecretPresence.UNKNOWN
 }
 
 /**
@@ -32,37 +46,53 @@ interface SecretSlot {
  *    generation calls). It is never sent to our server, never logged and never
  *    part of the APK — the user types it in.
  */
-class AiKeyStore(private val slot: SecretSlot) {
+class AiKeyStore(private val slot: SecretSlot, private val ownerId: String?) {
 
-    /** True when a usable key is stored. */
+    /** True when this account has a usable key stored. */
     fun hasKey(): Boolean = key() != null
 
-    /** The stored key, or null when none is stored. Trimmed on the way out. */
-    fun key(): String? = slot.read()?.trim()?.takeIf { it.isNotBlank() }
+    /** Presence-only status for Settings; unavailable ownership/read errors stay UNKNOWN. */
+    fun keyStatus(): LegacySecretPresence {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return LegacySecretPresence.UNKNOWN
+        return runCatching { slot.valueStatus(owner) }.getOrDefault(LegacySecretPresence.UNKNOWN)
+    }
 
-    /**
-     * Persists [raw] (trimmed). A blank value is refused — callers show it as
-     * "nothing saved", and no empty secret is ever written.
-     */
+    /** The current account's stored key, or null when ownership is unavailable. */
+    fun key(): String? {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return null
+        return slot.read(owner)?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    /** Presence-only status; inspection failures must remain UNKNOWN. */
+    fun legacyValueStatus(): LegacySecretPresence =
+        runCatching { slot.legacyValueStatus() }.getOrDefault(LegacySecretPresence.UNKNOWN)
+
+    /** Refuses writes without an authenticated account; a blank value never erases a key. */
     fun saveKey(raw: String): Boolean {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return false
         val cleaned = raw.trim()
         if (cleaned.isBlank()) return false
-        slot.write(cleaned)
+        slot.write(owner, cleaned)
         return true
     }
 
-    /** Forgets the key. Any later generation falls back to the server route. */
-    fun clear() = slot.erase()
+    /** Removes only this account's key. Ownerless legacy bytes are never touched. */
+    fun clear() {
+        ownerId?.takeIf { it.isNotBlank() }?.let(slot::erase)
+    }
 
     companion object {
         /** EncryptedSharedPreferences file name; auto-backup rules match this name. */
         const val FILE_NAME = "diarium_ai_secrets"
 
-        /** The one preference the file holds. */
+        /** Legacy ownerless preference. Kept for quarantine diagnostics only. */
         const val KEY = "deepseek_api_key"
 
-        /** The production store over EncryptedSharedPreferences. */
-        fun forContext(context: Context): AiKeyStore = AiKeyStore(EncryptedSecretSlot(context))
+        internal fun keyForOwner(ownerId: String): String = "${KEY}_v2_$ownerId"
+
+        /** Production store scoped to the currently authenticated owner. */
+        fun forContext(context: Context, ownerId: String?): AiKeyStore =
+            AiKeyStore(EncryptedSecretSlot(context), ownerId?.takeIf { it.isNotBlank() })
     }
 }
 
@@ -77,7 +107,7 @@ class EncryptedSecretSlot(context: Context) : SecretSlot {
 
     private val appContext = context.applicationContext
 
-    private val prefs: SharedPreferences by lazy {
+    private val prefsDelegate = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         val masterKey = MasterKey.Builder(appContext)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
@@ -89,15 +119,52 @@ class EncryptedSecretSlot(context: Context) : SecretSlot {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
     }
+    private val prefs: SharedPreferences by prefsDelegate
 
-    override fun read(): String? =
-        runCatching { prefs.getString(AiKeyStore.KEY, null) }.getOrNull()
+    override fun read(ownerId: String): String? =
+        runCatching { prefs.getString(AiKeyStore.keyForOwner(ownerId), null) }.getOrNull()
 
-    override fun write(value: String) {
-        prefs.edit().putString(AiKeyStore.KEY, value).apply()
+    override fun valueStatus(ownerId: String): LegacySecretPresence = try {
+        if (prefs.getString(AiKeyStore.keyForOwner(ownerId), null)?.trim().isNullOrEmpty()) {
+            LegacySecretPresence.ABSENT
+        } else {
+            LegacySecretPresence.PRESENT
+        }
+    } catch (_: Exception) {
+        LegacySecretPresence.UNKNOWN
     }
 
-    override fun erase() {
-        prefs.edit().remove(AiKeyStore.KEY).apply()
+    override fun write(ownerId: String, value: String) {
+        prefs.edit().putString(AiKeyStore.keyForOwner(ownerId), value).apply()
     }
+
+    override fun erase(ownerId: String) {
+        prefs.edit().remove(AiKeyStore.keyForOwner(ownerId)).apply()
+    }
+
+    /**
+     * Inspect only a store that an ordinary app operation has already opened.
+     * Creating EncryptedSharedPreferences can generate Keystore material and
+     * Tink keysets, so inventory must never force that initialization. A missing
+     * or unopened file is deliberately UNKNOWN, not evidence that no key exists.
+     */
+    override fun legacyValueStatus(): LegacySecretPresence {
+        val backingFile = File(
+            File(appContext.applicationInfo.dataDir, "shared_prefs"),
+            "${AiKeyStore.FILE_NAME}.xml",
+        )
+        if (!backingFile.isFile || !prefsDelegate.isInitialized()) {
+            return LegacySecretPresence.UNKNOWN
+        }
+        return try {
+            if (prefs.contains(AiKeyStore.KEY)) {
+                LegacySecretPresence.PRESENT
+            } else {
+                LegacySecretPresence.ABSENT
+            }
+        } catch (_: Exception) {
+            LegacySecretPresence.UNKNOWN
+        }
+    }
+
 }

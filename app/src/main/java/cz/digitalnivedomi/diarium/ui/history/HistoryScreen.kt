@@ -61,10 +61,10 @@ import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.Outline
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
+import java.time.LocalDate
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import cz.digitalnivedomi.diarium.ui.theme.moodColor
-import java.time.LocalDate
 
 /**
  * Historie — a month at a glance, and one day in full.
@@ -100,19 +100,21 @@ fun HistoryScreen(
     // Owned by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
     // opening a day detail pushes a screen, and the month behind it must stay read.
     holder: HistoryStateHolder = remember { HistoryStateHolder() },
+    /** The day the grid treats as today; a parameter so a screenshot can pin it. */
+    today: LocalDate = LocalDate.now(),
 ) {
     val state = holder.state
     val repository = deps.history
     val pickers = deps.pickers
     // "Today" is fixed for the whole screen: it decides which days are future days,
     // so it must not drift mid-session between the grid and the detail.
-    val today = remember { HistoryCalendar.today() }
+    val day = remember(today) { today }
 
     // Saveable: the shell keeps a tab's saved state while a sub-screen sits on top of
     // it, so the month the owner was browsing and the day they had open come back
     // exactly as they left them instead of snapping to today.
-    var year by rememberSaveable { mutableStateOf(today.year) }
-    var month by rememberSaveable { mutableStateOf(today.monthValue) }
+    var year by rememberSaveable { mutableStateOf(day.year) }
+    var month by rememberSaveable { mutableStateOf(day.monthValue) }
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
     var reloadTrigger by remember { mutableStateOf(0) }
     // Scale id -> label / max, so the day detail names a scale instead of showing
@@ -136,9 +138,9 @@ fun HistoryScreen(
         }
     }
 
-    LaunchedEffect(repository, year, month, reloadTrigger) {
+    LaunchedEffect(repository, year, month, reloadTrigger, day) {
         holder.markLoading()
-        val result = repository?.load(year, month, today.toString())
+        val result = repository?.load(year, month, day.toString())
         if (result == null) {
             holder.showError(ERROR_LOAD)
         } else {
@@ -169,7 +171,7 @@ fun HistoryScreen(
             CalendarCard(
                 year = year,
                 month = month,
-                today = today,
+                today = day,
                 data = monthData,
                 // The grid may only wear the month it is drawing (see [monthData]
                 // below), so the placeholder belongs there while that month is missing —
@@ -227,7 +229,7 @@ private const val CELL_GAP_DP = 4
 
 /** 🇨🇿 Month grid: Czech month + year header, ← / →, then Monday-first days. */
 @Composable
-private fun CalendarCard(
+internal fun CalendarCard(
     year: Int,
     month: Int,
     today: LocalDate,
@@ -272,7 +274,7 @@ private fun CalendarCard(
         }
         VSpace(6)
 
-        val grid = HistoryCalendar.monthGrid(year, month)
+        val weeks = HistoryCalendar.weekRows(year, month)
         if (loading) {
             Box(
                 modifier = Modifier.fillMaxWidth().height(184.dp),
@@ -281,7 +283,10 @@ private fun CalendarCard(
                 BrandSpinner(size = 22)
             }
         } else {
-            grid.chunked(HistoryCalendar.DAYS_PER_WEEK).forEach { week ->
+            // weekRows pads every row to seven cells, including the last one. A row
+            // built from monthGrid.chunked(7) would have fewer weighted children in a
+            // partial week, and weight(1f) would then stretch one day across the row.
+            weeks.forEach { week ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(CELL_GAP_DP.dp),
@@ -460,18 +465,14 @@ private fun HintCard(data: HistoryData) {
             data.entries.isEmpty() -> EmptyState(
                 emoji = "📝",
                 title = "Zatím žádné zápisy",
-                message = "V měsíci ${HistoryCalendar.title(data.year, data.month)} " +
-                    "nemáš žádný záznam. Klikni na den v kalendáři a zapiš, jaký byl.",
+                message = monthEmptyText(HistoryCalendar.title(data.year, data.month)),
             )
             // Rows exist, but every one is phone-sync data without a mood. Say it
             // plainly rather than printing a count of zero records.
             recorded == 0 -> EmptyState(
                 emoji = "📱",
                 title = "Jen automatická data, žádný zápis",
-                message = "V měsíci ${HistoryCalendar.title(data.year, data.month)} " +
-                    "máš jen data stažená z telefonu (screen time, odemknutí). " +
-                    "Bez vyplněné nálady se den jako zápis nepočítá — klikni na den " +
-                    "a doplň check-in.",
+                message = monthSyncedOnlyText(HistoryCalendar.title(data.year, data.month)),
             )
             else -> {
                 SectionHint(monthCountText(recorded))
@@ -489,6 +490,15 @@ private fun HintCard(data: HistoryData) {
 /** "V tomto měsíci máš 3 zápisy." — only ever called with at least one record. */
 internal fun monthCountText(recorded: Int): String =
     "V tomto měsíci máš $recorded ${entryNoun(recorded)}."
+
+/** "V měsíci Září 2026 nemáš žádný záznam. Klikni na den v kalendáři a zapiš, jaký byl." */
+internal fun monthEmptyText(monthTitle: String): String =
+    "V měsíci $monthTitle nemáš žádný záznam. Klikni na den v kalendáři a zapiš, jaký byl."
+
+/** The all-synced month, naming the month and why its rows are not entries. */
+internal fun monthSyncedOnlyText(monthTitle: String): String =
+    "V měsíci $monthTitle máš jen data stažená z telefonu (screen time, odemknutí). " +
+        "Bez vyplněné nálady se den jako zápis nepočítá — klikni na den a doplň check-in."
 
 /** "U 2 dnů máš jen automatická data bez nálady — jako zápisy se nepočítají." */
 internal fun syncedOnlyText(syncedOnly: Int): String {

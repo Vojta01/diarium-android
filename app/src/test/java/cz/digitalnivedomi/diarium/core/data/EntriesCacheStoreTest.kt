@@ -138,4 +138,25 @@ class EntriesCacheStoreTest {
         // Nothing landed under a blank key.
         assertEquals(1, JSONObject(file.readText()).getJSONObject("rows").length())
     }
+
+    @Test
+    fun `cache snapshots are partitioned by owner and ignore ownerless legacy file`() = runTest {
+        val directory = Files.createTempDirectory("cache-owner-test").toFile()
+        val legacy = EntriesCacheStore(File(directory, EntriesCacheStore.FILE_NAME))
+        legacy.upsertRows(listOf(row("2026-09-10", 5)))
+        val accountA = EntriesCacheStore(
+            File(directory, EntriesCacheStore.fileName("account-a")),
+            ownerId = "account-a",
+        )
+        val accountB = EntriesCacheStore(
+            File(directory, EntriesCacheStore.fileName("account-b")),
+            ownerId = "account-b",
+        )
+
+        accountA.upsertRows(listOf(row("2026-09-10", 4)))
+
+        assertEquals(4, accountA.readRange("2026-09-10", "2026-09-10")?.single()?.entry?.mood)
+        assertNull(accountB.readRange("2026-09-10", "2026-09-10"))
+        assertEquals(5, legacy.readRange("2026-09-10", "2026-09-10")?.single()?.entry?.mood)
+    }
 }

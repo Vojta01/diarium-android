@@ -46,16 +46,15 @@ class HistoryDeps(
             val sessionStore = AppClients.sessionStore(context)
             val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
+            val ownerId = session.userId()
             return HistoryDeps(
                 history = HistoryRepository(
                     EntriesRepository(
                         client,
                         session,
-                        // History reads days straight from the server and may delete
-                        // them; the snapshot keeps cold starts consistent, the outbox
-                        // keeps a just-saved offline day from looking lost.
-                        cache = EntriesCacheStore.from(context),
-                        pending = PendingSaveStore.from(context),
+                        cache = ownerId?.let { EntriesCacheStore.from(context, it) },
+                        pending = PendingSaveStore.from(context, ownerId),
+                        expectedOwnerId = ownerId,
                     ),
                 ),
                 pickers = PickersRepository(client, session),

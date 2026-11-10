@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import cz.digitalnivedomi.diarium.ui.i18n.Text
+import cz.digitalnivedomi.diarium.ui.i18n.tr
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -411,7 +412,9 @@ private fun BottomBarTab(
     ) {
         Icon(
             imageVector = if (selected) destination.selectedIcon else destination.unselectedIcon,
-            contentDescription = destination.label,
+            // The enum label is the Czech key; contentDescription bypasses the `Text`
+            // wrapper, so the spoken name has to be translated here explicitly.
+            contentDescription = tr(destination.label),
             tint = lerp(TextSecondary, Color.White, tint),
             modifier = Modifier
                 .size(IconSize)

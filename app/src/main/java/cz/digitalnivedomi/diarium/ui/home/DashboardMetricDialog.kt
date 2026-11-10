@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import cz.digitalnivedomi.diarium.ui.i18n.Text
+import cz.digitalnivedomi.diarium.ui.i18n.translate
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,7 +47,8 @@ import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import cz.digitalnivedomi.diarium.ui.theme.WarningAmber
-import java.time.DayOfWeek
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
+import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
@@ -188,14 +190,36 @@ internal fun formatMetricMinutes(minutes: Int): String {
     return if (rest == 0) "$hours h" else "$hours h $rest"
 }
 
+/** The arrow and the words under it, already in the UI language. */
+internal data class TrendLineText(val arrow: String?, val caption: String)
+
+/**
+ * The trend caption translated **before** the arrow is split off.
+ *
+ * [trendCaption] builds the Czech sentence including its leading arrow ("≈ stejně jako
+ * minulý týden", "↑ o 12 % více než minulý týden"). Splitting first and translating the
+ * remainder asked the dictionary for "stejně jako minulý týden" and "o 12 % více než
+ * minulý týden" — keys that do not and should not exist, so the English card showed the
+ * Czech tail. Translating the finished sentence keeps every key whole; the arrow is then
+ * only a presentation detail.
+ */
+internal fun trendLineText(trend: MetricTrend, tone: TrendTone): TrendLineText? {
+    val caption = trendCaption(trend, tone)?.let(::translate) ?: return null
+    val arrow = caption.take(1)
+    val colored = arrow == "↑" || arrow == "↓" || arrow == "≈"
+    return if (colored) {
+        TrendLineText(arrow = arrow, caption = caption.drop(1).trimStart())
+    } else {
+        TrendLineText(arrow = null, caption = caption)
+    }
+}
+
 /** The trend row itself: a coloured arrow, then the caption in secondary text. */
 @Composable
 internal fun TrendLine(trend: MetricTrend, tone: TrendTone, modifier: Modifier = Modifier) {
-    val caption = trendCaption(trend, tone) ?: return
-    val arrow = caption.take(1)
-    val colored = arrow == "↑" || arrow == "↓" || arrow == "≈"
+    val line = trendLineText(trend, tone) ?: return
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        if (colored) {
+        line.arrow?.let { arrow ->
             Text(
                 text = arrow,
                 style = MaterialTheme.typography.labelSmall,
@@ -204,7 +228,7 @@ internal fun TrendLine(trend: MetricTrend, tone: TrendTone, modifier: Modifier =
             Spacer(Modifier.width(Spacing.tiny / 2))
         }
         Text(
-            text = if (colored) caption.drop(1).trimStart() else caption,
+            text = line.caption,
             style = MaterialTheme.typography.labelSmall,
             color = TextSecondary,
         )
@@ -214,22 +238,17 @@ internal fun TrendLine(trend: MetricTrend, tone: TrendTone, modifier: Modifier =
 /** Height of the bar track: the tallest day of the fourteen fills it. */
 private val DIALOG_BAR_TRACK = 88.dp
 
-/** "d. M." — the date half of a row label. */
-private val dialogShortDate = DateTimeFormatter.ofPattern("d. M.", Locale("cs", "CZ"))
+/** "d. M." / "10 Sep" — the date half of a row label, in the UI language. */
+private val dialogShortDate: DateTimeFormatter
+    get() = UiDates.dayMonth()
 
 private fun dialogDateOf(date: String): String =
     CheckInDates.parse(date)?.format(dialogShortDate) ?: date
 
-/** "pátek" — the weekday half of a row label. */
-private fun weekdayNameOf(date: String): String = when (CheckInDates.parse(date)?.dayOfWeek) {
-    DayOfWeek.MONDAY -> "pondělí"
-    DayOfWeek.TUESDAY -> "úterý"
-    DayOfWeek.WEDNESDAY -> "středa"
-    DayOfWeek.THURSDAY -> "čtvrtek"
-    DayOfWeek.FRIDAY -> "pátek"
-    DayOfWeek.SATURDAY -> "sobota"
-    DayOfWeek.SUNDAY -> "neděle"
-    null -> ""
+/** "pátek" / "Friday" — the weekday half of a row label, in the UI language. */
+private fun weekdayNameOf(date: String): String {
+    val dayOfWeek = CheckInDates.parse(date)?.dayOfWeek ?: return ""
+    return StatsMath.weekdayNameInline(dayOfWeek)
 }
 
 /** "pátek, 12. 9." */
@@ -242,16 +261,8 @@ private fun dialogRowLabel(date: String): String {
 /** The two-letter weekday under a bar (the same abbreviations the week strip uses). */
 private fun dialogBarLabel(date: String, today: String): String {
     if (date == today) return "Dnes"
-    return when (CheckInDates.parse(date)?.dayOfWeek) {
-        DayOfWeek.MONDAY -> "Po"
-        DayOfWeek.TUESDAY -> "Út"
-        DayOfWeek.WEDNESDAY -> "St"
-        DayOfWeek.THURSDAY -> "Čt"
-        DayOfWeek.FRIDAY -> "Pá"
-        DayOfWeek.SATURDAY -> "So"
-        DayOfWeek.SUNDAY -> "Ne"
-        null -> ""
-    }
+    val dayOfWeek = CheckInDates.parse(date)?.dayOfWeek ?: return ""
+    return StatsMath.weekdayShortName(dayOfWeek)
 }
 
 /**

@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -184,7 +185,7 @@ private fun currentHint(period: GoalPeriodResult): String {
 /** The period's headline: „Srpen 2026", „Týden 14.–20. 9. 2026" or „14. 10. 2026". */
 private fun periodTitle(frequency: String, period: GoalPeriodResult): String =
     when (normalizeFrequency(frequency)) {
-        "monthly" -> "${MONTHS_LONG[isoMonth(period.start)]} ${isoYear(period.start)}"
+        "monthly" -> "${StatsMath.monthFullName(isoMonth(period.start) + 1)} ${isoYear(period.start)}"
         "daily" -> "${isoDay(period.start)}. ${isoMonth(period.start) + 1}. ${isoYear(period.start)}"
         else -> {
             val sameMonth = isoMonth(period.start) == isoMonth(period.end)
@@ -231,7 +232,3 @@ private fun isoDay(iso: String): String = iso.drop(8).take(2).trimStart('0').ifB
 /** The year from an ISO date. */
 private fun isoYear(iso: String): String = iso.take(4)
 
-private val MONTHS_LONG = listOf(
-    "Leden", "Únor", "Březen", "Duben", "Květen", "Červen",
-    "Červenec", "Srpen", "Září", "Říjen", "Listopad", "Prosinec",
-)

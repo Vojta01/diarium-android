@@ -57,20 +57,25 @@ class DashboardDeps(
         fun forContext(context: Context): DashboardDeps {
             val sessionStore = AppClients.sessionStore(context)
             val client = AppClients.supabaseClient(context)
+            val session = SessionContext(sessionStore)
+            val ownerId = session.userId()
             return DashboardDeps(
                 dashboard = DashboardRepository(
                     EntriesRepository(
                         client,
-                        SessionContext(sessionStore),
-                        // Snapshot for the instant cold-start paint, outbox for
-                        // offline saves — see DashboardScreen's load effect.
-                        cache = EntriesCacheStore.from(context),
-                        pending = PendingSaveStore.from(context),
+                        session,
+                        cache = ownerId?.let { EntriesCacheStore.from(context, it) },
+                        pending = PendingSaveStore.from(context, ownerId),
+                        expectedOwnerId = ownerId,
                     ),
                 ),
-                reflection = AiReflectionRepository(sessionStore),
+                reflection = AiReflectionRepository(
+                    sessionStore = sessionStore,
+                    supabase = client,
+                    expectedOwnerId = ownerId,
+                ),
                 goals = GoalsRepository(client, SessionContext(sessionStore)),
-                profile = ProfileStore.from(context),
+                profile = ProfileStore.from(context, ownerId),
             )
         }
     }

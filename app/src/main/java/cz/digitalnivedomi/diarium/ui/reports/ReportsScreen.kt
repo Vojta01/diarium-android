@@ -43,6 +43,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cz.digitalnivedomi.diarium.core.data.AiReport
+import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
 import cz.digitalnivedomi.diarium.ui.components.BrandSpinner
 import cz.digitalnivedomi.diarium.ui.components.EmptyState
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
@@ -137,11 +138,10 @@ fun ReportsScreen(
 
     // The AI master switch (Nastavení → AI). With it off nothing on this screen may
     // reach the AI: the banner above the cards says so and every generate button is
-    // disabled. Read once per screen like the settings card reads it; a null profile
-    // (offline/test wiring) leaves generating exactly as it was before the switch.
-    var aiEnabled by remember { mutableStateOf(true) }
+    // disabled. Consent is unknown until the profile loads, so fail closed meanwhile.
+    var aiEnabled by remember { mutableStateOf(false) }
     LaunchedEffect(deps) {
-        aiEnabled = withContext(Dispatchers.IO) { deps.profile?.load()?.aiEnabled ?: true }
+        aiEnabled = withContext(Dispatchers.IO) { deps.profile?.load()?.aiEnabled == true }
     }
 
     // One bring-into-view requester per card, keyed off ReportsState.TYPES, so the
@@ -263,6 +263,17 @@ fun ReportsScreen(
         verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
         ScreenSubtitle(text = ReportsState.SUBTITLE)
+
+        // The English UI is honest about the one thing it does not translate: the AI
+        // prompt asks for Czech prose, so the reports themselves stay Czech.
+        if (AppLanguage.isEnglish()) {
+            Text(
+                text = ReportsState.LANGUAGE_NOTE,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
 
         // The master switch off: a banner card above everything, and the generate
         // buttons below disabled. Stored reports stay readable — only minting new

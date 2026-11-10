@@ -1,21 +1,14 @@
 package cz.digitalnivedomi.diarium.ui
 
-import cz.digitalnivedomi.diarium.ui.i18n.tr
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.IconButton
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
-import androidx.activity.compose.BackHandler
 import cz.digitalnivedomi.diarium.ui.achievements.AchievementsDeps
 import cz.digitalnivedomi.diarium.ui.achievements.AchievementsScreen
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.SubScreenEntry
+import cz.digitalnivedomi.diarium.ui.components.SubScreenChrome
 import cz.digitalnivedomi.diarium.ui.goals.GoalsDeps
 import cz.digitalnivedomi.diarium.ui.goals.GoalsScreen
 import cz.digitalnivedomi.diarium.ui.scales.ScalesDeps
@@ -34,22 +27,24 @@ import cz.digitalnivedomi.diarium.ui.settings.LanguageSettingsSection
 import cz.digitalnivedomi.diarium.ui.settings.ProfileSettingsDeps
 import cz.digitalnivedomi.diarium.ui.settings.ProfileSettingsSection
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.TextButton
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -65,6 +60,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import cz.digitalnivedomi.diarium.auth.AuthCallbackOutcome
 import cz.digitalnivedomi.diarium.auth.AuthStateHolder
 import cz.digitalnivedomi.diarium.auth.AuthStatus
 import cz.digitalnivedomi.diarium.ui.auth.LoginScreen
@@ -105,7 +101,7 @@ fun DiariumApp(
     authDeepLink: State<String?>,
     authState: AuthStateHolder,
     onSignIn: () -> Unit = {},
-    onAuthDeepLink: (String) -> Boolean = { false },
+    onAuthDeepLink: suspend (String) -> AuthCallbackOutcome = { AuthCallbackOutcome.Rejected },
     /** In-app route a tapped notification asked to open; acted on inside the signed-in shell. */
     notificationRoute: State<String?> = remember { mutableStateOf<String?>(null) },
     /** "weekly"/"monthly" when the notification was a reflection — which card to reveal. */
@@ -114,15 +110,22 @@ fun DiariumApp(
     onNotificationHandled: () -> Unit = {},
 ) {
     val authStatus by authState.status.collectAsState()
+    val currentOwnerId by authState.ownerId.collectAsState()
     var signInInProgress by remember { mutableStateOf(false) }
     var authError by remember { mutableStateOf<String?>(null) }
 
-    // Deep link delivered by MainActivity (cold start or onNewIntent). The
-    // callback parses + persists the session and flips AuthStateHolder.
+    // Deep link delivered by MainActivity (cold start or onNewIntent). Verify it
+    // off the main thread; only the verified user returned by Supabase can open the gate.
     LaunchedEffect(authDeepLink.value) {
         val link = authDeepLink.value ?: return@LaunchedEffect
+        authError = null
+        signInInProgress = true
+        authError = when (onAuthDeepLink(link)) {
+            is AuthCallbackOutcome.Verified -> null
+            AuthCallbackOutcome.Rejected ->
+                "Přihlášení se nepodařilo ověřit. Zkontroluj připojení a zkus to znovu."
+        }
         signInInProgress = false
-        authError = if (onAuthDeepLink(link)) null else "Přihlášení se nepovedlo. Zkus to prosím znovu."
     }
 
     LaunchedEffect(authStatus) {
@@ -149,13 +152,30 @@ fun DiariumApp(
                     signInInProgress = true
                     onSignIn()
                 },
+                onClearStoredSession = if (authState.hasUnusableStoredSession) authState::signOut else null,
             )
 
-            AuthStatus.AUTHENTICATED -> AuthenticatedScaffold(
-                onSignOut = authState::signOut,
-                notificationRoute = notificationRoute,
-                notificationReportType = notificationReportType,
-                onNotificationHandled = onNotificationHandled,
+            AuthStatus.AUTHENTICATED -> key(currentOwnerId) {
+                AuthenticatedScaffold(
+                    profileOwnerId = currentOwnerId,
+                    onSignOut = authState::signOut,
+                    notificationRoute = notificationRoute,
+                    notificationReportType = notificationReportType,
+                    onNotificationHandled = onNotificationHandled,
+                )
+            }
+        }
+
+        // If the callback was attempted while an older account was already open,
+        // keep that session but still surface the recoverable verification failure.
+        if (authStatus == AuthStatus.AUTHENTICATED && authError != null) {
+            AlertDialog(
+                onDismissRequest = { authError = null },
+                title = { Text("Ověření přihlášení") },
+                text = { Text(authError.orEmpty()) },
+                confirmButton = {
+                    TextButton(onClick = { authError = null }) { Text("OK") }
+                },
             )
         }
     }
@@ -172,6 +192,7 @@ fun DiariumApp(
  */
 @Composable
 private fun AuthenticatedScaffold(
+    profileOwnerId: String?,
     onSignOut: () -> Unit,
     notificationRoute: State<String?>,
     notificationReportType: State<String?>,
@@ -181,7 +202,7 @@ private fun AuthenticatedScaffold(
     // The profile decides what the signed-in shell shows first: until its file has
     // been read only the backdrop is painted (no tab flash), an unfinished first-run
     // guide takes the whole screen, and everything else is the ordinary scaffold.
-    val profileStore = remember(context) { ProfileStore.from(context) }
+    val profileStore = remember(context, profileOwnerId) { ProfileStore.from(context, profileOwnerId) }
     val profileData by profileStore.data.collectAsState(initial = null)
     val profile = profileData
     if (profile == null) {
@@ -444,7 +465,7 @@ private fun NavGraphBuilder.subScreen(route: String, content: @Composable () -> 
  * from here and from the dashboard, each with its own back arrow.
  */
 @Composable
-private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit, aiDeps: AiSettingsDeps) {
+internal fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit, aiDeps: AiSettingsDeps) {
     val context = LocalContext.current
     Column(
         modifier = Modifier
@@ -585,39 +606,5 @@ private fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit, aiDe
                 Text("Odhlásit se")
             }
         }
-    }
-}
-
-/**
- * Chrome for the M5 sub-screens: a back arrow, the title, then the screen.
- *
- * The screens themselves are handed in already built, so they stay unaware of
- * navigation and can be previewed on their own.
- */
-@Composable
-private fun SubScreenChrome(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
-    BackHandler(onBack = onBack)
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.gutter)
-                .padding(top = Spacing.screenTop, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = tr("Zpět"),
-                    tint = TextSecondary,
-                )
-            }
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-            )
-        }
-        content()
     }
 }

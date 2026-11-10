@@ -1,5 +1,6 @@
 package cz.digitalnivedomi.diarium.ui.settings
 
+import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import java.util.Locale
 
 /**
@@ -17,12 +18,17 @@ object NotificationSettingsState {
 
     const val MINUTES_PER_DAY = 24 * 60
 
-    /** "Po"…"Ne" — the chip labels, identical to the old Activity's `dayNames`. */
-    val dayShortNames: List<String> = listOf("Po", "Út", "St", "Čt", "Pá", "So", "Ne")
+    /**
+     * "Po"…"Ne" — the chip labels, identical to the old Activity's `dayNames` in Czech and
+     * translated in English mode. A getter, not a `val`, so a language switch reaches chips
+     * that are already on screen.
+     */
+    val dayShortNames: List<String>
+        get() = StatsMath.WEEKDAY_LABELS
 
-    /** Full names used by the old day picker dialog. */
-    val dayFullNames: List<String> =
-        listOf("Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle")
+    /** Full names used by the old day picker dialog, in the UI language. */
+    val dayFullNames: List<String>
+        get() = StatsMath.WEEKDAY_FULL_NAMES
 
     // ── Days ──────────────────────────────────────────────────────────────────
 

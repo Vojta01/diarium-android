@@ -6,9 +6,8 @@ import androidx.appcompat.app.AppCompatActivity
 import cz.digitalnivedomi.diarium.MainActivity
 
 /**
- * Receives the OAuth deep link `diarium://auth-callback#...` and hands the
- * fragment to the main activity so the session gets saved and the app leaves
- * the login screen.
+ * Receives the OAuth authorization-code deep link and forwards it to the main
+ * activity, which validates the outstanding PKCE state before exchanging code.
  */
 class AuthCallbackActivity : AppCompatActivity() {
 

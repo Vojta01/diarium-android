@@ -8,6 +8,10 @@ import org.junit.Test
  * Pure-JVM tests for the seed plan and the 30-day read-out maths. No Android
  * framework, no Robolectric, no network — everything under test here is a pure
  * function, which is exactly why it was factored out of [ScalesRepository].
+ *
+ * The seed is **additive only** (2026-11 audit): a custom scale is the user's
+ * data and its `scale_entries` cascade with it, so nothing may ever be deleted
+ * by "seed the defaults".
  */
 class ScalesRepositoryTest {
 
@@ -63,7 +67,7 @@ class ScalesRepositoryTest {
         assertEquals("4,1", formatAverage(4.05))
     }
 
-    // ── seed decisions ──────────────────────────────────────────────────────
+    // ── seed decisions (additive only) ──────────────────────────────────────
 
     @Test
     fun defaultsMatchTheWebContractExactly() {
@@ -79,10 +83,9 @@ class ScalesRepositoryTest {
     }
 
     @Test
-    fun emptyTableCreatesBothDefaultsAndDeletesNothing() {
+    fun emptyTableCreatesBothDefaults() {
         val plan = planSeed(emptyList())
         assertEquals(DEFAULT_SCALES, plan.toCreate)
-        assertTrue(plan.toDeleteIds.isEmpty())
     }
 
     @Test
@@ -93,11 +96,13 @@ class ScalesRepositoryTest {
         )
         val plan = planSeed(existing)
         assertTrue(plan.toCreate.isEmpty())
-        assertTrue(plan.toDeleteIds.isEmpty())
     }
 
     @Test
-    fun renamedOrMisspelledScaleIsDeleted() {
+    fun aCustomScaleIsNeverTouched() {
+        // The destructive version of this test expected "Nálada" and "Energiee" to be
+        // deleted. They are the user's own scales, and deleting them would cascade
+        // every stored value away — the seed must only add missing defaults.
         val existing = listOf(
             scale("e1", "Energie", 1, 5),
             scale("p1", "Produktivita", 1, 5),
@@ -105,8 +110,14 @@ class ScalesRepositoryTest {
             scale("x2", "Energiee", 1, 5),
         )
         val plan = planSeed(existing)
-        assertEquals(listOf("x1", "x2"), plan.toDeleteIds)
         assertTrue(plan.toCreate.isEmpty())
+    }
+
+    @Test
+    fun aCustomScaleDoesNotStopMissingDefaultsFromBeingCreated() {
+        val existing = listOf(scale("x1", "Nálada", 1, 10))
+        val plan = planSeed(existing)
+        assertEquals(DEFAULT_SCALES, plan.toCreate)
     }
 
     @Test
@@ -114,7 +125,6 @@ class ScalesRepositoryTest {
         val existing = listOf(scale("e1", "Energie", 1, 5))
         val plan = planSeed(existing)
         assertEquals(listOf(DEFAULT_SCALES[1]), plan.toCreate)
-        assertTrue(plan.toDeleteIds.isEmpty())
     }
 
     @Test
@@ -125,29 +135,29 @@ class ScalesRepositoryTest {
         )
         val plan = planSeed(existing)
         assertTrue(plan.toCreate.isEmpty())
-        assertTrue(plan.toDeleteIds.isEmpty())
     }
 
     @Test
-    fun driftedRangeIsDeletedAndRecreated() {
+    fun aDriftedDefaultIsLeftAloneInsteadOfDeletedAndRecreated() {
+        // The user widened Energie to 1–10 on purpose. Deleting/recreating it would
+        // lose every stored value (FK cascade) and silently reset their range.
         val existing = listOf(
             scale("e1", "Energie", 1, 10),
             scale("p1", "Produktivita", 1, 5),
         )
         val plan = planSeed(existing)
-        assertEquals(listOf("e1"), plan.toDeleteIds)
-        assertEquals(listOf(DEFAULT_SCALES[0]), plan.toCreate)
+        assertTrue(plan.toCreate.isEmpty())
     }
 
     @Test
-    fun duplicateRowsWithADefaultNameLoseAllButTheFirst() {
+    fun duplicateDefaultNamesAreLeftAlone() {
+        // Resolving duplicates needs a delete; an extra scale is the lesser evil.
         val existing = listOf(
             scale("e1", "Energie", 1, 5),
             scale("e2", "energie", 1, 5),
             scale("p1", "Produktivita", 1, 5),
         )
         val plan = planSeed(existing)
-        assertEquals(listOf("e2"), plan.toDeleteIds)
         assertTrue(plan.toCreate.isEmpty())
     }
 

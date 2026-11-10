@@ -70,10 +70,16 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 fun NotificationsSettingsScreen(deps: NotificationsSettingsDeps) {
     val context = LocalContext.current
     val store = deps.prefsStore
-    var prefs by remember { mutableStateOf(store?.load() ?: NotificationPrefs()) }
+    var prefs by remember(deps) {
+        mutableStateOf((store?.load() ?: NotificationPrefs()).copy(screenSyncEnabled = deps.screenSyncEnabled))
+    }
     var testResult by remember { mutableStateOf<String?>(null) }
 
     fun apply(updated: NotificationPrefs) {
+        if (prefs.screenSyncEnabled != updated.screenSyncEnabled) {
+            // Persist the account-scoped consent before re-scheduling/canceling work.
+            deps.onScreenSyncConsentChanged(updated.screenSyncEnabled)
+        }
         prefs = updated
         store?.save(updated)
         // Both "already reminded" markers reset, so a tuned time can still fire the

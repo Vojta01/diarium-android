@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     alias(libs.plugins.android.application)
@@ -63,7 +64,7 @@ android {
         // directly with the user's JWT. The anon key is public by design.
         buildConfigField("String", "SUPABASE_URL", "\"https://vmqbslghzgfotwhzgawa.supabase.co\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZtcWJzbGdoemdmb3R3aHpnYXdhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyNjg1ODQsImV4cCI6MjA5Njg0NDU4NH0.t6MyER-5umBKDaHYFHmzfWXBM6VjT9mSsRFlpQJ3gGk\"")
-        // OAuth deep link: diarium://auth-callback#access_token=...
+        // OAuth deep link: diarium://auth-callback?state=<one-time-state>
         buildConfigField("String", "AUTH_SCHEME", "\"diarium\"")
         buildConfigField("String", "AUTH_HOST", "\"auth-callback\"")
         // Supabase project ref — used for the sb-<ref>-auth-token storage key.
@@ -195,4 +196,52 @@ dependencies {
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
+}
+
+// ---------------------------------------------------------------------------
+// Documentation screenshots.
+//
+// `./gradlew :app:screenshotEn` runs ONLY the EnglishScreenshotTest class, which
+// renders the real Compose screens with synthetic fixture data and writes PNGs to
+// docs/screenshots/en/. The class is excluded from every other unit-test run, and
+// the test itself also checks `diarium.screenshots` (see EnglishScreenshotTest), so
+// an IDE or `--tests` invocation cannot rewrite the tracked PNGs by accident. The
+// date is pinned through `diarium.screenshot.today`, not read from the wall clock,
+// so the same run produces the same images tomorrow.
+// ---------------------------------------------------------------------------
+val screenshotRun = gradle.startParameter.taskNames.any {
+    it.substringAfterLast(':') == "screenshotEn"
+}
+
+tasks.withType<Test>().configureEach {
+    // Robolectric + Compose keep process-global state (the Compose Recomposer and
+    // Espresso's idling-resource registry) that is not reset between test classes.
+    // After a long suite the accumulated idling resources make the next
+    // createComposeRule().setContent() spin until AppNotIdleException. One class
+    // per JVM gives every class the same clean process it gets when run alone.
+    forkEvery = 1
+
+    if (screenshotRun) {
+        filter {
+            includeTestsMatching("cz.digitalnivedomi.diarium.ui.screenshots.EnglishScreenshotTest")
+        }
+        systemProperty("diarium.screenshots", "true")
+        systemProperty("diarium.screenshot.today", "2026-11-07")
+        systemProperty(
+            "diarium.screenshot.dir",
+            rootProject.file("docs/screenshots/en").absolutePath,
+        )
+        outputs.upToDateWhen { false }
+    } else {
+        filter {
+            excludeTestsMatching("cz.digitalnivedomi.diarium.ui.screenshots.EnglishScreenshotTest")
+        }
+        systemProperty("diarium.screenshots", "false")
+    }
+}
+
+tasks.register("screenshotEn") {
+    group = "documentation"
+    description = "Render the eight English documentation screenshots into docs/screenshots/en/."
+    dependsOn("testDebugUnitTest")
 }

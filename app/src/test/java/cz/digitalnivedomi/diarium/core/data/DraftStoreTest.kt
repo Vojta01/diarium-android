@@ -1,21 +1,36 @@
 package cz.digitalnivedomi.diarium.core.data
 
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Draft persistence, the native twin of the web's `diarium_draft_{date}`
@@ -36,21 +51,25 @@ class DraftStoreTest {
      * before a test reopens the same file — which is exactly what the
      * "survives a reopening" test means.
      */
-    private class Handle(val store: DraftStore, private val scope: CoroutineScope) {
+    private class Handle(
+        val store: DraftStore,
+        val dataStore: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences>,
+        private val scope: CoroutineScope,
+    ) {
         suspend fun close() {
             scope.coroutineContext[Job]?.cancelAndJoin()
         }
     }
 
-    private fun newStore(file: File): Handle {
+    private fun newStore(file: File, ownerId: String = OWNER_A): Handle {
         val scope = CoroutineScope(Dispatchers.IO + Job())
+        val dataStore = PreferenceDataStoreFactory.create(
+            scope = scope,
+            produceFile = { file },
+        )
         return Handle(
-            DraftStore(
-                PreferenceDataStoreFactory.create(
-                    scope = scope,
-                    produceFile = { file },
-                ),
-            ),
+            DraftStore(dataStore, ownerId),
+            dataStore,
             scope,
         )
     }
@@ -139,7 +158,8 @@ class DraftStoreTest {
 
     @Test
     fun `draft key matches the web localStorage naming`() {
-        assertEquals("diarium_draft_2026-09-10", DraftStore.key("2026-09-10"))
+        assertEquals("diarium_draft_v2_account-a_2026-09-10", DraftStore.key(OWNER_A, "2026-09-10"))
+        assertEquals("diarium_draft_2026-09-10", DraftStore.legacyKey("2026-09-10"))
     }
 
     @Test
@@ -155,5 +175,332 @@ class DraftStoreTest {
         assertEquals(3, reopened.store.load("2026-09-10")?.mood)
         assertEquals("trvá", reopened.store.load("2026-09-10")?.note)
         reopened.close()
+    }
+
+    @Test
+    fun `conditional clear removes only the draft matching a completed save`() = runBlocking {
+        val handle = newStore(tempFile())
+        val store = handle.store
+        val date = "2026-09-12"
+        val completed = DiaryEntry(mood = 4, note = "queued snapshot")
+        val newer = DiaryEntry(mood = 2, note = "new edit")
+
+        store.save(date, completed)
+        assertTrue(store.clearIfUnchanged(date, completed))
+        assertNull(store.load(date))
+
+        store.save(date, completed)
+        store.save(date, newer)
+        assertFalse(store.clearIfUnchanged(date, completed))
+        assertEquals(newer, store.load(date))
+
+        handle.close()
+    }
+
+    @Test
+    fun `draft server baseline metadata survives persistence`() = runBlocking {
+        val handle = newStore(tempFile())
+        val date = "2026-09-13"
+        val entry = DiaryEntry(mood = 4, note = "draft")
+        val baseline = "2026-09-12T18:00:00Z"
+
+        handle.store.save(date, entry, baselineUpdatedAt = baseline, baselineExists = true)
+
+        val restored = handle.store.loadRecord(date)
+        assertEquals(baseline, restored?.baselineUpdatedAt)
+        assertEquals(true, restored?.baselineExists)
+        handle.close()
+    }
+
+    @Test
+    fun `draft revision mismatch requires explicit recovery against server entry`() {
+        val base = DraftRecord(
+            ownerId = OWNER_A,
+            date = "2026-09-10",
+            entry = DiaryEntry(mood = 4, note = "unfinished edit"),
+            baselineUpdatedAt = "2026-09-10T10:00:00Z",
+            baselineExists = true,
+        )
+
+        assertFalse(base.conflictsWith(remoteExists = true, remoteUpdatedAt = "2026-09-10T10:00:00Z"))
+        assertTrue(base.conflictsWith(remoteExists = true, remoteUpdatedAt = "2026-09-10T11:00:00Z"))
+        assertTrue(
+            base.copy(baselineUpdatedAt = null)
+                .conflictsWith(remoteExists = true, remoteUpdatedAt = "2026-09-10T11:00:00Z"),
+        )
+    }
+
+    @Test
+    fun `autosave never upgrades an unverifiable draft baseline from a later server read`() = runBlocking {
+        val handle = newStore(tempFile())
+        val date = "2026-09-14"
+        val initial = DiaryEntry(mood = 3, note = "recovered local text")
+        handle.store.save(date, initial)
+        handle.store.save(
+            date,
+            initial.copy(note = "later autosave"),
+            baselineUpdatedAt = "2026-09-14T12:00:00Z",
+            baselineExists = true,
+        )
+
+        val recovered = handle.store.loadRecord(date)
+        assertEquals("later autosave", recovered?.entry?.note)
+        assertNull("the original unknown baseline stays unknown", recovered?.baselineUpdatedAt)
+        assertNull(recovered?.baselineExists)
+        handle.close()
+    }
+
+    @Test
+    fun `an unverified draft baseline requires recovery even when the remote day is empty`() {
+        val unverified = DraftRecord(
+            ownerId = OWNER_A,
+            date = "2026-09-10",
+            entry = DiaryEntry(mood = 4, note = "local draft"),
+            baselineUpdatedAt = null,
+            baselineExists = null,
+        )
+
+        assertTrue(unverified.conflictsWith(remoteExists = false, remoteUpdatedAt = null))
+    }
+
+    @Test
+    fun `drafts are isolated when the signed in account changes`() = runBlocking {
+        val file = tempFile()
+        val accountA = newStore(file, OWNER_A)
+        val privateDraft = DiaryEntry(mood = 5, note = "account A only")
+        accountA.store.save("2026-09-10", privateDraft)
+        accountA.close()
+
+        val accountB = newStore(file, OWNER_B)
+        assertNull(accountB.store.load("2026-09-10"))
+        accountB.store.save("2026-09-10", DiaryEntry(mood = 1, note = "account B"))
+        accountB.close()
+
+        val reopenedA = newStore(file, OWNER_A)
+        assertEquals(privateDraft, reopenedA.store.load("2026-09-10"))
+        reopenedA.close()
+    }
+
+    @Test
+    fun `legacy ownerless draft remains quarantined and is not restored`() = runBlocking {
+        val handle = newStore(tempFile(), OWNER_A)
+        val date = "2026-09-10"
+        val key = stringPreferencesKey(DraftStore.legacyKey(date))
+        val legacy = DiaryEntry(mood = 5, note = "unknown owner").toJson().toString()
+        handle.dataStore.edit { it[key] = legacy }
+
+        assertNull(handle.store.load(date))
+        assertEquals(legacy, handle.dataStore.data.first()[key])
+        handle.close()
+    }
+
+    @Test
+    fun `a newer queued draft survives a successful save clear and later edits remain owner scoped`() = runBlocking {
+        val file = tempFile()
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val backing = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        val gated = GatedPreferencesDataStore(backing)
+        val oldScreenStore = DraftStore(gated, OWNER_A)
+        val currentStore = DraftStore(gated, OWNER_A)
+        val otherOwnerStore = DraftStore(gated, OWNER_B)
+        val date = "2026-09-15"
+        val completed = DiaryEntry(mood = 4, note = "saved snapshot")
+        val newerEdit = completed.copy(note = "edited before clear")
+        val laterEdit = completed.copy(note = "edited after clear")
+        val otherOwnerEdit = DiaryEntry(mood = 1, note = "other owner")
+
+        try {
+            gated.gateNextWrite()
+            val oldWrite = oldScreenStore.stage(date, completed)
+            withTimeout(5_000) { gated.writeStarted.await() }
+
+            // This stage is submitted while the old write is in flight, but before
+            // the successful server save's cleanup begins. It must not be invalidated
+            // by that cleanup, even though the DataStore transaction is still queued.
+            val newerWrite = currentStore.stage(date, newerEdit)
+            val otherOwnerWrite = otherOwnerStore.stage(date, otherOwnerEdit)
+            val clear = async { currentStore.clearIfUnchanged(date, completed) }
+            yield()
+            gated.releaseWrite.complete(Unit)
+
+            oldWrite.await()
+            newerWrite.await()
+            otherOwnerWrite.await()
+            assertFalse("cleanup must retain the newer queued edit", withTimeout(5_000) { clear.await() })
+            assertEquals(newerEdit, currentStore.loadRecord(date)?.entry)
+            assertEquals(otherOwnerEdit, otherOwnerStore.loadRecord(date)?.entry)
+
+            // A subsequent edit still persists after the clear barrier and remains
+            // isolated by both account and date.
+            currentStore.save(date, laterEdit)
+            assertEquals(laterEdit, oldScreenStore.loadRecord(date)?.entry)
+            assertNull(currentStore.loadRecord("2026-09-16"))
+            assertEquals(otherOwnerEdit, otherOwnerStore.loadRecord(date)?.entry)
+        } finally {
+            gated.releaseWrite.complete(Unit)
+            scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `a delayed old account flush cannot cross into the current account draft`() = runBlocking {
+        val file = tempFile()
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val backing = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        val gated = GatedPreferencesDataStore(backing)
+        val accountA = DraftStore(gated, OWNER_A)
+        val accountB = DraftStore(gated, OWNER_B)
+        val date = "2026-09-16"
+        val privateA = DiaryEntry(mood = 5, note = "account A")
+        val savedB = DiaryEntry(mood = 2, note = "account B saved")
+
+        try {
+            gated.gateNextWrite()
+            accountA.flush(date, privateA)
+            withTimeout(5_000) { gated.writeStarted.await() }
+
+            accountB.save(date, savedB)
+            assertTrue(accountB.clearIfUnchanged(date, savedB))
+            gated.releaseWrite.complete(Unit)
+
+            withTimeout(5_000) {
+                while (accountA.loadRecord(date)?.entry != privateA) delay(10)
+            }
+            assertEquals(privateA, accountA.loadRecord(date)?.entry)
+            assertNull("account A's delayed flush must not create B's draft", accountB.loadRecord(date))
+        } finally {
+            gated.releaseWrite.complete(Unit)
+            scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `a cancelled screen waiter cannot cancel the durable draft stage`() = runBlocking {
+        val file = tempFile()
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val backing = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        val gated = GatedPreferencesDataStore(backing)
+        val store = DraftStore(gated, OWNER_A)
+        val date = "2026-09-17"
+        val draft = DiaryEntry(mood = 4, note = "staged before cancellable save")
+
+        try {
+            gated.gateNextWrite()
+            val screenSave = launch { store.save(date, draft) }
+            withTimeout(5_000) { gated.writeStarted.await() }
+            screenSave.cancelAndJoin()
+            gated.releaseWrite.complete(Unit)
+
+            withTimeout(5_000) {
+                while (store.loadRecord(date)?.entry != draft) delay(10)
+            }
+            assertEquals(draft, store.loadRecord(date)?.entry)
+        } finally {
+            gated.releaseWrite.complete(Unit)
+            scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `an IOException while reading a draft is surfaced as recoverable corruption`() = runBlocking {
+        val failure = runCatching {
+            DraftStore(FailingReadDataStore(), OWNER_A).loadRecord("2026-09-18")
+        }.exceptionOrNull()
+
+        assertTrue(failure is DraftStoreReadException)
+        assertTrue(failure?.cause is IOException)
+    }
+
+    @Test
+    fun `a malformed draft is not silently treated as missing or overwritten`() = runBlocking {
+        val handle = newStore(tempFile())
+        val date = "2026-09-19"
+        val key = stringPreferencesKey(DraftStore.key(OWNER_A, date))
+        val corrupt = "{not valid json"
+        handle.dataStore.edit { it[key] = corrupt }
+
+        val failure = runCatching { handle.store.loadRecord(date) }.exceptionOrNull()
+        assertTrue(failure is DraftStoreReadException)
+        val writeFailure = runCatching {
+            handle.store.save(date, DiaryEntry(mood = 4, note = "do not replace corrupt source"))
+        }.exceptionOrNull()
+        assertNotNull("a write must not replace an unreadable corrupt record", writeFailure)
+        assertEquals(corrupt, handle.dataStore.data.first()[key])
+        handle.close()
+    }
+
+    @Test
+    fun `a lifecycle flush failure is observable and a later retry persists the draft`() = runBlocking {
+        val file = tempFile()
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val backing = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        val store = DraftStore(FailOnceWriteDataStore(backing), OWNER_A)
+        val date = "2026-09-20"
+        val entry = DiaryEntry(mood = 5, note = "retained in the form")
+
+        try {
+            val failed = runCatching { store.flush(date, entry).await() }.exceptionOrNull()
+            assertTrue("flush must expose its DataStore failure", failed is IOException)
+            assertNull(backing.data.first()[stringPreferencesKey(DraftStore.key(OWNER_A, date))])
+
+            withTimeout(5_000) { store.flush(date, entry).await() }
+            assertEquals(entry, store.loadRecord(date)?.entry)
+        } finally {
+            scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    private companion object {
+        const val OWNER_A = "account-a"
+        const val OWNER_B = "account-b"
+    }
+
+    private class GatedPreferencesDataStore(
+        private val delegate: DataStore<Preferences>,
+    ) : DataStore<Preferences> {
+        val writeStarted = CompletableDeferred<Unit>()
+        val releaseWrite = CompletableDeferred<Unit>()
+        @Volatile
+        private var gateArmed = false
+
+        fun gateNextWrite() {
+            gateArmed = true
+        }
+
+        override val data: Flow<Preferences> get() = delegate.data
+
+        override suspend fun updateData(
+            transform: suspend (Preferences) -> Preferences,
+        ): Preferences {
+            if (gateArmed) {
+                gateArmed = false
+                writeStarted.complete(Unit)
+                releaseWrite.await()
+            }
+            return delegate.updateData(transform)
+        }
+    }
+
+    private class FailingReadDataStore : DataStore<Preferences> {
+        override val data: Flow<Preferences> = flow<Preferences> { throw IOException("simulated DataStore read failure") }
+
+        override suspend fun updateData(
+            transform: suspend (Preferences) -> Preferences,
+        ): Preferences = throw IOException("simulated DataStore write failure")
+    }
+
+    private class FailOnceWriteDataStore(
+        private val delegate: DataStore<Preferences>,
+    ) : DataStore<Preferences> {
+        private val shouldFail = AtomicBoolean(true)
+
+        override val data: Flow<Preferences> get() = delegate.data
+
+        override suspend fun updateData(
+            transform: suspend (Preferences) -> Preferences,
+        ): Preferences {
+            if (shouldFail.compareAndSet(true, false)) throw IOException("simulated transient write failure")
+            return delegate.updateData(transform)
+        }
     }
 }

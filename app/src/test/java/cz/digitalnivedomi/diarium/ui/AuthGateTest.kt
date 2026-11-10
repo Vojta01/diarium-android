@@ -10,7 +10,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import cz.digitalnivedomi.diarium.auth.AuthManager
+import cz.digitalnivedomi.diarium.auth.AuthCallbackOutcome
 import cz.digitalnivedomi.diarium.auth.AuthStateHolder
 import cz.digitalnivedomi.diarium.auth.AuthStatus
 import cz.digitalnivedomi.diarium.auth.SessionStore
@@ -21,6 +21,7 @@ import cz.digitalnivedomi.diarium.ui.theme.DiariumTheme
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -44,18 +45,22 @@ class AuthGateTest {
     private val base64 = Base64.getUrlEncoder().withoutPadding()
 
     private fun session(): JSONObject = JSONObject().apply {
-        put("access_token", "access-1")
-        put("refresh_token", "refresh-1")
+        put("access_token", jwt("user-1"))
+        put("refresh_token", "test-refresh")
         put("expires_at", System.currentTimeMillis() / 1000 + 3600)
         put("expires_in", 3600)
-        put("user", JSONObject().put("id", "user-1"))
+        put("token_type", "bearer")
+        put("user", JSONObject().put("id", "user-1").put("email", "user@example.com"))
+        put("verified_user_id", "user-1")
     }
 
-    /** A real `diarium://auth-callback#…` link with a decodable JWT. */
-    private fun sessionUri(): String {
+    /** Synthetic callback; identity verification is exercised in AuthPkceFlowTest. */
+    private fun sessionUri(): String = "diarium://auth-callback?state=state-1&code=fake-code"
+
+    private fun jwt(subject: String): String {
         val header = base64.encodeToString("""{"alg":"HS256","typ":"JWT"}""".toByteArray())
-        val payload = base64.encodeToString("""{"sub":"user-1","email":"user@example.com"}""".toByteArray())
-        return "diarium://auth-callback#access_token=$header.$payload.sig&refresh_token=r1&expires_in=3600"
+        val payload = base64.encodeToString("""{"sub":"$subject"}""".toByteArray())
+        return "$header.$payload.synthetic-signature"
     }
 
     @Test
@@ -81,7 +86,7 @@ class AuthGateTest {
         val holder = AuthStateHolder(store)
         // The shell gate waits for the profile store; mark onboarding done so the
         // authenticated state renders the tabs, not the first-run wizard.
-        runBlocking { ProfileStore.from(context).setOnboardingDone(true) }
+        runBlocking { ProfileStore.from(context, "user-1").setOnboardingDone(true) }
         val link = mutableStateOf<String?>(null)
         val handled = mutableListOf<String>()
 
@@ -91,17 +96,12 @@ class AuthGateTest {
                     authDeepLink = link,
                     authState = holder,
                     onAuthDeepLink = { raw ->
-                        // Mirrors MainActivity → AuthManager.handleAuthCallback, minus
-                        // the WorkManager/FCM side effects (no Activity in a JVM test).
+                        // This UI-only fake models a successful PKCE exchange; the
+                        // fake-transport protocol tests cover code/state verification.
                         handled += raw
-                        val session = AuthManager.parseSessionFromCallback(raw)
-                        if (session != null) {
-                            store.save(session)
-                            holder.refresh()
-                            true
-                        } else {
-                            false
-                        }
+                        store.save(session())
+                        holder.refresh()
+                        AuthCallbackOutcome.Verified("user-1")
                     },
                 )
             }
@@ -132,26 +132,73 @@ class AuthGateTest {
                 DiariumApp(
                     authDeepLink = link,
                     authState = holder,
-                    onAuthDeepLink = { raw ->
-                        val session = AuthManager.parseSessionFromCallback(raw)
-                        if (session != null) {
-                            store.save(session)
-                            holder.refresh()
-                            true
-                        } else {
-                            false
-                        }
-                    },
+                    onAuthDeepLink = { AuthCallbackOutcome.Rejected },
                 )
             }
         }
 
-        compose.runOnIdle { link.value = "diarium://auth-callback#error=access_denied" }
+        compose.runOnIdle { link.value = "diarium://auth-callback?state=invalid&code=fake-code" }
         compose.waitForIdle()
 
         assertEquals(AuthStatus.UNAUTHENTICATED, holder.status.value)
-        compose.onNodeWithText("Přihlášení se nepovedlo. Zkus to prosím znovu.").assertExists()
+        compose.onNodeWithText("Přihlášení se nepodařilo ověřit. Zkontroluj připojení a zkus to znovu.").assertExists()
         compose.onNodeWithText("Historie").assertDoesNotExist()
+    }
+
+    @Test
+    fun `failed verification keeps the existing owner session and reports an error`() {
+        val store = SessionStore(context)
+        store.save(session())
+        val originalSession = store.sessionJson()
+        val holder = AuthStateHolder(store)
+        runBlocking { ProfileStore.from(context, "user-1").setOnboardingDone(true) }
+        val link = mutableStateOf<String?>(null)
+
+        compose.setContent {
+            DiariumTheme {
+                DiariumApp(
+                    authDeepLink = link,
+                    authState = holder,
+                    onAuthDeepLink = { AuthCallbackOutcome.Rejected },
+                )
+            }
+        }
+        compose.runOnIdle { link.value = sessionUri() }
+        compose.waitForIdle()
+
+        assertEquals(originalSession, store.sessionJson())
+        assertEquals(AuthStatus.AUTHENTICATED, holder.status.value)
+        assertEquals("user-1", holder.ownerId.value)
+        compose.onNodeWithText("Ověření přihlášení").assertExists()
+        compose.onNodeWithText("Historie").assertExists()
+    }
+
+    @Test
+    fun `ownerless stored session is gated and can be cleared from login`() {
+        val store = SessionStore(context).apply {
+            save(
+                JSONObject()
+                    .put("access_token", "opaque-token-must-not-be-shown")
+                    .put("refresh_token", "refresh-legacy")
+                    .put("user", JSONObject().put("id", "")),
+            )
+        }
+        val holder = AuthStateHolder(store)
+        compose.setContent {
+            DiariumTheme {
+                DiariumApp(authDeepLink = mutableStateOf<String?>(null), authState = holder)
+            }
+        }
+
+        assertEquals(AuthStatus.UNAUTHENTICATED, holder.status.value)
+        assertTrue(holder.hasUnusableStoredSession)
+        compose.onNodeWithText("Vymazat uložené přihlášení").assertExists().performClick()
+        compose.waitForIdle()
+
+        assertFalse(store.hasSession())
+        assertFalse(holder.hasUnusableStoredSession)
+        assertEquals(AuthStatus.UNAUTHENTICATED, holder.status.value)
+        compose.onNodeWithText("opaque-token-must-not-be-shown").assertDoesNotExist()
     }
 
     @Test
@@ -160,7 +207,7 @@ class AuthGateTest {
         store.save(session())
         // The shell gate waits for the profile store; mark onboarding done so the
         // authenticated state renders the tabs, not the first-run wizard.
-        runBlocking { ProfileStore.from(context).setOnboardingDone(true) }
+        runBlocking { ProfileStore.from(context, "user-1").setOnboardingDone(true) }
         val holder = AuthStateHolder(store)
         compose.setContent {
             DiariumTheme {

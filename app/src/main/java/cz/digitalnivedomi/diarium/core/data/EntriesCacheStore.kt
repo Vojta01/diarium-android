@@ -7,6 +7,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.util.Base64
 
 /**
  * File-backed snapshot of the `entries` rows the dashboard last saw, so a cold
@@ -23,14 +24,18 @@ import java.io.File
  * changes.
  *
  * On-disk format (compact `toString()`):
- * `{"version":1,"rows":{"<date>":{...row...}, ...}}`.
+ * ownerless test fixtures use `{"version":1,"rows":{...}}`; app caches use
+ * `{"version":2,"ownerId":"…","rows":{...}}` in a per-owner file.
  *
  * Reads and writes go through [mutex] and `Dispatchers.IO`, so two coroutines
  * can never interleave on the file, and a write never leaves a half-written
  * snapshot: [persist] writes a temp sibling first and swaps it in with a
  * rename.
  */
-class EntriesCacheStore(private val file: File) {
+class EntriesCacheStore(
+    private val file: File,
+    val ownerId: String? = null,
+) {
 
     /** Serialises this store's file access; see the class KDoc. */
     private val mutex = Mutex()
@@ -115,7 +120,9 @@ class EntriesCacheStore(private val file: File) {
         } else {
             val root = JSONObject(file.readText())
             val rows = root.optJSONObject("rows")
-            if (root.optInt("version", -1) == FORMAT_VERSION) rows else null
+            val version = if (ownerId == null) LEGACY_FORMAT_VERSION else OWNER_FORMAT_VERSION
+            val ownerMatches = ownerId == null || root.optString("ownerId") == ownerId
+            if (root.optInt("version", -1) == version && ownerMatches) rows else null
         }
     } catch (_: Exception) {
         null
@@ -149,10 +156,11 @@ class EntriesCacheStore(private val file: File) {
     private fun persist(rows: JSONObject) {
         val directory = file.parentFile ?: return
         if (!directory.exists()) directory.mkdirs()
-        val payload = JSONObject()
-            .put("version", FORMAT_VERSION)
-            .put("rows", rows)
-            .toString()
+        val root = JSONObject()
+            .put("version", if (ownerId == null) LEGACY_FORMAT_VERSION else OWNER_FORMAT_VERSION)
+        ownerId?.let { root.put("ownerId", it) }
+        root.put("rows", rows)
+        val payload = root.toString()
         val temp = File.createTempFile(TEMP_FILE_PREFIX, ".tmp", directory)
         try {
             temp.writeText(payload)
@@ -165,21 +173,20 @@ class EntriesCacheStore(private val file: File) {
     }
 
     companion object {
-        /** The snapshot file inside `context.filesDir`; see [from]. */
+        /** Legacy unscoped cache filename; retained but never read by the app factory. */
         const val FILE_NAME = "entries_cache.json"
 
-        /** Current on-disk format; any other version reads as "no cache". */
-        private const val FORMAT_VERSION = 1
-
-        /** Prefix for the temp sibling [persist] writes before the rename. */
+        private const val LEGACY_FORMAT_VERSION = 1
+        private const val OWNER_FORMAT_VERSION = 2
         private const val TEMP_FILE_PREFIX = "entries_cache_"
 
-        /**
-         * The store the app uses: one snapshot file in the app-private files
-         * dir. Application context on purpose — the cache is process-wide and
-         * must not keep a screen alive.
-         */
-        fun from(context: Context): EntriesCacheStore =
-            EntriesCacheStore(File(context.filesDir, FILE_NAME))
+        /** Stable per-owner file name; base64url keeps arbitrary IDs out of path syntax. */
+        fun fileName(ownerId: String): String =
+            "entries_cache_v2_${Base64.getUrlEncoder().withoutPadding().encodeToString(ownerId.toByteArray(Charsets.UTF_8))}.json"
+
+        /** The app never reads the old ownerless snapshot. */
+        fun from(context: Context, ownerId: String): EntriesCacheStore =
+            EntriesCacheStore(File(context.filesDir, fileName(ownerId)), ownerId)
+
     }
 }

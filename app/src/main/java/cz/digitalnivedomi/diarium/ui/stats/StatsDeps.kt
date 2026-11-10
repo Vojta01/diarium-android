@@ -45,16 +45,15 @@ class StatsDeps(
             val sessionStore = AppClients.sessionStore(context)
             val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
+            val ownerId = session.userId()
             return StatsDeps(
                 stats = StatsRepository(
                     EntriesRepository(
                         client,
                         session,
-                        // Stats read the same window as the dashboard: the snapshot
-                        // renders them instantly, the outbox keeps offline saves
-                        // visible to them too.
-                        cache = EntriesCacheStore.from(context),
-                        pending = PendingSaveStore.from(context),
+                        cache = ownerId?.let { EntriesCacheStore.from(context, it) },
+                        pending = PendingSaveStore.from(context, ownerId),
+                        expectedOwnerId = ownerId,
                     ),
                 ),
                 goals = GoalsRepository(client, session),

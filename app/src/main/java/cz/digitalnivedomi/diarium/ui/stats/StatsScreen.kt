@@ -24,7 +24,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.ui.i18n.Text
+import cz.digitalnivedomi.diarium.ui.i18n.translate
+import java.time.LocalDate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,6 +54,7 @@ import cz.digitalnivedomi.diarium.core.stats.StatsDay
 import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
 import cz.digitalnivedomi.diarium.ui.checkin.MOOD_CHOICES
+import cz.digitalnivedomi.diarium.ui.checkin.moodChoiceText
 import cz.digitalnivedomi.diarium.ui.checkin.components.ErrorBanner
 import cz.digitalnivedomi.diarium.ui.checkin.components.PrimaryButton
 import cz.digitalnivedomi.diarium.ui.checkin.components.ReadOnlyRow
@@ -118,6 +122,8 @@ fun StatsScreen(
     holder: StatsStateHolder = remember { StatsStateHolder() },
     /** Opens the check-in for a day from the best/worst card — owned by the app shell. */
     onOpenCheckIn: (String) -> Unit = {},
+    /** The window's last day; a parameter so a screenshot can pin it. */
+    today: LocalDate = LocalDate.now(),
 ) {
     val state = holder.state
     val data = state.data
@@ -134,9 +140,9 @@ fun StatsScreen(
         onPauseOrDispose { }
     }
 
-    LaunchedEffect(repository, deps.goals, reloadTrigger) {
+    LaunchedEffect(repository, deps.goals, reloadTrigger, today) {
         holder.markLoading()
-        val result = repository?.load()
+        val result = repository?.load(today.toString())
         if (result == null) {
             holder.showError(ERROR_LOAD)
         } else {
@@ -192,24 +198,18 @@ private const val ERROR_LOAD = "Statistiky se nepodařilo načíst."
 /** Height of the chart tracks: the tallest bar fills it. */
 private val TRACK = 120.dp
 
-/** Czech numeric date, used for day captions. */
-private val shortDate = DateTimeFormatter.ofPattern("d. M. yyyy", Locale("cs", "CZ"))
+/** Numeric date in the UI language, used for day captions. */
+private val shortDate: DateTimeFormatter
+    get() = UiDates.numericDate()
 
 /** "5. 9. 2026", or the raw value if it is not a date. */
 private fun shortDateOf(date: String): String = CheckInDates.parse(date)?.format(shortDate) ?: date
 
-/** Czech weekday abbreviation, Monday first — the same labels the web prints. */
-private fun weekdayLabel(date: String): String =
-    when (CheckInDates.parse(date)?.dayOfWeek) {
-        DayOfWeek.MONDAY -> "Po"
-        DayOfWeek.TUESDAY -> "Út"
-        DayOfWeek.WEDNESDAY -> "St"
-        DayOfWeek.THURSDAY -> "Čt"
-        DayOfWeek.FRIDAY -> "Pá"
-        DayOfWeek.SATURDAY -> "So"
-        DayOfWeek.SUNDAY -> "Ne"
-        null -> ""
-    }
+/** Two-letter weekday in the UI language, Monday first — the same labels the charts print. */
+private fun weekdayLabel(date: String): String {
+    val dayOfWeek = CheckInDates.parse(date)?.dayOfWeek ?: return ""
+    return StatsMath.weekdayShortName(dayOfWeek)
+}
 
 /** Czech plural for a day count: 1 den, 2–4 dny, 5+ dní. */
 private fun dayWord(count: Int): String = when {
@@ -218,11 +218,15 @@ private fun dayWord(count: Int): String = when {
     else -> "dní"
 }
 
+/** "17 dní" — the answered-days tile's whole label, built once so the count cannot double. */
+internal fun answeredDaysText(count: Int): String = "$count ${dayWord(count)}"
+
 private fun moodEmojiOf(mood: Int): String =
     MOOD_CHOICES.firstOrNull { it.value == mood }?.emoji ?: "⚪"
 
-private fun moodLabelOf(mood: Int): String =
-    MOOD_CHOICES.firstOrNull { it.value == mood }?.label ?: "Bez odpovědi"
+/** "3 dny · 38 %" — the distribution card's tap detail, matched by a whole-string rule. */
+internal fun moodShareText(count: Int, percent: Int): String =
+    "$count ${dayWord(count)} · $percent %"
 
 /** The web prints `toFixed(1)`, so averages keep a dot rather than a Czech comma. */
 private fun formatAverageMood(value: Double): String = String.format(Locale.US, "%.1f", value)
@@ -399,7 +403,7 @@ private fun StatsContent(
         StaggeredItem(1) { SectionHeader("Nálada") }
 
         if (days.isEmpty()) {
-            StaggeredItem(2) { EmptyWindowCard(rangeLabel = range.label, onReload = onReload) }
+            StaggeredItem(2) { EmptyWindowCard(range = range, onReload = onReload) }
         } else {
             StaggeredItem(2) { MoodDistributionCard(days = days, rangeLabel = range.label) }
             // The year hands the chart its calendar year, which is what switches it from
@@ -445,13 +449,13 @@ private fun StatsContent(
 }
 
 @Composable
-private fun EmptyWindowCard(rangeLabel: String, onReload: () -> Unit) {
+private fun EmptyWindowCard(range: StatsRange, onReload: () -> Unit) {
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader("📊 Nálada")
         VSpace(Spacing.block)
         EmptyState(
             emoji = "📊",
-            title = "Za posledních $rangeLabel žádný zápis",
+            title = emptyWindowTitle(range),
             message = "Zapiš dnešní den na kartě „Dnes“ a čísla se objeví tady.",
             action = {
                 PrimaryButton(text = "Načíst znovu", testTag = "stats_empty_retry") { onReload() }
@@ -459,6 +463,21 @@ private fun EmptyWindowCard(rangeLabel: String, onReload: () -> Unit) {
         )
     }
 }
+
+/**
+ * The empty-window headline in proper Czech.
+ *
+ * A day-count window says "Za posledních 7 dní žádný zápis"; the year tab follows the
+ * calendar, so dropping its "Tento rok" label into that template produced the
+ * ungrammatical "Za posledních Tento rok žádný zápis". The year gets its own sentence
+ * at the source instead of a translation rule papering over the broken Czech.
+ */
+internal fun emptyWindowTitle(range: StatsRange): String =
+    if (range.year) {
+        "Tento rok žádný zápis"
+    } else {
+        "Za posledních ${range.label} žádný zápis"
+    }
 
 /**
  * The window's two headline numbers, as their own elevated glass tile row — the brand
@@ -480,9 +499,9 @@ private fun MoodSummaryTiles(average: Double, answered: Int) {
             StatTile(label = "Zapsaných dní", modifier = Modifier.weight(1f)) {
                 AnimatedCounter(
                     value = answered,
+                    label = ::answeredDaysText,
                     style = MaterialTheme.typography.titleLarge,
                     color = TextPrimary,
-                    suffix = " ${dayWord(answered)}",
                 )
             }
         }
@@ -604,8 +623,8 @@ private fun MoodDistributionCard(days: List<StatsDay>, rangeLabel: String) {
                 val count = counts[mood] ?: 0
                 val percent = if (answered > 0) (count * 100.0 / answered).roundToInt() else 0
                 ReadOnlyRow(
-                    label = "${moodEmojiOf(mood)} ${moodLabelOf(mood)}",
-                    value = "$count ${dayWord(count)} · $percent %",
+                    label = moodChoiceText(mood),
+                    value = moodShareText(count, percent),
                 )
             }
         }
@@ -644,8 +663,8 @@ private fun MoodTrendCard(days: List<StatsDay>, year: Int? = null) {
                 mood = monthAverage?.roundToInt() ?: 0,
                 written = month.answered,
                 moodText = monthAverage?.let {
-                    "${moodEmojiOf(it.roundToInt())} ${moodLabelOf(it.roundToInt())}"
-                } ?: "Bez odpovědi",
+                    moodChoiceText(it.roundToInt())
+                } ?: translate("Bez odpovědi"),
                 detailRows = if (monthAverage == null) {
                     emptyList()
                 } else {
@@ -666,9 +685,9 @@ private fun MoodTrendCard(days: List<StatsDay>, year: Int? = null) {
                 mood = point.mood,
                 written = written,
                 moodText = if (written) {
-                    "${moodEmojiOf(point.mood)} ${moodLabelOf(point.mood)}"
+                    moodChoiceText(point.mood)
                 } else {
-                    "Bez odpovědi"
+                    translate("Bez odpovědi")
                 },
                 detailRows = emptyList(),
             )

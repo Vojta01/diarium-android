@@ -9,6 +9,8 @@ import android.os.Build
 import androidx.work.Data
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import cz.digitalnivedomi.diarium.core.data.AppClients
+import cz.digitalnivedomi.diarium.core.data.SessionContext
 import java.time.ZoneId
 
 /**
@@ -32,6 +34,17 @@ object NotificationScheduler {
     const val TYPE_MORNING = "morning"
     const val TYPE_WEEKLY = "weekly"
     const val TYPE_MONTHLY = "monthly"
+    const val EXTRA_OWNER_ID = "report_owner_id"
+
+    internal fun capturedOwnerMatches(expectedOwnerId: String?, currentOwnerId: String?): Boolean =
+        !expectedOwnerId.isNullOrBlank() && expectedOwnerId == currentOwnerId
+
+    /** Build the immutable identity payload used by alarms, safety-net and worker tests. */
+    internal fun workerInputData(type: String, ownerId: String?): Data {
+        val builder = Data.Builder().putString(EXTRA_TYPE, type)
+        ownerId?.takeIf { it.isNotBlank() }?.let { builder.putString(EXTRA_OWNER_ID, it) }
+        return builder.build()
+    }
 
     private const val REQ_REMINDER = 2001
     private const val REQ_WEEKLY = 2002
@@ -42,20 +55,29 @@ object NotificationScheduler {
     private const val INEXACT_WINDOW_MS = 15 * 60 * 1000L
 
     fun rescheduleAll(context: Context) {
+        val ownerId = SessionContext(AppClients.sessionStore(context)).verifiedUserId()
+        if (ownerId == null) {
+            cancel(context, REQ_REMINDER)
+            cancel(context, REQ_MORNING)
+            cancel(context, REQ_WEEKLY)
+            cancel(context, REQ_MONTHLY)
+            ReportSafetyNetWorker.cancel(context)
+            return
+        }
+
         val prefs = NotificationPrefsStore(context).load()
-        if (prefs.reminderEnabled) scheduleReminder(context, prefs)
+        if (prefs.reminderEnabled) scheduleReminder(context, prefs, ownerId)
         else cancel(context, REQ_REMINDER)
-        if (prefs.morningReminderEnabled) scheduleMorning(context, prefs)
+        if (prefs.morningReminderEnabled) scheduleMorning(context, prefs, ownerId)
         else cancel(context, REQ_MORNING)
-        if (prefs.weeklyEnabled) scheduleWeekly(context, prefs)
+        if (prefs.weeklyEnabled) scheduleWeekly(context, prefs, ownerId)
         else cancel(context, REQ_WEEKLY)
-        if (prefs.monthlyEnabled) scheduleMonthly(context, prefs)
+        if (prefs.monthlyEnabled) scheduleMonthly(context, prefs, ownerId)
         else cancel(context, REQ_MONTHLY)
 
-        // The reports are driven by the exact alarms above; the periodic check
-        // only rescues a missed alarm, so it is always armed (the worker itself
-        // respects the per-type switches).
-        ReportSafetyNetWorker.schedule(context)
+        // The reports are driven by the exact alarms above; replace the safety net
+        // so its periodic input always carries the current account, never an old one.
+        ReportSafetyNetWorker.schedule(context, ownerId)
     }
 
     /**
@@ -81,51 +103,52 @@ object NotificationScheduler {
             true
         }
 
-    private fun scheduleReminder(context: Context, prefs: NotificationPrefs) {
+    private fun scheduleReminder(context: Context, prefs: NotificationPrefs, ownerId: String) {
         val next = NotificationSchedulerLogic.nextDailyMillis(
             now = System.currentTimeMillis(),
             timeMinutes = prefs.reminderTimeMinutes,
             days = prefs.reminderDays,
             zone = ZoneId.systemDefault(),
         ) ?: return // no day selected → nothing to arm
-        setExact(context, REQ_REMINDER, next, alarmIntent(context, TYPE_REMINDER))
+        setExact(context, REQ_REMINDER, next, alarmIntent(context, TYPE_REMINDER, ownerId))
     }
 
     /** Every day of the week — "yesterday has no mood" can be true any morning. */
-    private fun scheduleMorning(context: Context, prefs: NotificationPrefs) {
+    private fun scheduleMorning(context: Context, prefs: NotificationPrefs, ownerId: String) {
         val next = NotificationSchedulerLogic.nextDailyMillis(
             now = System.currentTimeMillis(),
             timeMinutes = prefs.morningReminderTimeMinutes,
             days = setOf(1, 2, 3, 4, 5, 6, 7),
             zone = ZoneId.systemDefault(),
         ) ?: return // all seven days selected → unreachable
-        setExact(context, REQ_MORNING, next, alarmIntent(context, TYPE_MORNING))
+        setExact(context, REQ_MORNING, next, alarmIntent(context, TYPE_MORNING, ownerId))
     }
 
-    private fun scheduleWeekly(context: Context, prefs: NotificationPrefs) {
+    private fun scheduleWeekly(context: Context, prefs: NotificationPrefs, ownerId: String) {
         val next = NotificationSchedulerLogic.nextWeeklyMillis(
             now = System.currentTimeMillis(),
             timeMinutes = prefs.weeklyTimeMinutes,
             day = prefs.weeklyDay,
             zone = ZoneId.systemDefault(),
         )
-        setExact(context, REQ_WEEKLY, next, alarmIntent(context, TYPE_WEEKLY))
+        setExact(context, REQ_WEEKLY, next, alarmIntent(context, TYPE_WEEKLY, ownerId))
     }
 
-    private fun scheduleMonthly(context: Context, prefs: NotificationPrefs) {
+    private fun scheduleMonthly(context: Context, prefs: NotificationPrefs, ownerId: String) {
         val next = NotificationSchedulerLogic.nextMonthlyMillis(
             now = System.currentTimeMillis(),
             timeMinutes = prefs.monthlyTimeMinutes,
             dayOfMonth = 1,
             zone = ZoneId.systemDefault(),
         )
-        setExact(context, REQ_MONTHLY, next, alarmIntent(context, TYPE_MONTHLY))
+        setExact(context, REQ_MONTHLY, next, alarmIntent(context, TYPE_MONTHLY, ownerId))
     }
 
-    private fun alarmIntent(context: Context, type: String): PendingIntent {
+    private fun alarmIntent(context: Context, type: String, ownerId: String): PendingIntent {
         val intent = Intent(context, NotificationAlarmReceiver::class.java).apply {
             action = ACTION_ALARM
             putExtra(EXTRA_TYPE, type)
+            putExtra(EXTRA_OWNER_ID, ownerId)
         }
         return PendingIntent.getBroadcast(
             context, requestCodeFor(type), intent,
@@ -166,9 +189,9 @@ object NotificationScheduler {
     }
 
     /** After a job fires we enqueue its worker and re-arm the next occurrence. */
-    fun onAlarmFired(context: Context, type: String) {
+    fun onAlarmFired(context: Context, type: String, ownerId: String?) {
         val work = OneTimeWorkRequestBuilder<NotificationWorker>()
-            .setInputData(Data.Builder().putString(EXTRA_TYPE, type).build())
+            .setInputData(workerInputData(type, ownerId))
             .build()
         WorkManager.getInstance(context).enqueue(work)
         rescheduleAll(context) // re-arm the next occurrence for all enabled types
@@ -181,7 +204,8 @@ class NotificationAlarmReceiver : BroadcastReceiver() {
         if (intent.action != NotificationScheduler.ACTION_ALARM) return
         val type = intent.getStringExtra(NotificationScheduler.EXTRA_TYPE)
             ?: NotificationScheduler.TYPE_REMINDER
-        NotificationScheduler.onAlarmFired(context, type)
+        val ownerId = intent.getStringExtra(NotificationScheduler.EXTRA_OWNER_ID)
+        NotificationScheduler.onAlarmFired(context, type, ownerId)
     }
 }
 

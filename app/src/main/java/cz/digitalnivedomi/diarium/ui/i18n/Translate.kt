@@ -6,8 +6,8 @@ import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
  * Czech -> English translation for UI chrome.
  *
  * Lookup order:
- *  1. [EnStrings.exact] — the 680 static strings, keyed by the exact Czech literal.
- *  2. [RULES] — ~55 patterns for strings built at runtime (counts, dates, names, plurals).
+ *  1. [EnStrings.exact] — the ~750 static strings, keyed by the exact Czech literal.
+ *  2. [RULES] — 83 patterns for strings built at runtime (counts, dates, names, plurals).
  *  3. Fallback — return the Czech text unchanged. A missed string shows Czech in the English
  *     UI (visible, not broken) instead of crashing or rendering an empty label.
  *
@@ -41,6 +41,8 @@ private fun moodWord(cs: String): String = when (cs) {
     "špatná" -> "bad"
     "průměrná" -> "average"
     "dobrá" -> "good"
+    "výborná" -> "excellent"
+    "slabá" -> "weak"
     "skvělá" -> "great"
     else -> cs
 }
@@ -76,14 +78,13 @@ private val RULES: List<Rule> = listOf(
         "In progress — ${days(m.groupValues[1].toInt())} left."
     },
     rule("""^Týden (.+)$""") { m -> "Week ${m.groupValues[1]}" },
-    rule("""^V měsíci (.+)$""") { m -> "In ${m.groupValues[1]}" },
     rule("""^Za (.+) ji ještě nemáš\.$""") { m ->
         "You don't have it for ${m.groupValues[1]} yet."
     },
     rule("""^Některé cíle se nepodařilo uložit \((.+)\)\. Zkus to prosím znovu\.$""") { m ->
         "Some goals could not be saved (${m.groupValues[1]}). Please try again."
     },
-    rule("""^(\d+) dní s aktivitou$""") { m ->
+    rule("""^(\d+) (?:den|dny|dní) s aktivitou$""") { m ->
         "${days(m.groupValues[1].toInt())} with activity"
     },
     rule("""^série 🔥(\d+)$""") { m -> "🔥${m.groupValues[1]} streak" },
@@ -92,6 +93,11 @@ private val RULES: List<Rule> = listOf(
     },
     rule("""^(\d+) (?:den|dny|dní) v řadě$""") { m ->
         "${days(m.groupValues[1].toInt())} in a row"
+    },
+    // The running streak's subtitle carries no number of its own — the hero number sits
+    // next to it — so the Czech plural word is the only clue to "day(s) in a row".
+    rule("""^(den|dny|dní) v řadě$""") { m ->
+        if (m.groupValues[1] == "den") "day in a row" else "days in a row"
     },
     rule("""^🔥 (\d+) (?:den|dny|dní) v řadě$""") { m ->
         "🔥 ${days(m.groupValues[1].toInt())} in a row"
@@ -102,16 +108,30 @@ private val RULES: List<Rule> = listOf(
     rule("""^Nejdelší série \(za (\d+) dní\)$""") { m ->
         "Longest streak (over ${days(m.groupValues[1].toInt())})"
     },
-    rule("""^· (\d+) dní$""") { m -> "· ${days(m.groupValues[1].toInt())}" },
+    rule("""^· Tento rok$""") { "· This year" },
+    rule("""^· (\d+) (?:den|dny|dní)$""") { m -> "· ${days(m.groupValues[1].toInt())}" },
     rule("""^(\d+) dnů$""") { m -> days(m.groupValues[1].toInt()) },
+    rule("""^(\d+) (?:den|dny|dní)$""") { m -> days(m.groupValues[1].toInt()) },
     rule("""^Cíle (\d+)/(\d+)$""") { m ->
         "Goals ${m.groupValues[1]}/${m.groupValues[2]}"
     },
     rule("""^🎯 Cíle · (\d+)/(\d+) splněno$""") { m ->
         "🎯 Goals · ${m.groupValues[1]}/${m.groupValues[2]} met"
     },
+    rule("""^aktivita: (.+)$""") { m -> "activity: ${translate(m.groupValues[1])}" },
 
     // --- dashboard / mood ------------------------------------------------------------
+    // The trend caption is translated whole *before* TrendLine splits the arrow off, so
+    // these patterns carry the arrow the screen actually renders.
+    rule("""^(↑|↓) o (\d+) % (více|méně|vyšší|nižší) než minulý týden$""") { m ->
+        val comparison = when (m.groupValues[3]) {
+            "více" -> "more"
+            "méně" -> "less"
+            "vyšší" -> "higher"
+            else -> "lower"
+        }
+        "${m.groupValues[1]} ${m.groupValues[2]} % $comparison than last week"
+    },
     rule("""^(.+) (.+) nálada$""") { m ->
         "${m.groupValues[1]} ${moodWord(m.groupValues[2])} mood"
     },
@@ -119,9 +139,20 @@ private val RULES: List<Rule> = listOf(
     rule("""^V tomto měsíci máš (\d+) (.+)\.$""") { m ->
         "You have ${entries(m.groupValues[1].toInt())} this month."
     },
-    rule("""^U (\d+) máš jen automatická data bez nálady — jako zápisy se nepočítají\.$""") { m ->
-        "For ${m.groupValues[1]}, there is automatic data but no mood — it does not count as an entry."
+    rule("""^U (\d+) (?:dne|dnů|dní) máš jen automatická data bez nálady — jako zápisy se nepočítají\.$""") { m ->
+        "For ${days(m.groupValues[1].toInt())}, there is automatic data but no mood — it does not count as an entry."
     },
+    rule("""^V měsíci (.+) nemáš žádný záznam\. Klikni na den v kalendáři a zapiš, jaký byl\.$""") { m ->
+        "You have no entry in ${translate(m.groupValues[1])}. Tap a day in the calendar and write down how it went."
+    },
+    rule("""^V měsíci (.+) máš jen data stažená z telefonu \(screen time, odemknutí\)\. Bez vyplněné nálady se den jako zápis nepočítá — klikni na den a doplň check-in\.$""") { m ->
+        "In ${translate(m.groupValues[1])} you only have data synced from the phone (screen time, unlocks). " +
+            "Without a mood the day does not count as an entry — tap a day and fill in the check-in."
+    },
+    // Keep this generic pattern after the two full-month sentences above: it matches
+    // everything to the end of the line, so before them it swallowed their endings and
+    // left the English UI half Czech.
+    rule("""^V měsíci (.+)$""") { m -> "In ${m.groupValues[1]}" },
     rule("""^Celkem za posledních (\d+) dní$""") { m ->
         "Total over the last ${days(m.groupValues[1].toInt())}"
     },
@@ -131,8 +162,16 @@ private val RULES: List<Rule> = listOf(
     rule("""^Ø (\d+) odemknutí na den$""") { m ->
         "Ø ${unlocks(m.groupValues[1].toInt())} per day"
     },
+    rule("""^Ø (.+) na den$""") { m -> "Ø ${m.groupValues[1]} per day" },
     rule("""^(\d+) odemknutí$""") { m -> unlocks(m.groupValues[1].toInt()) },
     rule("""^Skryté \((\d+)\)$""") { m -> "Hidden (${m.groupValues[1]})" },
+    // "3 h 12 min · 45 odemknutí · 2 aktivity" — the best/worst day's fact line.
+    rule("""^(.+) · (—|\d+) odemknutí · (\d+) (?:aktivita|aktivity|aktivit)$""") { m ->
+        val count = m.groupValues[3].toInt()
+        val activityText = if (count == 1) "1 activity" else "$count activities"
+        val unlockText = if (m.groupValues[2] == "—") "— unlocks" else unlocks(m.groupValues[2].toInt())
+        "${m.groupValues[1]} · $unlockText · $activityText"
+    },
 
     // --- check-in dialog / history ---------------------------------------------------
     rule("""^Den (.+) \((.+)\) už má vyplněný zápis\.$""") { m ->
@@ -146,16 +185,14 @@ private val RULES: List<Rule> = listOf(
         "One row per day, oldest first. Header: ${m.groupValues[1]}"
     },
     rule("""^Sloupce = denní nálada, indigo čára = (.+)\. Klepni na den pro detail\.$""") { m ->
-        "Bars = daily mood, indigo line = ${m.groupValues[1]}. Tap a day for detail."
+        "Bars = daily mood, indigo line = ${translate(m.groupValues[1])}. Tap a day for detail."
     },
-    rule("""^Sloupce = průměrná nálada za měsíc, indigo čára = (.+)\.$""") { m ->
-        "Bars = average mood per month, indigo line = ${m.groupValues[1]}."
+    rule("""^Sloupce = průměrná nálada za měsíc, indigo čára = (.+)\. Klepni na měsíc pro detail\.$""") { m ->
+        "Bars = average mood per month, indigo line = ${translate(m.groupValues[1])}. Tap a month for detail."
     },
-    rule("""^Nejlepší: (.+) (\d+\.\d+) / 5 ·$""") { m ->
-        "Best: ${m.groupValues[1]} ${m.groupValues[2]} / 5 ·"
-    },
-    rule("""^nejslabší: (.+) (\d+\.\d+) / 5$""") { m ->
-        "weakest: ${m.groupValues[1]} ${m.groupValues[2]} / 5"
+    rule("""^Nejlepší: (.+) (\d+\.\d+) / 5 · nejslabší: (.+) (\d+\.\d+) / 5$""") { m ->
+        "Best: ${m.groupValues[1]} ${m.groupValues[2]} / 5 · weakest: " +
+            "${m.groupValues[3]} ${m.groupValues[4]} / 5"
     },
     rule("""^(\d+)měsíční klouzavý průměr$""") { m ->
         "${m.groupValues[1]}-month moving average"
@@ -163,11 +200,18 @@ private val RULES: List<Rule> = listOf(
     rule("""^(\d+)denní klouzavý průměr$""") { m ->
         "${m.groupValues[1]}-day moving average"
     },
+    rule("""^(\d+)denní průměr$""") { m -> "${m.groupValues[1]}-day average" },
     rule("""^Posledních (\d+) dní$""") { m ->
         "Last ${days(m.groupValues[1].toInt())}"
     },
-    rule("""^Zobrazuju posledních (\d+) dní, takže starší dny roku$""") { m ->
-        "Showing the last ${days(m.groupValues[1].toInt())}, so older days of the year"
+    // The distribution card's tap detail: "3 dny · 38 %".
+    rule("""^(\d+) (?:den|dny|dní) · (\d+) %$""") { m ->
+        "${days(m.groupValues[1].toInt())} · ${m.groupValues[2]} %"
+    },
+    rule("""^Rok (\d{4})$""") { m -> "Year ${m.groupValues[1]}" },
+    rule("""^Zobrazuju posledních (\d+) dní, takže starší dny roku zůstávají prázdné, i když je máš v deníku zapsané\.$""") { m ->
+        "Showing the last ${days(m.groupValues[1].toInt())}, so older days of the year stay empty " +
+            "even though you have them written in your journal."
     },
     rule("""^(\d+)/(\d+) sledovaných dní$""") { m ->
         "${m.groupValues[1]}/${m.groupValues[2]} tracked days"
@@ -175,7 +219,7 @@ private val RULES: List<Rule> = listOf(
     rule("""^(.+) — bez odpovědi$""") { m -> "${m.groupValues[1]} — no answer" },
     rule("""^Naposledy zapsaná (.+)\.$""") { m -> "Last recorded ${m.groupValues[1]}." },
     rule("""^Za posledních (.+) žádný zápis$""") { m ->
-        "No entry over the last ${m.groupValues[1]}"
+        "No entry over the last ${translate(m.groupValues[1])}"
     },
 
     // --- screen time / unlocks -------------------------------------------------------
@@ -194,8 +238,9 @@ private val RULES: List<Rule> = listOf(
     rule("""^Posledních (\d+) dní \((.+) – (.+)\)\. Sloupec = jeden den, přerušovaná čára = průměr\.$""") { m ->
         "Last ${days(m.groupValues[1].toInt())} (${m.groupValues[2]} – ${m.groupValues[3]}). One bar = one day, dashed line = average."
     },
-    rule("""^Posledních (\d+) dní \((.+) – (.+)\), stejné období jako čas na obrazovce\.$""") { m ->
-        "Last ${days(m.groupValues[1].toInt())} (${m.groupValues[2]} – ${m.groupValues[3]}), the same period as screen time."
+    rule("""^Posledních (\d+) dní \((.+) – (.+)\), stejné období jako čas na obrazovce\. Sloupec = jeden den, přerušovaná čára = průměr\.$""") { m ->
+        "Last ${days(m.groupValues[1].toInt())} (${m.groupValues[2]} – ${m.groupValues[3]}), the same period as screen time. " +
+            "One bar = one day, dashed line = average."
     },
 
     // --- notifications ---------------------------------------------------------------

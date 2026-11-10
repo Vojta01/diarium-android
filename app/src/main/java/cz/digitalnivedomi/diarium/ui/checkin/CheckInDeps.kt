@@ -9,6 +9,7 @@ import cz.digitalnivedomi.diarium.core.data.EntriesCacheStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
+import cz.digitalnivedomi.diarium.core.data.PhotoCandidateStore
 import cz.digitalnivedomi.diarium.core.data.PickersRepository
 import cz.digitalnivedomi.diarium.core.data.ProfileStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
@@ -54,20 +55,26 @@ class CheckInDeps(
             val sessionStore = AppClients.sessionStore(context)
             val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
+            val ownerId = session.userId()
             return CheckInDeps(
                 entries = EntriesRepository(
                     client,
                     session,
-                    // The offline outbox keeps a check-in saved without network;
-                    // the snapshot feeds the dashboard's instant cold-start render.
-                    cache = EntriesCacheStore.from(context),
-                    pending = PendingSaveStore.from(context),
+                    // Each local snapshot/outbox is namespaced to this exact session owner.
+                    cache = ownerId?.let { EntriesCacheStore.from(context, it) },
+                    pending = PendingSaveStore.from(context, ownerId),
+                    expectedOwnerId = ownerId,
+                    photoCandidates = ownerId?.let { PhotoCandidateStore.from(context, it) },
                 ),
                 pickers = PickersRepository(client, session),
-                drafts = DraftStore.from(context),
+                drafts = ownerId?.let { DraftStore.from(context, it) },
                 goals = GoalsRepository(client, session),
-                reflection = AiReflectionRepository(sessionStore),
-                profile = ProfileStore.from(context),
+                reflection = AiReflectionRepository(
+                    sessionStore = sessionStore,
+                    supabase = client,
+                    expectedOwnerId = ownerId,
+                ),
+                profile = ProfileStore.from(context, ownerId),
             )
         }
     }

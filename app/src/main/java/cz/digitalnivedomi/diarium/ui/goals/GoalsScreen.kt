@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,7 +36,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -107,27 +110,19 @@ fun GoalsScreen(deps: GoalsDeps, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             // ── header ──────────────────────────────────────────────────────
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
-                    Text(
-                        text = "Denní, týdenní a měsíční cíle s 🔥 streakem",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary,
-                    )
+            // The subtitle takes the width that is left after the pill, never the other
+            // way round: an unweighted Column used to measure first and leave the pill
+            // only a few dp, which wrapped "+ New goal" onto two lines and made the
+            // capsule twice as tall as the header. The pill itself is single-line and
+            // has a floor wide enough for the Czech and English labels.
+            GoalsHeader(onCreate = {
+                if (repository == null) {
+                    message = MSG_NO_SESSION
+                } else {
+                    editorTarget = null
+                    editorOpen = true
                 }
-                ActionPill(text = "＋ Nový cíl", accent = IndigoLight) {
-                    if (repository == null) {
-                        message = MSG_NO_SESSION
-                    } else {
-                        editorTarget = null
-                        editorOpen = true
-                    }
-                }
-            }
+            })
 
             message?.let { text ->
                 GlassCard(modifier = Modifier.fillMaxWidth(), accent = Danger) {
@@ -782,26 +777,69 @@ private fun DeleteGoalDialog(goal: Goal, onDismiss: () -> Unit, onConfirm: () ->
 
 // ── Small shared pieces ─────────────────────────────────────────────────────
 
+/**
+ * The goals header: a wrapping subtitle on the left, the single-line "new goal" pill
+ * on the right.
+ *
+ * The subtitle is the weighted child on purpose. Compose measures unweighted Row
+ * children first, so before this the subtitle took its full intrinsic width and left
+ * the pill with whatever remained — at 432 dp the English label wrapped to "+ New /
+ * goal", and the two-line capsule grew taller than the subtitle it sat beside.
+ */
+@Composable
+internal fun GoalsHeader(onCreate: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("goals_header"),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Denní, týdenní a měsíční cíle s 🔥 streakem",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+        }
+        ActionPill(
+            text = "＋ Nový cíl",
+            accent = IndigoLight,
+            modifier = Modifier.widthIn(min = 104.dp),
+            testTag = "goals_new_goal",
+            onClick = onCreate,
+        )
+    }
+}
+
 /** Small glass pill used as an action; [accent] tints fill, border and label. */
 @Composable
 private fun ActionPill(
     text: String,
     accent: Color = Indigo,
+    modifier: Modifier = Modifier,
+    testTag: String? = null,
     onClick: () -> Unit,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(CircleShape)
             .background(accent.copy(alpha = 0.18f))
             .border(1.dp, accent.copy(alpha = 0.45f), CircleShape)
             .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 7.dp),
+            .padding(horizontal = 14.dp, vertical = 7.dp)
+            .then(if (testTag != null) Modifier.testTag("${testTag}_pill") else Modifier),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
             color = TextPrimary,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
+            modifier = if (testTag != null) Modifier.testTag(testTag) else Modifier,
         )
     }
 }

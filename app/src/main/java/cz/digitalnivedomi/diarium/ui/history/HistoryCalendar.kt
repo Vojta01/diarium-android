@@ -9,7 +9,7 @@ import java.time.LocalDate
  * The calendar maths behind "Historie", as pure functions.
  *
  * Deliberately free of Compose and Android: the month grid, the leading blanks, the
- * day counts and the Czech names are the parts that are easy to get subtly wrong
+ * day counts and the localized names are the parts that are easy to get subtly wrong
  * (off-by-one weeks, leap February, December → January), so they are unit tested
  * directly instead of through a rendered screen.
  *
@@ -22,17 +22,26 @@ import java.time.LocalDate
  * - "today" is compared **against a supplied day**, never against the clock, so the
  *   screen's notion of today and a test's expectation cannot drift apart.
  *
- * Names are verbatim from the web's `calendar.day_names` / `calendar.month_names`.
+ * Names come from [StatsMath], so the calendar follows the UI language instead of
+ * hardcoding Czech and leaking "Po"/"Září" into an English screen.
  */
 object HistoryCalendar {
 
     /** Days in a week; the grid is always seven cells wide. */
     const val DAYS_PER_WEEK = 7
 
-    /** Czech weekday abbreviations, Monday first (`calendar.day_names`). */
-    val WEEKDAY_NAMES: List<String> = listOf("Po", "Út", "St", "Čt", "Pá", "So", "Ne")
+    /**
+     * Weekday abbreviations, Monday first — Czech (`Po`…`Ne`) or English (`Mo`…`Su`),
+     * whichever the UI language is set to. Delegates to [StatsMath.WEEKDAY_LABELS] so the
+     * calendar cannot drift away from the weekday captions the charts print.
+     */
+    val WEEKDAY_NAMES: List<String>
+        get() = StatsMath.WEEKDAY_LABELS
 
-    /** Czech month names, January first (`calendar.month_names`). */
+    /**
+     * Czech month names, January first (`calendar.month_names`). The canonical key set —
+     * display goes through [monthName], which returns the English name in English mode.
+     */
     val MONTH_NAMES: List<String> = listOf(
         "Leden", "Únor", "Březen", "Duben", "Květen", "Červen",
         "Červenec", "Srpen", "Září", "Říjen", "Listopad", "Prosinec",
@@ -68,6 +77,18 @@ object HistoryCalendar {
      */
     fun leadingBlanks(year: Int, month: Int): Int = firstOfMonth(year, month).dayOfWeek.value - 1
 
+    /**
+     * Empty cells after the month's last day, so the final week is a full row.
+     *
+     * A month can end mid-week (October 2026 ends on a Saturday), and a month can end
+     * with a single day in its last row (November 2026: 30 November is a Monday).
+     * [weekRows] pads with exactly this many `null`s.
+     */
+    fun trailingBlanks(year: Int, month: Int): Int {
+        val cells = leadingBlanks(year, month) + daysInMonth(year, month)
+        return (DAYS_PER_WEEK - cells % DAYS_PER_WEEK) % DAYS_PER_WEEK
+    }
+
     /** Monday-based index of a date: Monday 0 … Sunday 6. */
     fun weekdayIndex(date: LocalDate): Int = date.dayOfWeek.value - 1
 
@@ -76,13 +97,30 @@ object HistoryCalendar {
 
     /**
      * One month as the grid draws it: one `null` per [leadingBlanks] cell, then the
-     * month's days in order. The result is **not** padded to a full week — the UI
-     * fills the tail of the last row, so a month never grows phantom cells here.
+     * month's days in order. The result is **not** padded to a full week — use
+     * [weekRows] for the rendered grid, which pads the last row to seven cells so a
+     * partial week can never stretch a lone day across the whole row.
      */
     fun monthGrid(year: Int, month: Int): List<LocalDate?> {
         val blanks = List(leadingBlanks(year, month)) { null }
         val days = (1..daysInMonth(year, month)).map { day -> LocalDate.of(year, month, day) }
         return blanks + days
+    }
+
+    /**
+     * The month as whole week rows, every row exactly [DAYS_PER_WEEK] cells.
+     *
+     * This is what the UI iterates. [monthGrid] alone ends on the last day of the
+     * month, so chunking it produced a final row with 1–6 children; each child carries
+     * `weight(1f)`, and a one-cell row therefore gave that cell the entire width
+     * (November 2026 ends with Monday the 30th alone). Padding the tail with `null`s
+     * keeps all seven weighted columns in every row, and the UI renders a `null` as an
+     * inert empty slot — no date, no tap target.
+     */
+    fun weekRows(year: Int, month: Int): List<List<LocalDate?>> {
+        val grid = monthGrid(year, month)
+        val padded = grid + List(trailingBlanks(year, month)) { null }
+        return padded.chunked(DAYS_PER_WEEK)
     }
 
     /** Steps [delta] whole months from [year]/[month], rolling the year over. */

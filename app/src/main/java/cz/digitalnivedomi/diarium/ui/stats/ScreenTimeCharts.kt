@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -64,9 +65,7 @@ import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
-import java.time.DayOfWeek
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -744,22 +743,19 @@ private fun unlockAverageLabel(average: Double): String = "${average.roundToInt(
 
 private fun shortDayMonth(date: String): String = CheckInDates.parse(date)?.format(dayMonth) ?: date
 
-private val dayMonth = DateTimeFormatter.ofPattern("d. M.", Locale("cs", "CZ"))
-private val fullDate = DateTimeFormatter.ofPattern("d. M. yyyy", Locale("cs", "CZ"))
+private val dayMonth: DateTimeFormatter
+    get() = UiDates.dayMonth()
+
+private val fullDate: DateTimeFormatter
+    get() = UiDates.numericDate()
 
 /** "5. 9. 2026" for the day-detail card header. */
 private fun shortDateLabel(date: String): String = CheckInDates.parse(date)?.format(fullDate) ?: date
 
-/** Same labels the bars' weekday captions use (Monday first). */
-private fun weekdayLabel(date: String): String = when (CheckInDates.parse(date)?.dayOfWeek) {
-    DayOfWeek.MONDAY -> "Po"
-    DayOfWeek.TUESDAY -> "Út"
-    DayOfWeek.WEDNESDAY -> "St"
-    DayOfWeek.THURSDAY -> "Čt"
-    DayOfWeek.FRIDAY -> "Pá"
-    DayOfWeek.SATURDAY -> "So"
-    DayOfWeek.SUNDAY -> "Ne"
-    null -> ""
+/** Same labels the bars' weekday captions use (Monday first), in the UI language. */
+private fun weekdayLabel(date: String): String {
+    val dayOfWeek = CheckInDates.parse(date)?.dayOfWeek ?: return ""
+    return StatsMath.weekdayShortName(dayOfWeek)
 }
 
 /** Colour for an app name — stable across the list and the day detail. */
@@ -813,7 +809,8 @@ private const val SCREEN_TIME_BAR_TAG = "screen_time_bar"
 private const val UNLOCK_BAR_TAG = "screen_time_unlock_bar"
 
 private const val EMPTY_SCREEN_TIME =
-    "Zatím žádná data o screen timu. Časy sbírá worker z Home Assistantu, první data se objeví po nejbližší synchronizaci."
+    "Zatím žádná data o čase na obrazovce. Časy čte aplikace přímo z telefonu " +
+        "(UsageStats, stejně jako Digitální rovnováha); první data se objeví po nejbližší synchronizaci."
 
 private const val EMPTY_UNLOCKS =
     "Zatím žádná data o odemknutích. Počty odemknutí sbírá aplikace z telefonu, první data se objeví po nejbližší synchronizaci."

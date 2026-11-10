@@ -10,10 +10,12 @@ import androidx.compose.ui.Modifier
 import cz.digitalnivedomi.diarium.core.data.DashboardDay
 import cz.digitalnivedomi.diarium.core.data.MoodDiscState
 import cz.digitalnivedomi.diarium.core.data.moodDiscState
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.core.stats.StatsDay
 import cz.digitalnivedomi.diarium.core.stats.StatsMath
+import cz.digitalnivedomi.diarium.ui.i18n.translate
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
-import cz.digitalnivedomi.diarium.ui.checkin.MOOD_CHOICES
+import cz.digitalnivedomi.diarium.ui.checkin.moodChoiceText
 import cz.digitalnivedomi.diarium.ui.checkin.components.SectionHint
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.MoodTrendCaption
@@ -23,27 +25,21 @@ import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 
-/** Czech numeric date, used for a day's title in the tap detail. */
-private val shortDate = DateTimeFormatter.ofPattern("d. M. yyyy", Locale("cs", "CZ"))
+/** Numeric date in the UI language, used for a day's title in the tap detail. */
+private val shortDate: DateTimeFormatter
+    get() = UiDates.numericDate()
 
 /** "5. 9. 2026", or the raw value if it is not a date — the dashboard's own copy. */
 private fun shortDateOf(date: String): String = CheckInDates.parse(date)?.format(shortDate) ?: date
 
-/** The dashboard's own mood helpers, copied here the way StatsScreen copies them. */
-private fun moodEmojiOf(mood: Int): String =
-    MOOD_CHOICES.firstOrNull { it.value == mood }?.emoji ?: "⚪"
-
 /** "🙂 Dobře", or the dashboard's "Bez odpovědi" for a day without a mood. */
-private fun moodTextOf(day: DashboardDay): String {
-    val label = MOOD_CHOICES.firstOrNull { it.value == day.mood }?.label
-    return if (moodDiscState(day.mood) == MoodDiscState.Mood && label != null) {
-        "${moodEmojiOf(day.mood)} $label"
+internal fun moodTextOf(day: DashboardDay): String =
+    if (moodDiscState(day.mood) == MoodDiscState.Mood) {
+        moodChoiceText(day.mood)
     } else {
-        "Bez odpovědi"
+        translate("Bez odpovědi")
     }
-}
 
 /**
  * 📈 The dashboard's interactive mood chart: the same shared chart the statistics

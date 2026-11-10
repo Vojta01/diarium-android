@@ -49,13 +49,14 @@ class ReportsDeps(
             val sessionStore = AppClients.sessionStore(context)
             val client = AppClients.supabaseClient(context)
             val session = SessionContext(sessionStore)
+            val ownerId = session.userId()
             return ReportsDeps(
                 repository = AiReportsRepository(
                     client = client,
                     session = session,
                     requester = HttpReportRequester(session),
                 ),
-                profile = ProfileStore.from(context),
+                profile = ProfileStore.from(context, ownerId),
             )
         }
     }

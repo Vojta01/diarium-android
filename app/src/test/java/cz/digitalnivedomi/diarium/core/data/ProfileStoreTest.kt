@@ -1,7 +1,10 @@
 package cz.digitalnivedomi.diarium.core.data
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
-import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,9 +26,8 @@ import java.io.File
  * drives the draft store: a temporary `.preferences_pb` file, an owned scope, and a
  * store closed before the file is reopened.
  *
- * The defaults asserted here are the ones every generation path relies on: a fresh
- * install has AI ON and onboarding pending — the master switch only ever turns AI
- * off when the owner does.
+ * Defaults are privacy-first: no account generates AI until that account has
+ * explicitly opted in, and onboarding remains pending.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
@@ -42,7 +44,7 @@ class ProfileStoreTest {
         }
     }
 
-    private fun newStore(file: File): Handle {
+    private fun newStore(file: File, ownerId: String = OWNER_A): Handle {
         val scope = CoroutineScope(Dispatchers.IO + Job())
         return Handle(
             ProfileStore.forDataStore(
@@ -50,6 +52,7 @@ class ProfileStoreTest {
                     scope = scope,
                     produceFile = { file },
                 ),
+                ownerId,
             ),
             scope,
         )
@@ -59,14 +62,14 @@ class ProfileStoreTest {
         File.createTempFile("diarium_profile_test", ".preferences_pb").also { it.delete() }
 
     @Test
-    fun `a fresh profile is AI on with onboarding pending`() = runBlocking {
+    fun `a fresh profile is AI off with onboarding pending`() = runBlocking {
         val handle = newStore(tempFile())
 
         val profile = handle.store.load()
 
         assertEquals("", profile.name)
         assertNull(profile.birthYear)
-        assertTrue(profile.aiEnabled)
+        assertFalse(profile.aiEnabled)
         assertFalse(profile.onboardingDone)
         // The stream carries the same defaults as the one-shot read.
         assertEquals(profile, handle.store.data.first())
@@ -153,12 +156,117 @@ class ProfileStoreTest {
 
         assertEquals("", profile.name)
         assertNull(profile.birthYear)
-        assertTrue(profile.aiEnabled)
+        assertFalse(profile.aiEnabled)
         assertFalse(profile.onboardingDone)
     }
 
     @Test
-    fun `decode falls back to the defaults for a file with nothing in it`() {
-        assertEquals(ProfileData(), ProfileStore.decode(emptyPreferences()))
+    fun `profile values are isolated across owners and signout cannot read or replace them`() = runBlocking {
+        val file = tempFile()
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        val accountA = ProfileStore.forDataStore(dataStore, OWNER_A)
+        val accountB = ProfileStore.forDataStore(dataStore, OWNER_B)
+        val signedOut = ProfileStore.forDataStore(dataStore, null)
+
+        accountA.saveName("Account A")
+        accountA.saveBirthYear(1988)
+        accountA.setAiEnabled(false)
+        accountA.setOnboardingDone(true)
+
+        assertEquals(ProfileData(), accountB.load())
+        assertEquals(ProfileData(), signedOut.load())
+        signedOut.saveName("must not be assigned")
+        signedOut.setAiEnabled(false)
+        assertEquals("Account A", accountA.load().name)
+        assertTrue(accountA.load().aiEnabled.not())
+        assertTrue(accountA.load().onboardingDone)
+
+        accountB.saveName("Account B")
+        accountB.setAiEnabled(true)
+        assertEquals("Account B", accountB.load().name)
+        assertEquals("Account A", accountA.load().name)
+        assertEquals(1988, accountA.load().birthYear)
+        assertTrue(accountA.load().aiEnabled.not())
+        assertTrue(accountB.load().aiEnabled)
+        scope.coroutineContext[Job]?.cancelAndJoin()
+        Unit
+    }
+
+    @Test
+    fun `account profile survives process restart without appearing in another account`() = runBlocking {
+        val file = tempFile()
+        val first = newStore(file, OWNER_A)
+        first.store.saveName("Account A")
+        first.store.saveBirthYear(1991)
+        first.store.setAiEnabled(false)
+        first.store.setOnboardingDone(true)
+        first.close()
+
+        val otherAccount = newStore(file, OWNER_B)
+        assertEquals(ProfileData(), otherAccount.store.load())
+        otherAccount.close()
+
+        val reopened = newStore(file, OWNER_A)
+        assertEquals("Account A", reopened.store.load().name)
+        assertEquals(1991, reopened.store.load().birthYear)
+        assertFalse(reopened.store.load().aiEnabled)
+        assertTrue(reopened.store.load().onboardingDone)
+        reopened.close()
+    }
+
+    @Test
+    fun `legacy optout stays off and quarantined across upgrade restart and account switch`() = runBlocking {
+        val file = tempFile()
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        dataStore.edit { prefs ->
+            prefs[stringPreferencesKey("user_name")] = "Legacy owner"
+            prefs[intPreferencesKey("birth_year")] = 1980
+            prefs[booleanPreferencesKey("ai_enabled")] = false
+            prefs[booleanPreferencesKey("onboarding_done")] = true
+        }
+        val accountA = ProfileStore.forDataStore(dataStore, OWNER_A)
+
+        val profile = accountA.load()
+        assertEquals(ProfileData(legacyDataQuarantined = true), profile)
+        assertFalse("unknown per-account consent must not enable AI", profile.aiEnabled)
+        accountA.saveName("New account")
+        val raw = dataStore.data.first()
+        assertEquals("Legacy owner", raw[stringPreferencesKey("user_name")])
+        assertEquals(1980, raw[intPreferencesKey("birth_year")])
+        assertFalse(raw[booleanPreferencesKey("ai_enabled")] ?: true)
+        assertTrue(raw[booleanPreferencesKey("onboarding_done")] ?: false)
+        assertEquals("New account", accountA.load().name)
+        scope.coroutineContext[Job]?.cancelAndJoin()
+
+        val restartedA = newStore(file, OWNER_A)
+        assertFalse(restartedA.store.load().aiEnabled)
+        assertEquals("New account", restartedA.store.load().name)
+        restartedA.close()
+
+        val accountB = newStore(file, OWNER_B)
+        assertFalse("another account has not opted in", accountB.store.load().aiEnabled)
+        assertEquals("", accountB.store.load().name)
+        accountB.close()
+
+        val explicitOptInA = newStore(file, OWNER_A)
+        explicitOptInA.store.setAiEnabled(true)
+        assertTrue(explicitOptInA.store.load().aiEnabled)
+        explicitOptInA.close()
+
+        val rawScope = CoroutineScope(Dispatchers.IO + Job())
+        val rawStore = PreferenceDataStoreFactory.create(scope = rawScope, produceFile = { file })
+        val finalRaw = rawStore.data.first()
+        assertEquals("Legacy owner", finalRaw[stringPreferencesKey("user_name")])
+        assertEquals(1980, finalRaw[intPreferencesKey("birth_year")])
+        assertFalse(finalRaw[booleanPreferencesKey("ai_enabled")] ?: true)
+        rawScope.coroutineContext[Job]?.cancelAndJoin()
+        Unit
+    }
+
+    private companion object {
+        const val OWNER_A = "account-a"
+        const val OWNER_B = "account-b"
     }
 }

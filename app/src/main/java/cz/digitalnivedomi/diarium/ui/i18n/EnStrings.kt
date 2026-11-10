@@ -14,21 +14,77 @@ internal object EnStrings {
         putAll(part2())
         putAll(part3())
         putAll(manual())
+        putAll(screens())
     }
 
     /** Strings added after the bulk translation (M7.3 card, later fixes). */
     private fun manual(): Map<String, String> = mapOf(
+        // Existing-day draft recovery: review both copies without writing either.
+        "Místní návrh se liší od uloženého dne" to "The local draft differs from the saved day",
+        "Serverovou kopii se nepodařilo načíst" to "Couldn't load the server copy",
+        "Serverovou kopii se nepodařilo načíst." to "Couldn't load the server copy.",
+        "Na tento den jsou dvě verze. Vyber, kterou chceš prohlédnout. Obě kopie zůstanou zachované." to
+            "There are two versions of this day. Choose which one you want to review. Both copies remain preserved.",
+        "Místní návrh zůstává uložený. Nejdřív zkus znovu načíst serverovou kopii." to
+            "The local draft is still saved. Retry loading the server copy to review it too.",
+        "Na serveru pro tento den už žádný záznam není." to "There is no server entry for this day anymore.",
+        "Volba pouze zobrazí kopii; nic neodešle a žádnou kopii nesmaže." to
+            "Choosing only displays a copy; it does not send or remove either copy.",
+        "Prohlížíš místní návrh. Kopie na serveru se nezměnila." to
+            "Reviewing the local draft. The server copy has not changed.",
+        "Prohlížíš serverovou verzi. Místní návrh zůstává uložený v telefonu." to
+            "Reviewing the server version. The local draft remains saved on this phone.",
+        "Prohlédnout místní návrh" to "Review the local draft",
+        "Prohlédnout uložený den" to "Review the saved day",
+        "Prohlédnout prázdný stav serveru" to "Review the empty server state",
+        "Návrh v tomto telefonu" to "Draft on this phone",
+        "Nesynchronizovaný zápis v tomto telefonu" to "Unsynced entry on this phone",
+        "Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle." to
+            "Not synced — saved only on this phone. It will not be sent automatically.",
+        "Serverovou kopii se nepodařilo načíst. Místní kopie zůstává uložená." to
+            "Couldn't load the server copy. The local copy remains saved.",
+        "Na serveru pro tento den není žádný záznam. Výběr nic neodešle ani nesmaže." to
+            "There is no server entry for this day. Choosing will not send or remove anything.",
+        "Vyber, kterou kopii chceš prohlédnout. Výběr nic neodešle ani nesmaže." to
+            "Choose which copy you want to review. Choosing will not send or remove anything.",
+        "Prohlížíš místní zápis. Kopie na serveru se nezměnila." to
+            "Reviewing the local entry. The server copy has not changed.",
+        "Prohlédnout místní zápis" to "Review the local entry",
+        "Prohlédnout kopii na serveru" to "Review the server copy",
+        "Zápis uložený jen v telefonu" to "Entry saved only on this phone",
+        "Ukládání je zablokované, protože server neumí bezpečně porovnat verze." to
+            "Saving is blocked because the server can't safely compare versions.",
+        "Ukládání je zablokované, dokud se nepodaří načíst serverovou kopii." to
+            "Saving is blocked until the server copy can be loaded.",
+        "Zápis je uložený jen v tomto telefonu; reflexe teď není dostupná." to
+            "The entry is saved only on this phone; a reflection is unavailable right now.",
+        "Přesun vypnutý" to "Move unavailable",
+        "Přesun není bezpečný bez atomické ochrany obou dnů. Oba zápisy zůstávají beze změny." to
+            "Moving is unsafe without atomic protection for both days. Both entries remain unchanged.",
+        "Uložený den na serveru" to "Saved day on the server",
+        "Záznam neobsahuje žádné údaje." to "This copy contains no data.",
+        "Poznámka" to "Note",
+        "Vděčnost" to "Gratitude",
+        "Uložit check-in" to "Save check-in",
         "Přepne jazyk rozhraní. Zápisy a poznámky zůstanou v jazyce, ve kterém jsi je napsal." to
             "Switches the interface language. Entries and notes stay in the language you wrote them in.",
         "Angličtina je zatím strojový překlad. Když něco nesedí, přepni zpět na češtinu." to
             "English is machine-translated for now. If something looks wrong, switch back to Czech.",
         "AI reflexe a přehledy zatím zůstávají česky." to
             "AI reflections and reports stay in Czech for now.",
+        "AI píše přehledy česky. Rozhraní zůstává v tvém jazyce." to
+            "AI writes reports in Czech. The interface stays in your language.",
         // Goal celebration overlay (backlog 29, variant A).
         "🎯 Cíl splněn!" to "🎯 Goal complete!",
         "dnes" to "today",
         "tento týden" to "this week",
         "tento měsíc" to "this month",
+        // The dashboard builds these two hints from two fragments, so the wrapper sees
+        // one finished sentence — the whole sentence is the key, not its halves.
+        "Data o screen timu se ještě nenasynchronizovala. Až je telefon odešle, uvidíš tady sloupce." to
+            "Screen time data hasn't synced yet. Once your phone sends them, you'll see the columns here.",
+        "Počet odemknutí se ještě nenasynchronizoval. Až je telefon odešle, uvidíš tady sloupce." to
+            "Unlock count hasn't synced yet. Once your phone sends them, you'll see the columns here.",
     )
 
     private fun part1(): Map<String, String> = mapOf(
@@ -42,6 +98,7 @@ internal object EnStrings {
         "100 dní v řadě" to "100 days in a row",
         "365 dní v řadě" to "365 days in a row",
         "Desítka" to "Ten",
+        "Stovka" to "Hundred",
         "10 záznamů" to "10 entries",
         "100 záznamů" to "100 entries",
         "Rok deníků" to "Year of journaling",
@@ -77,7 +134,7 @@ internal object EnStrings {
         "Přehled se nepodařilo vygenerovat." to "Failed to generate the summary.",
         "Server vrátil neplatnou odpověď." to "The server returned an invalid response.",
         "Přihlášení vypršelo, přihlas se znovu." to "Your session expired. Sign in again.",
-        "Uloženo v telefonu — odešle se, jakmile budeš online." to "Saved on your phone — it will be sent when you're online.",
+
         "měsíc" to "Month",
         "týden" to "Week",
         "denně" to "Daily",
@@ -178,6 +235,9 @@ internal object EnStrings {
         "Diarium připomenutí (tichá)" to "Diarium reminders (silent)",
         "Prohlížeč" to "Browser",
         "Přihlášení se nepovedlo. Zkus to prosím znovu." to "Sign-in failed. Please try again.",
+        "Přihlášení se nepodařilo ověřit. Zkontroluj připojení a zkus to znovu." to "Sign-in couldn't be verified. Check your connection and try again.",
+        "Ověření přihlášení" to "Sign-in verification",
+        "OK" to "OK",
         "Cíle" to "Goals",
         "Škály" to "Scales",
         "Šablony poznámek" to "Note templates",
@@ -236,7 +296,6 @@ internal object EnStrings {
         "Přesun se nezdařil." to "Move failed",
         "Zápis je přesunutý, ale původní den se nepodařilo smazat." to "Entry moved, but the original day couldn't be deleted",
         "Přesun vyžaduje přihlášení." to "Moving requires sign-in",
-        "Zápis je uložený v telefonu — reflexi vygeneruješ po připojení." to "Entry saved on your phone — generate a reflection after connecting",
         "Nejdřív je potřeba uložit dnešní zápis." to "Save today's entry first",
         "Reflexi se nepodařilo uložit k zápisu." to "Failed to save reflection to the entry",
         "Reflexi se nepodařilo vygenerovat." to "Failed to generate reflection",
@@ -412,11 +471,7 @@ internal object EnStrings {
         "Chvilku strpení, stahuju zápisy za " to "Just a moment, downloading entries for",
         "Načtení historie" to "Loading history",
         "🗓️ Kalendář" to "🗓️ Calendar",
-        "nemáš žádný záznam. Klikni na den v kalendáři a zapiš, jaký byl." to "You don't have any entries. Tap a day in the calendar and write how it was.",
         "Jen automatická data, žádný zápis" to "Automatic data only, no entry",
-        "máš jen data stažená z telefonu (screen time, odemknutí). " to "You only have data downloaded from your phone (screen time, unlocks).",
-        "Bez vyplněné nálady se den jako zápis nepočítá — klikni na den " to "Without a mood filled in, the day doesn't count as an entry — tap a day",
-        "a doplň check-in." to "and complete a check-in.",
         "Klikni na den v kalendáři a uvidíš, co jsi ten den zapsal." to "Tap a day in the calendar to see what you wrote that day.",
         "zápis" to "Entry",
         "zápisy" to "Entries",
@@ -426,7 +481,6 @@ internal object EnStrings {
         "bez srovnání – chybí minulý týden" to "No comparison – last week missing",
         "≈ stejně jako minulý týden" to "≈ same as last week",
         "nově – minulý týden bez dat" to "New – no data last week",
-        "} než minulý týden" to "} than last week",
         "výborná" to "Excellent",
         "dobrá" to "Good",
         "průměrná" to "Average",
@@ -446,7 +500,6 @@ internal object EnStrings {
         "Přehled" to "Overview",
         "Tvůj denní deník" to "Your daily journal",
         "Přehled se nepodařilo načíst." to "Failed to load overview.",
-        "dní" to "Days",
         "Ø nálada" to "Ø Mood",
         "Data se ještě nenasynchronizovala." to "Data hasn't synced yet.",
         "průměr ze 7 dní (1–5)" to "7-day average (1–5)",
@@ -500,7 +553,7 @@ internal object EnStrings {
     private fun part3(): Map<String, String> = mapOf(
         "Jeden cíl se nepodařilo uložit. Zkus to prosím znovu." to "One goal couldn't be saved. Please try again.",
         "Vítej v Diarium" to "Welcome to Diarium",
-        "Pojďme si tě nastavit. Jméno a rok narození používá AI pro osobnější reflexe — zůstávají jen v tomto telefonu." to "Let's get you set up. Your name and birth year are used by AI for more personal reflections — they stay only on this phone.",
+        "Jméno a rok narození jsou uložené v tomto telefonu. Pokud je vyplníš, při žádosti o AI reflexi nebo přehled se odešlou spolu s údaji z deníku v promptu pro DeepSeek. Reflexe procházejí naším serverem; přehledy mohou být vygenerované přímo telefonem nebo přes náš server." to "Your name and birth year are stored on this phone. If provided, they are sent with journal data in the prompt to DeepSeek when generating an AI reflection or report. Reflections go through our server; reports may be generated directly on this phone or through our server.",
         "Jméno" to "Name",
         "Rok narození" to "Birth year",
         "AI umí reflexi po check-inu a týdenní i měsíční přehledy." to "AI can provide a reflection after a check-in, as well as weekly and monthly summaries.",
@@ -584,6 +637,10 @@ internal object EnStrings {
         "Týdenní a měsíční reflexe. S vlastním klíčem je generuje přímo telefon." to "Weekly and monthly reflections. With your own key, they're generated directly on your phone.",
         "Klíč uložen" to "Key saved",
         "Žádný klíč" to "No key",
+        "Stav klíče nelze ověřit" to "Key status couldn't be verified",
+        "Stav uloženého klíče se nepodařilo ověřit. Nezadávej ho znovu, dokud nebude možné úložiště bezpečně přečíst." to "Couldn't verify the saved key's status. Don't enter it again until the storage can be read safely.",
+        "Starší klíč bez přiřazeného účtu zůstal v telefonu nezměněný, ale aplikace ho nepoužije ani nezobrazí. Zadej znovu klíč, jehož vlastnictví můžeš ověřit; před smazáním dat aplikace zachovej toto zařízení." to "An older key without an assigned account remains unchanged on this phone, but the app won't use or show it. Enter a key whose ownership you can verify; keep this device's app data before clearing it.",
+        "Nepodařilo se bezpečně ověřit, zda je uložený starší klíč. Data nebyla změněna a neověřený klíč se nepoužije." to "Couldn't safely verify whether an older key is stored. No data was changed, and an unverified key won't be used.",
         "Přidej si AI klíč — přehledy se pak generují přímo v telefonu." to "Add an AI key — summaries will then be generated directly on your phone.",
         "Vlož svůj DeepSeek API klíč" to "Enter your DeepSeek API key",
         "Získat klíč na platform.deepseek.com" to "Get a key at platform.deepseek.com",
@@ -644,7 +701,7 @@ internal object EnStrings {
         "Vyzkoušet" to "Try it",
         "Vyzkoušet notifikaci" to "Test notification",
         "Notifikace jsou v systému vypnuté — test se neodeslal." to "Notifications are disabled in the system — the test was not sent.",
-        "Jméno a rok narození používá AI pro osobnější reflexe a přehledy. Zůstávají jen v tomto telefonu." to "AI uses your name and year of birth for more personal reflections and overviews. They stay only on this phone.",
+        "Jméno a rok narození jsou uložené v tomto telefonu. Pokud je vyplníš, při žádosti o AI reflexi nebo přehled se odešlou spolu s údaji z deníku v promptu pro DeepSeek. Reflexe procházejí naším serverem; přehledy mohou být vygenerované přímo telefonem nebo přes náš server." to "Your name and birth year are stored on this phone. If provided, they are sent with journal data in the prompt to DeepSeek when generating an AI reflection or report. Reflections go through our server; reports may be generated directly on this phone or through our server.",
         "Uloženo ✓" to "Saved ✓",
         "🧭 Spustit průvodce znovu" to "🧭 Start the guide again",
         "Nejlepší a nejhorší den" to "Best and worst day",
@@ -666,7 +723,8 @@ internal object EnStrings {
         "Pro toto období nejsou k dispozici žádná data o aplikacích." to "No app data available for this period.",
         "Čas, který nezabrala žádná z vypsaných aplikací (systém, jiné appky)." to "Time not spent in any of the listed apps (system, other apps).",
         "Sloupec = jeden den, přerušovaná čára = průměr." to "Column = one day, dashed line = average.",
-        "Zatím žádná data o screen timu. Časy sbírá worker z Home Assistantu, první data se objeví po nejbližší synchronizaci." to "No screen time data yet. Times are collected by a worker from Home Assistant; the first data will appear after the next sync.",
+        "Zatím žádná data o čase na obrazovce. Časy čte aplikace přímo z telefonu (UsageStats, stejně jako Digitální rovnováha); první data se objeví po nejbližší synchronizaci." to
+            "No screen time data yet. The app reads the times directly from your phone (UsageStats, same as Digital Wellbeing); the first data will appear after the next sync.",
         "Zatím žádná data o odemknutích. Počty odemknutí sbírá aplikace z telefonu, první data se objeví po nejbližší synchronizaci." to "No unlock data yet. The app collects unlock counts from the phone; the first data will appear after the next sync.",
         "Pro tento den nemám žádná data o čase na obrazovce." to "No screen time data for this day.",
         "Jak se ti daří v číslech" to "How you're doing in numbers",
@@ -718,5 +776,83 @@ internal object EnStrings {
         "Upravit šablonu" to "Edit template",
         "Obsah šablony" to "Template content",
         "Tohle se vloží do poznámky místo jejího současného textu." to "This will replace the note's current text.",
+    )
+
+    /**
+     * Short labels the bulk pass dropped: the tab bar, section headers, buttons and the
+     * day/detail chrome of the documented screens. They are short words without much
+     * punctuation, which is exactly the shape the first extraction missed — a missing key
+     * here is not cosmetic, it leaves a Czech word in the middle of an English screen.
+     */
+    private fun screens(): Map<String, String> = mapOf(
+        "Dnes" to "Today",
+        "Historie" to "History",
+        "Statistiky" to "Statistics",
+        "Odznaky" to "Badges",
+        "Notifikace" to "Notifications",
+        "Stres" to "Stress",
+        "Aktualizovat" to "Refresh",
+        "Generuji reflexi…" to "Generating reflection…",
+        "📅 Dnes" to "📅 Today",
+        "🕰️ Tenhle den v historii" to "🕰️ On this day in history",
+        "🤖 AI Reflexe" to "🤖 AI Reflection",
+        "minule: ✓" to "last time: ✓",
+        "minule: ✗" to "last time: ✗",
+        "Klepni na den pro detail." to "Tap a day for detail.",
+        "Po dnech" to "By day",
+        "Ø na den" to "Ø per day",
+        "Data" to "Data",
+        "Fotka" to "Photo",
+        "Fotka dne" to "Photo of the day",
+        "📷 Fotka" to "📷 Photo",
+        "📷 Vyfotit" to "📷 Take photo",
+        "🖼️ Z galerie" to "🖼️ From gallery",
+        "🗑 Odebrat" to "🗑 Remove",
+        "Odebrat" to "Remove",
+        "Nahradit" to "Replace",
+        "Vymazat hodnotu" to "Clear value",
+        "Jde to" to "Okay",
+        "Fotku se nepodařilo načíst z telefonu." to "Couldn't load the photo from your phone.",
+        "✏️ Upravit" to "✏️ Edit",
+        "Upravit" to "Edit",
+        "Vybrat" to "Select",
+        "Aktivita" to "Activity",
+        "Vybrat aktivitu" to "Select activity",
+        "📅 Vybrat datum" to "📅 Pick a date",
+        "Aktivity" to "Activities",
+        "🏃 Aktivity" to "🏃 Activities",
+        "⚙️ Spravovat" to "⚙️ Manage",
+        "✓ Hotovo" to "✓ Done",
+        "Znovu vygenerovat" to "Regenerate",
+        "Vygenerovat reflexi" to "Generate reflection",
+        "🤖 AI reflexe" to "🤖 AI reflection",
+        "🤖 Reflexe dne" to "🤖 Reflection of the day",
+        "📋 Co jsi dnes zapsal" to "📋 What you wrote today",
+        "😰 Stres" to "😰 Stress",
+        "📱 Screen time" to "📱 Screen time",
+        "✏️ Vyplnit check-in" to "✏️ Fill in check-in",
+        "Legenda" to "Legend",
+        "🗓️ Rok v pixelech" to "🗓️ Year in pixels",
+        "Celkem" to "Total",
+        "Tento rok" to "This year",
+        "Tento rok žádný zápis" to "No entry this year",
+        "Dny s aktivitou" to "Days with activity",
+        "1 den s aktivitou" to "1 day with activity",
+        "📅 Detail dne" to "📅 Day detail",
+        "Detail dne" to "Day detail",
+        "Zvuk" to "Sound",
+        "Reflexe" to "Reflections",
+        "Reporty" to "Reports",
+        "👤 Profil" to "👤 Profile",
+        "Zadej rok mezi 1900 a 2100." to "Enter a year between 1900 and 2100.",
+        "🌐 Jazyk / Language" to "🌐 Language",
+        "Čeština" to "Czech",
+        "Sobota" to "Saturday",
+        "Export do CSV" to "Export to CSV",
+        "Co soubor obsahuje" to "What the file contains",
+        "Funkce" to "Features",
+        "Smazat" to "Delete",
+        "🗑 Smazat" to "🗑 Delete",
+        "Zkusit znovu" to "Try again",
     )
 }

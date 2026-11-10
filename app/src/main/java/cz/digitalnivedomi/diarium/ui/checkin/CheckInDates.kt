@@ -1,22 +1,23 @@
 package cz.digitalnivedomi.diarium.ui.checkin
 
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 /**
  * Date helpers for the check-in header.
  *
  * Dates are ISO `yyyy-MM-dd` everywhere (the `entries.date` column and the RPC
- * key), and only rendered in Czech for display.
+ * key), and only rendered for display — in the selected UI language.
  */
 object CheckInDates {
 
-    private val czech = Locale("cs", "CZ")
-    private val displayFormat = DateTimeFormatter.ofPattern("d. MMMM yyyy", czech)
+    /** Re-read on every call, so a language switch changes the month name immediately. */
+    private val displayFormat: DateTimeFormatter
+        get() = UiDates.longDate()
 
     fun today(): String = LocalDate.now().toString()
 
@@ -38,10 +39,9 @@ object CheckInDates {
 
     fun parse(date: String): LocalDate? = runCatching { LocalDate.parse(date) }.getOrNull()
 
-    /** "Dnes" / "Včera" / "Zítra" for the near days, otherwise a Czech date. */
-    fun display(date: String): String {
+    /** "Dnes" / "Včera" / "Zítra" for the near days, otherwise a date in the UI language. */
+    fun display(date: String, today: LocalDate = LocalDate.now()): String {
         val parsed = parse(date) ?: return date
-        val today = LocalDate.now()
         return when (parsed) {
             today -> "Dnes"
             today.minusDays(1) -> "Včera"

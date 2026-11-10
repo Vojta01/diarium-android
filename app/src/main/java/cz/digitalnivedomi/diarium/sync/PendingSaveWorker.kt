@@ -4,33 +4,27 @@ import android.content.Context
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
+import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import cz.digitalnivedomi.diarium.core.data.AppClients
-import cz.digitalnivedomi.diarium.core.data.DraftStore
-import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
-import kotlinx.coroutines.CancellationException
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 /**
- * Flushes the offline outbox (see [PendingSaveStore]): re-sends every check-in
- * that was saved while the phone had no network, oldest day first, until the
- * store is empty.
+ * Preserves owner-bound outbox records for explicit recovery. The current server
+ * exposes a blind full-row save RPC with no verifiable atomic compare-and-swap, so
+ * this worker intentionally does not send or clear queued diary data. Its successful
+ * WorkManager result means only "no background action was safe" — never "synced".
  *
- * Deliberately builds an [EntriesRepository] *without* the pending store: a
- * flush that fails again must leave the row queued for WorkManager's retry, not
- * re-enqueue it through the repository's own offline path (which would just
- * write the same blob back). The cache is not wired here either — the screen
- * that queued the save already fed it, and the next successful save/read keeps
- * it fresh.
- *
- * The work is scheduled by the app itself (the save path and `SyncScheduler`),
- * never by a server — the app-driven timing rule the whole sync layer follows.
+ * Work requests are scoped to the owner captured at enqueue time. APPEND_OR_REPLACE
+ * closes the KEEP exit race for legacy queued requests; even those legacy workers
+ * now fail closed and leave their local records untouched.
  */
 class PendingSaveWorker(
     appContext: Context,
@@ -38,61 +32,55 @@ class PendingSaveWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        val store = PendingSaveStore.from(applicationContext)
+        val session = AppClients.sessionStore(applicationContext)
+        val ownerId = ownerFromInput(inputData) ?: return Result.success()
+        if (SessionContext(session).userId() != ownerId) return Result.success()
+
+        val store = PendingSaveStore.from(applicationContext, ownerId)
         if (!store.hasAny()) return Result.success()
 
-        val session = AppClients.sessionStore(applicationContext)
-        val entries = EntriesRepository(
-            AppClients.supabaseClient(applicationContext),
-            SessionContext(session),
-        )
-        val drafts = DraftStore.from(applicationContext)
-
-        // A loop, not a single pass: a day queued while this worker runs (the
-        // user saved again before the flush finished) is picked up next round.
-        while (true) {
-            val next = store.peekAll().firstOrNull() ?: return Result.success()
-            val outcome = try {
-                entries.save(next.entry, next.date)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
-            }
-            if (outcome == null || outcome.isFailure) {
-                // Still offline (or a server hiccup): keep the row and let
-                // WorkManager retry with backoff. The overlay keeps showing the
-                // day as saved meanwhile.
-                return Result.retry()
-            }
-            store.remove(next.date)
-            // The local draft has served its purpose once the day is on the
-            // server (the check-in screen clears it at queue time too — this
-            // covers a queued save the screen never had a draft for).
-            runCatching { drafts.clear(next.date) }
-        }
+        // save_daily_entry is a blind full-row upsert and the repository has no
+        // verified atomic compare-and-swap RPC. A background replay could overwrite
+        // another device's newer entry, so leave every queued record intact for the
+        // Check-in recovery UI. Returning success prevents an endless retry loop;
+        // it does NOT mean these local records were synced.
+        return Result.success()
     }
 
     companion object {
 
-        /** Unique name — one flush at a time is enough; enqueues are deduplicated. */
+        /** Base name; owner-specific suffixes prevent cross-account coalescing. */
         const val WORK_NAME = "diarium.pending.saves"
 
-        /**
-         * Enqueues a flush attempt. `KEEP` on purpose: the running (or waiting)
-         * flush will pick up anything queued meanwhile, so a second request does
-         * not need a second job.
-         */
+        /** Unique-work policy appends a request that races an exiting worker instead of dropping it. */
+        internal val uniqueWorkPolicy = ExistingWorkPolicy.APPEND_OR_REPLACE
+        private const val INPUT_OWNER_ID = "owner_id"
+
+        internal fun ownerFromInput(inputData: Data): String? =
+            inputData.getString(INPUT_OWNER_ID)?.takeIf { it.isNotBlank() }
+
+        fun workName(ownerId: String): String =
+            "$WORK_NAME.${Base64.getUrlEncoder().withoutPadding().encodeToString(ownerId.toByteArray(Charsets.UTF_8))}"
+
+        /** Resolve the current owner only for legacy callers that do not hold a repository. */
         fun enqueue(context: Context) {
+            val ownerId = SessionContext(AppClients.sessionStore(context)).userId() ?: return
+            enqueue(context, ownerId)
+        }
+
+        /** Enqueue only the explicitly bound owner's outbox. */
+        fun enqueue(context: Context, ownerId: String?) {
+            val owner = ownerId?.takeIf { it.isNotBlank() } ?: return
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
             val request = OneTimeWorkRequestBuilder<PendingSaveWorker>()
+                .setInputData(Data.Builder().putString(INPUT_OWNER_ID, owner).build())
                 .setConstraints(constraints)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
             WorkManager.getInstance(context)
-                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.KEEP, request)
+                .enqueueUniqueWork(workName(owner), uniqueWorkPolicy, request)
         }
     }
 }

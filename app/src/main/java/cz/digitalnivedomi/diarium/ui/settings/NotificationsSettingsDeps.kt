@@ -6,11 +6,13 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.notifications.NotificationPrefs
 import cz.digitalnivedomi.diarium.notifications.NotificationPrefsStore
 import cz.digitalnivedomi.diarium.notifications.NotificationScheduler
 import cz.digitalnivedomi.diarium.stats.UsageStatsProvider
 import cz.digitalnivedomi.diarium.sync.SyncScheduler
+import cz.digitalnivedomi.diarium.sync.UsageSyncConsentStore
 import android.Manifest
 
 /** Real state of `POST_NOTIFICATIONS` / the app's notification switch. */
@@ -36,6 +38,8 @@ class NotificationsSettingsDeps(
     val usageAccessState: () -> String,
     val onOpenUsageAccessSettings: () -> Unit,
     val onReschedule: (NotificationPrefs) -> Unit,
+    val screenSyncEnabled: Boolean = false,
+    val onScreenSyncConsentChanged: (Boolean) -> Unit = {},
 ) {
 
     companion object {
@@ -55,6 +59,10 @@ class NotificationsSettingsDeps(
         fun forContext(context: Context): NotificationsSettingsDeps {
             val app = context.applicationContext
             val provider = UsageStatsProvider(app)
+            val sessionStore = AppClients.sessionStore(app)
+            val ownerId = sessionStore.userSubject()
+            val consentStore = UsageSyncConsentStore(app)
+            val screenSyncEnabled = consentStore.isEnabledFor(ownerId)
             return NotificationsSettingsDeps(
                 prefsStore = NotificationPrefsStore(app),
                 notificationPermission = notificationPermissionState(app),
@@ -62,6 +70,14 @@ class NotificationsSettingsDeps(
                 exactAlarmAllowed = canScheduleExactAlarms(app),
                 usageAccessState = { provider.usageAccessState() },
                 onOpenUsageAccessSettings = { provider.openUsageAccessSettings() },
+                screenSyncEnabled = screenSyncEnabled,
+                onScreenSyncConsentChanged = { enabled ->
+                    // The settings surface is bound to the owner it was created
+                    // for; a late callback must not assign that choice to a new login.
+                    if (ownerId != null && sessionStore.userSubject() == ownerId) {
+                        consentStore.setEnabledFor(ownerId, enabled)
+                    }
+                },
                 onReschedule = {
                     // Changing a time re-arms the alarms; the sync times are part of
                     // this screen too, so the WorkManager jobs are re-registered as well.

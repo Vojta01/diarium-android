@@ -116,6 +116,120 @@ class HistoryCalendarTest {
         assertEquals(28, HistoryCalendar.monthGrid(2025, 2).filterNotNull().size)
     }
 
+    /**
+     * The rendered grid is always whole weeks. `monthGrid` intentionally stops at the
+     * last day of the month; `weekRows` is the padded form the UI iterates, so every
+     * row — including a trailing row with a single day — has seven equal-width cells.
+     */
+    @Test
+    fun `every rendered week row has exactly seven cells`() {
+        // One month per trailing-cell count: 0, 1, 2, 3, 4, 5 and 6.
+        val months = listOf(
+            2026 to 5, // 0 trailing: 1 May is a Friday, 31 days
+            2026 to 10, // 1 trailing: 31 October is a Saturday
+            2026 to 7, // 2 trailing
+            2026 to 4, // 3 trailing
+            2026 to 9, // 4 trailing
+            2026 to 3, // 5 trailing
+            2026 to 11, // 6 trailing: 30 November is a Monday, alone in its week
+        )
+
+        months.forEach { (year, month) ->
+            val rows = HistoryCalendar.weekRows(year, month)
+            assertTrue("$year-$month has no rows", rows.isNotEmpty())
+            rows.forEachIndexed { index, row ->
+                assertEquals("$year-$month row $index", 7, row.size)
+            }
+            // Padding must not invent or drop a date, and the order must not move.
+            assertEquals(
+                HistoryCalendar.monthGrid(year, month),
+                rows.flatten().take(HistoryCalendar.monthGrid(year, month).size),
+            )
+            assertEquals(
+                HistoryCalendar.monthGrid(year, month).filterNotNull(),
+                rows.flatten().filterNotNull(),
+            )
+        }
+    }
+
+    @Test
+    fun `trailing blanks complete each month's final week`() {
+        // 2026, January first — one number per month, computed from java.time.
+        assertEquals(
+            listOf(1, 1, 5, 3, 0, 5, 2, 6, 4, 1, 6, 3),
+            (1..12).map { HistoryCalendar.trailingBlanks(2026, it) },
+        )
+        // Leap February 2024: 3 leading + 29 days = 32 cells, so 3 trailing.
+        assertEquals(3, HistoryCalendar.trailingBlanks(2024, 2))
+        // A month that already ends on Sunday needs no padding at all.
+        assertEquals(0, HistoryCalendar.trailingBlanks(2026, 5))
+    }
+
+    @Test
+    fun `november 2026 ends with monday the thirtieth alone and six empty slots`() {
+        val rows = HistoryCalendar.weekRows(2026, 11)
+
+        assertEquals(6, rows.size)
+        assertEquals(listOf(LocalDate.of(2026, 11, 30), null, null, null, null, null, null), rows.last())
+        assertEquals(30, rows.flatten().filterNotNull().size)
+        // The last row still contributes seven columns; only one of them is a date.
+        assertEquals(7, rows.last().size)
+        assertEquals(1, rows.last().count { it != null })
+    }
+
+    @Test
+    fun `a leap february's last row is four days and three empty slots`() {
+        val rows = HistoryCalendar.weekRows(2024, 2)
+
+        assertEquals(5, rows.size)
+        assertEquals(
+            listOf(
+                LocalDate.of(2024, 2, 26),
+                LocalDate.of(2024, 2, 27),
+                LocalDate.of(2024, 2, 28),
+                LocalDate.of(2024, 2, 29),
+                null,
+                null,
+                null,
+            ),
+            rows.last(),
+        )
+        assertEquals(29, rows.flatten().filterNotNull().size)
+    }
+
+    @Test
+    fun `a common february's last row is six days and one empty slot`() {
+        val rows = HistoryCalendar.weekRows(2026, 2)
+
+        assertEquals(5, rows.size)
+        assertEquals(
+            listOf(
+                LocalDate.of(2026, 2, 23),
+                LocalDate.of(2026, 2, 24),
+                LocalDate.of(2026, 2, 25),
+                LocalDate.of(2026, 2, 26),
+                LocalDate.of(2026, 2, 27),
+                LocalDate.of(2026, 2, 28),
+                null,
+            ),
+            rows.last(),
+        )
+    }
+
+    @Test
+    fun `every month of a leap year is drawn as full weeks`() {
+        (1..12).forEach { month ->
+            val rows = HistoryCalendar.weekRows(2024, month)
+            assertTrue("2024-$month has no rows", rows.isNotEmpty())
+            rows.forEach { row -> assertEquals("2024-$month", 7, row.size) }
+            assertEquals(
+                "2024-$month",
+                HistoryCalendar.daysInMonth(2024, month),
+                rows.flatten().filterNotNull().size,
+            )
+        }
+    }
+
     @Test
     fun `month boundaries have the length they should`() {
         assertEquals(31, HistoryCalendar.daysInMonth(2026, 1))

@@ -18,80 +18,103 @@ import kotlinx.coroutines.flow.map
  * It carries what makes the AI personal and what turns it off:
  *  - [name] and [birthYear] travel with the reflection prompt so the model can speak
  *    to its owner (both optional — the prompt falls back to the session name);
- *  - [aiEnabled] is the app-wide AI master switch: with it off nothing is generated,
- *    neither reflections nor reports, and the DeepSeek key simply stays stored;
+ *  - [aiEnabled] is this account's explicit AI-consent switch: with it off nothing is
+ *    generated, neither reflections nor reports, and the DeepSeek key simply stays stored;
  *  - [onboardingDone] records that the first-run guide was walked through, so
  *    "Spustit průvodce znovu" (Nastavení → Profil) can flip it back.
  *
- * Like goals and drafts, the profile lives only in this phone (Preferences
- * DataStore) — nothing here is ever synced.
+ * Like goals and drafts, the profile is stored on this phone (Preferences
+ * DataStore), not synchronized as profile data. Name and birth year are included
+ * in AI prompts when reflections or reports are generated.
  */
 data class ProfileData(
     val name: String = "",
     val birthYear: Int? = null,
-    /** Default ON: a fresh install generates reflections/reports like it always did. */
-    val aiEnabled: Boolean = true,
+    /** Off until this account has explicitly opted in to AI processing. */
+    val aiEnabled: Boolean = false,
     val onboardingDone: Boolean = false,
+    /** Ownerless values from the pre-scoping profile file are kept but never assigned. */
+    val legacyDataQuarantined: Boolean = false,
 )
 
 /**
- * Profile persistence over Preferences DataStore — the native twin of the web's
- * profile keys, and the single place the AI master switch lives.
+ * Profile persistence over Preferences DataStore. Every account reads and writes
+ * only keys in its own namespace; ownerless builds are read-only defaults.
  */
-class ProfileStore private constructor(private val dataStore: DataStore<Preferences>) {
+class ProfileStore private constructor(
+    private val dataStore: DataStore<Preferences>,
+    private val ownerId: String?,
+) {
 
-    /** The profile as a stream, for screens that need to react to a change. */
-    val data: Flow<ProfileData> = dataStore.data.map { decode(it) }
+    val data: Flow<ProfileData> = dataStore.data.map { decode(it, ownerId) }
 
-    /** The one-shot read every generation path does before it acts. */
-    suspend fun load(): ProfileData = decode(dataStore.data.first())
+    suspend fun load(): ProfileData = decode(dataStore.data.first(), ownerId)
 
-    /** The name is stored trimmed; a blank name is stored as an empty string. */
+    /** Names only: legacy profile values never leave this store. */
+    internal suspend fun legacyRecoveryPreferenceNames(): Set<String> =
+        dataStore.data.first().asMap().keys
+            .asSequence()
+            .map { it.name }
+            .filter { it in LEGACY_KEY_NAMES }
+            .toSet()
+
     suspend fun saveName(name: String) {
-        dataStore.edit { prefs -> prefs[KEY_NAME] = name.trim() }
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return
+        dataStore.edit { prefs -> prefs[stringPreferencesKey(key(owner, "name"))] = name.trim() }
     }
 
-    /** `null` (or a blank field) clears the birth year. */
     suspend fun saveBirthYear(year: Int?) {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return
+        val key = intPreferencesKey(key(owner, "birth_year"))
         dataStore.edit { prefs ->
-            if (year == null) prefs.remove(KEY_BIRTH_YEAR) else prefs[KEY_BIRTH_YEAR] = year
+            if (year == null) prefs.remove(key) else prefs[key] = year
         }
     }
 
     suspend fun setAiEnabled(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[KEY_AI_ENABLED] = enabled }
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return
+        dataStore.edit { prefs -> prefs[booleanPreferencesKey(key(owner, "ai_enabled"))] = enabled }
     }
 
     suspend fun setOnboardingDone(done: Boolean) {
-        dataStore.edit { prefs -> prefs[KEY_ONBOARDING_DONE] = done }
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return
+        dataStore.edit { prefs -> prefs[booleanPreferencesKey(key(owner, "onboarding_done"))] = done }
     }
 
     companion object {
+        fun from(context: Context, ownerId: String?): ProfileStore =
+            ProfileStore(context.profileDataStore, ownerId?.takeIf { it.isNotBlank() })
 
-        fun from(context: Context): ProfileStore = ProfileStore(context.profileDataStore)
+        /** Test/preview seam over a real or in-memory Preferences DataStore. */
+        internal fun forDataStore(
+            dataStore: DataStore<Preferences>,
+            ownerId: String?,
+        ): ProfileStore = ProfileStore(dataStore, ownerId?.takeIf { it.isNotBlank() })
 
-        /**
-         * A store over any [DataStore] — the test/preview seam. The app itself only
-         * ever builds the store through [from]; this exists so a JVM test can drive
-         * the real file-backed store from a temporary file (see ProfileStoreTest),
-         * exactly the way DraftStoreTest does.
-         */
-        internal fun forDataStore(dataStore: DataStore<Preferences>): ProfileStore =
-            ProfileStore(dataStore)
+        fun decode(prefs: Preferences, ownerId: String?): ProfileData {
+            val owner = ownerId?.takeIf { it.isNotBlank() }
+            val legacyPresent = LEGACY_KEYS.any { prefs[it] != null }
+            if (owner == null) return ProfileData(legacyDataQuarantined = legacyPresent)
+            return ProfileData(
+                name = prefs[stringPreferencesKey(key(owner, "name"))].orEmpty().trim(),
+                birthYear = prefs[intPreferencesKey(key(owner, "birth_year"))],
+                aiEnabled = prefs[booleanPreferencesKey(key(owner, "ai_enabled"))] ?: false,
+                onboardingDone = prefs[booleanPreferencesKey(key(owner, "onboarding_done"))] ?: false,
+                legacyDataQuarantined = legacyPresent,
+            )
+        }
 
-        /** The defaults for keys the file has never carried (or lost). */
-        fun decode(prefs: Preferences): ProfileData = ProfileData(
-            name = prefs[KEY_NAME].orEmpty().trim(),
-            birthYear = prefs[KEY_BIRTH_YEAR],
-            aiEnabled = prefs[KEY_AI_ENABLED] ?: true,
-            onboardingDone = prefs[KEY_ONBOARDING_DONE] ?: false,
+        private fun key(owner: String, field: String): String = "profile_v2_${owner}_$field"
+
+        private val LEGACY_KEYS = listOf(
+            stringPreferencesKey("user_name"),
+            intPreferencesKey("birth_year"),
+            booleanPreferencesKey("ai_enabled"),
+            booleanPreferencesKey("onboarding_done"),
         )
+
+        private val LEGACY_KEY_NAMES = LEGACY_KEYS.mapTo(mutableSetOf()) { it.name }
     }
 }
-
-private val KEY_NAME = stringPreferencesKey("user_name")
-private val KEY_BIRTH_YEAR = intPreferencesKey("birth_year")
-private val KEY_AI_ENABLED = booleanPreferencesKey("ai_enabled")
-private val KEY_ONBOARDING_DONE = booleanPreferencesKey("onboarding_done")
 
 private val Context.profileDataStore by preferencesDataStore(name = "diarium_profile")

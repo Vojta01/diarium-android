@@ -110,7 +110,7 @@ fun OnboardingScreen(
     val scope = rememberCoroutineScope()
 
     /** Step 2's choice; "Přeskočit (bez AI)" sets it false, the key path true. */
-    var aiEnabled by remember { mutableStateOf(true) }
+    var aiEnabled by remember { mutableStateOf(false) }
     var finishing by remember { mutableStateOf(false) }
     var habitsLoaded by remember { mutableStateOf(false) }
 
@@ -452,7 +452,7 @@ fun OnboardingScreen(
                         color = TextPrimary,
                     )
                     Spacer(Modifier.height(6.dp))
-                    SectionHint("Pojďme si tě nastavit. Jméno a rok narození používá AI pro osobnější reflexe — zůstávají jen v tomto telefonu.")
+                    SectionHint("Jméno a rok narození jsou uložené v tomto telefonu. Pokud je vyplníš, při žádosti o AI reflexi nebo přehled se odešlou spolu s údaji z deníku v promptu pro DeepSeek. Reflexe procházejí naším serverem; přehledy mohou být vygenerované přímo telefonem nebo přes náš server.")
                     Spacer(Modifier.height(14.dp))
                     GlassTextField(
                         value = state.name,

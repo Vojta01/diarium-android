@@ -23,6 +23,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.i18n.UiDates
+import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -48,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil.compose.AsyncImage
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
+import java.time.LocalDate
 import cz.digitalnivedomi.diarium.core.data.DashboardData
 import cz.digitalnivedomi.diarium.core.data.DashboardDay
 import cz.digitalnivedomi.diarium.core.data.DashboardReflection
@@ -107,7 +110,6 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import cz.digitalnivedomi.diarium.ui.theme.Violet
 import cz.digitalnivedomi.diarium.ui.theme.moodColor
-import java.time.DayOfWeek
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -141,6 +143,12 @@ fun DashboardScreen(
     // the loaded numbers have to outlive this composable, otherwise returning from a
     // sub-screen re-reads everything and lands back at the top of the list.
     holder: DashboardStateHolder = remember { DashboardStateHolder() },
+    /**
+     * The day the screen treats as today. A parameter, not a call to the wall clock,
+     * so a screenshot (or a test) can pin the whole dashboard to one date; production
+     * keeps the default.
+     */
+    today: LocalDate = LocalDate.now(),
 ) {
     val state = holder.state
     val data = state.data
@@ -160,16 +168,16 @@ fun DashboardScreen(
         onPauseOrDispose { }
     }
 
-    LaunchedEffect(repository, reloadTrigger) {
+    LaunchedEffect(repository, reloadTrigger, today) {
         // Instant paint from the local snapshot while the network read runs: only
         // when nothing is on screen yet (a resume reload keeps the fresh numbers),
         // and only when something really was cached.
         if (data == null) {
-            val cached = repository?.loadCached()
+            val cached = repository?.loadCached(today.toString())
             if (cached != null) holder.show(cached)
         }
         holder.markLoading()
-        val result = repository?.load()
+        val result = repository?.load(today.toString())
         if (result == null) {
             holder.showError(ERROR_LOAD)
         } else {
@@ -239,17 +247,13 @@ private val BAR_TRACK = 96.dp
 /** Paragraph break inside a reflection: two line breaks, with any spaces between. */
 private val PARAGRAPH_BREAK = Regex("\\n\\s*\\n")
 
-/** Czech full date, used for the "Dnes" card. */
-private val longDate = java.time.format.DateTimeFormatter.ofPattern(
-    "d. MMMM yyyy",
-    Locale("cs", "CZ"),
-)
+/** Full date in the UI language, used for the "Dnes" card. */
+private val longDate: java.time.format.DateTimeFormatter
+    get() = UiDates.longDate()
 
-/** Czech numeric date, used for "which day is this from" captions. */
-private val shortDate = java.time.format.DateTimeFormatter.ofPattern(
-    "d. M. yyyy",
-    Locale("cs", "CZ"),
-)
+/** Numeric date in the UI language, used for "which day is this from" captions. */
+private val shortDate: java.time.format.DateTimeFormatter
+    get() = UiDates.numericDate()
 
 /** "10. září 2026", or the raw value if it is not a date. */
 private fun longDateOf(date: String): String = CheckInDates.parse(date)?.format(longDate) ?: date
@@ -257,19 +261,11 @@ private fun longDateOf(date: String): String = CheckInDates.parse(date)?.format(
 /** "5. 9. 2026", or the raw value if it is not a date. */
 private fun shortDateOf(date: String): String = CheckInDates.parse(date)?.format(shortDate) ?: date
 
-/** "Dnes" for today, otherwise the Czech weekday abbreviation the web uses. */
+/** "Dnes" for today, otherwise the two-letter weekday of the UI language. */
 private fun dayLabel(date: String, today: String): String {
     if (date == today) return "Dnes"
-    return when (CheckInDates.parse(date)?.dayOfWeek) {
-        DayOfWeek.MONDAY -> "Po"
-        DayOfWeek.TUESDAY -> "Út"
-        DayOfWeek.WEDNESDAY -> "St"
-        DayOfWeek.THURSDAY -> "Čt"
-        DayOfWeek.FRIDAY -> "Pá"
-        DayOfWeek.SATURDAY -> "So"
-        DayOfWeek.SUNDAY -> "Ne"
-        null -> ""
-    }
+    val dayOfWeek = CheckInDates.parse(date)?.dayOfWeek ?: return ""
+    return StatsMath.weekdayShortName(dayOfWeek)
 }
 
 /** Czech plural for a day count: 1 den, 2–4 dny, 5+ dní. */
@@ -1674,11 +1670,9 @@ private fun ReflectionCard(
                 SectionHint("Za ${shortDateOf(missing.date)} ji ještě nemáš.")
             }
             VSpace(12)
-            // The AI master switch lives in the profile (Nastavení → Profil). With
-            // it off the button is not drawn at all — nothing to mis-tap — and a
-            // hint says where the switch is. An unknown profile keeps the old path.
-            if (profile?.aiEnabled == false) {
-                SectionHint("AI je vypnutá — zapneš ji v Nastavení.")
+            // Unknown consent is treated like opt-out: no generation request is allowed.
+            if (profile?.aiEnabled != true) {
+                SectionHint("AI není zapnutá nebo profil není dostupný — zapni ji v Nastavení.")
             } else {
                 GlassActionButton(
                     text = if (loading) {

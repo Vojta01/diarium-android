@@ -46,7 +46,7 @@
             </intent-filter>
         </activity>
 
-        <!-- OAuth deep link: diarium://auth-callback#access_token=... -->
+        <!-- OAuth callback; the app requires an outstanding PKCE state and code. -->
         <activity
             android:name=".auth.AuthCallbackActivity"
             android:exported="true"

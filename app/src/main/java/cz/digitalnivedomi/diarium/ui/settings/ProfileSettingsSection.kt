@@ -24,7 +24,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import cz.digitalnivedomi.diarium.core.data.AppClients
 import cz.digitalnivedomi.diarium.core.data.ProfileStore
+import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.ui.checkin.components.GlassTextField
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
@@ -48,8 +50,10 @@ class ProfileSettingsDeps(val store: ProfileStore) {
 
     companion object {
         /** The real thing, built from the current context like `AiSettingsDeps.forContext`. */
-        fun forContext(context: Context): ProfileSettingsDeps =
-            ProfileSettingsDeps(ProfileStore.from(context))
+        fun forContext(context: Context): ProfileSettingsDeps = run {
+            val ownerId = SessionContext(AppClients.sessionStore(context)).userId()
+            ProfileSettingsDeps(ProfileStore.from(context, ownerId))
+        }
     }
 
     /** "Spustit průvodce znovu": the next launch walks through the guide again. */
@@ -63,9 +67,9 @@ private val BIRTH_YEAR_RANGE = 1900..2100
  * The "👤 Profil" card in Nastavení.
  *
  * What it does: lets the owner store the name and birth year the AI uses to make its
- * reflections and reports personal, and to restart the first-run guide. Both values
- * stay on this phone (the [ProfileStore] file) — the helper text says so, because the
- * name is the one piece of the card the owner might not expect a local AI to know.
+ * reflections and reports personal, and to restart the first-run guide. The values
+ * are stored locally, then included with journal data in AI prompts sent to DeepSeek;
+ * reflection requests also pass through our server.
  */
 @Composable
 fun ProfileSettingsSection(deps: ProfileSettingsDeps, modifier: Modifier = Modifier) {
@@ -74,6 +78,7 @@ fun ProfileSettingsSection(deps: ProfileSettingsDeps, modifier: Modifier = Modif
     var birthYearError by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
+    var legacyDataQuarantined by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val haptics = rememberHaptics()
 
@@ -83,6 +88,7 @@ fun ProfileSettingsSection(deps: ProfileSettingsDeps, modifier: Modifier = Modif
         val profile = withContext(Dispatchers.IO) { deps.store.load() }
         name = profile.name
         birthYear = profile.birthYear?.toString().orEmpty()
+        legacyDataQuarantined = profile.legacyDataQuarantined
     }
 
     // "Uloženo ✓" is a confirmation, not a state — it fades after a moment.
@@ -128,10 +134,19 @@ fun ProfileSettingsSection(deps: ProfileSettingsDeps, modifier: Modifier = Modif
         )
         VSpace(4)
         Text(
-            text = "Jméno a rok narození používá AI pro osobnější reflexe a přehledy. Zůstávají jen v tomto telefonu.",
+            text = "Jméno a rok narození jsou uložené v tomto telefonu. Pokud je vyplníš, při žádosti o AI reflexi nebo přehled se odešlou spolu s údaji z deníku v promptu pro DeepSeek. Reflexe procházejí naším serverem; přehledy mohou být vygenerované přímo telefonem nebo přes náš server.",
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
         )
+        if (legacyDataQuarantined) {
+            VSpace(8)
+            Text(
+                text = "Našel se starší profil bez přiřazeného účtu. Hodnoty zůstaly v telefonu nezměněné a nebyly přeneseny. Než smažeš data aplikace, ověř, že máš původní údaje; podpora může poradit s bezpečným obnovením.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.testTag("profile_legacy_quarantined"),
+            )
+        }
         VSpace(12)
 
         GlassTextField(
