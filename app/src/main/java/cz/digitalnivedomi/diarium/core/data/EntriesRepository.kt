@@ -3,6 +3,8 @@ package cz.digitalnivedomi.diarium.core.data
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -211,6 +213,12 @@ class EntriesRepository(
     fun pendingSaveRecord(date: String): PendingSave? {
         val userId = authorizedUserId() ?: return null
         return pendingFor(userId)?.peekRecord(date)?.takeIf { it.ownerId == userId }
+    }
+
+    /** Observe the durable pending record only while this repository still owns the session. */
+    fun observePendingSaveRecord(date: String): Flow<PendingSave?> {
+        val userId = authorizedUserId() ?: return flowOf(null)
+        return pendingFor(userId)?.observeRecord(date) ?: flowOf(null)
     }
 
     /** Text-free marker for malformed or ownerless outbox data; never migrates it. */

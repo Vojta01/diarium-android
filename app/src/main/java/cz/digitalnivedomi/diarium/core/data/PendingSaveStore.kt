@@ -7,6 +7,12 @@ import java.time.LocalDate
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.sync.Mutex
 
 /**
@@ -242,6 +248,24 @@ class PendingSaveStore private constructor(
 
     /** Exact persisted transaction snapshot, used for compare-and-remove after a flush. */
     fun peekRecord(date: String): PendingSave? = read(date)
+
+    /**
+     * Observe the durable outbox record for this owner and date. Register before
+     * reading so a worker mutation cannot fall into a read/subscribe gap.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun observeRecord(date: String): Flow<PendingSave?> {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return flowOf(null)
+        val key = storageKey(owner, date)
+        return callbackFlow {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, changedKey ->
+                if (changedKey == null || changedKey == key) trySend(read(date))
+            }
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            trySend(read(date))
+            awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+        }.distinctUntilChanged()
+    }
 
     /** This owner's flushable saves, oldest date first. */
     fun peekAll(): List<PendingSave> {

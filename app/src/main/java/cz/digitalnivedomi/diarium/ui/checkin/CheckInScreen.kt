@@ -100,6 +100,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -256,7 +257,7 @@ fun CheckInScreen(
         if (repo.currentUserId() != ownerId) return
         val latestRecord = repo.pendingSaveRecord(date)
         pendingRecoveryIssue = repo.pendingSaveRecoveryIssue(date)
-        if (latestRecord == null || latestRecord.transactionId != record.transactionId) {
+        if (latestRecord != record) {
             pendingRecovery = null
             holder.setLoading(true)
             reloadToken++
@@ -268,6 +269,23 @@ fun CheckInScreen(
             remoteError = remote.exceptionOrNull()?.message,
         )
         pendingRecoveryChoice = PendingRecoveryChoice.LOCAL
+    }
+
+    // Workers and other app screens can finish an outbox transaction while this
+    // screen is still composed. Follow the durable owner/date record, not the
+    // snapshot that happened to be read when recovery began.
+    LaunchedEffect(ownerId, state.date, entriesRepo) {
+        val repo = entriesRepo ?: return@LaunchedEffect
+        repo.observePendingSaveRecord(state.date).collect { currentRecord ->
+            if (ownerId == null || repo.currentUserId() != ownerId) return@collect
+            val shown = pendingRecovery ?: return@collect
+            if (currentRecord != shown.record) {
+                pendingRecovery = null
+                pendingRecoveryIssue = repo.pendingSaveRecoveryIssue(state.date)
+                holder.setLoading(true)
+                reloadToken++
+            }
+        }
     }
 
     // A day picked elsewhere (the calendar tab, the dashboard's "Dnes" card): land the
@@ -448,7 +466,7 @@ fun CheckInScreen(
         traceDraftRecovery("remote read starting")
         val loaded = repo.loadRemoteEntrySnapshot(state.date)
         val latestQueued = repo.pendingSaveRecord(state.date)
-        if (latestQueued?.transactionId != queued?.transactionId) {
+        if (latestQueued != queued) {
             pendingRecovery = null
             pendingRecoveryIssue = repo.pendingSaveRecoveryIssue(state.date)
             holder.setLoading(true)
