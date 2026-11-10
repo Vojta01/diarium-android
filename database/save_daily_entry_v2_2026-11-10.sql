@@ -290,6 +290,7 @@ END;
 $receipt_shape$;
 GRANT CREATE ON SCHEMA public TO diarium_entry_sync_owner;
 ALTER TABLE public.entry_save_v2_receipts OWNER TO diarium_entry_sync_owner;
+REVOKE CREATE ON SCHEMA public FROM diarium_entry_sync_owner;
 ALTER TABLE public.entry_save_v2_receipts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.entry_save_v2_receipts FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS entry_save_v2_receipt_owner ON public.entry_save_v2_receipts;
@@ -587,7 +588,7 @@ BEGIN
                      WHEN pg_catalog.btrim(pg_catalog.split_part(pg_catalog.btrim(item), ':', 2)) ~ '^[+-]?[0-9]+'
                        THEN pg_catalog.regexp_replace(
                               pg_catalog.btrim(pg_catalog.split_part(pg_catalog.btrim(item), ':', 2)),
-                              '^([+-]?[0-9]+).*$', '\\1'
+                              '^([+-]?[0-9]+).*$', '\1'
                             )::integer * 60
                      ELSE 0
                    END AS secs
@@ -627,8 +628,9 @@ BEGIN
   END IF;
 
   -- Scale values are stored verbatim when present. A present zero or negative
-  -- value does not delete a mirror under the legacy RPC's semantics; only the
-  -- separate clear_scale_ids intent deletes mirrors. Positive, user-owned IDs
+  -- value does not delete its mirror under the legacy RPC's semantics. Explicit
+  -- clear_scale_ids removes the named JSON key and mirror; replacing the object
+  -- also removes mirrors for owned keys no longer present. Positive, owned IDs
   -- are upserted below; invalid/foreign keys and non-positive values are skipped.
   IF v_p_scaleval AND pg_catalog.jsonb_typeof(p_payload -> 'scale_values') = 'object' THEN
     IF EXISTS (
@@ -641,6 +643,12 @@ BEGIN
       RAISE EXCEPTION 'save_daily_entry_v2: a scale cannot be both cleared and assigned a positive value'
         USING ERRCODE = '22023';
     END IF;
+  END IF;
+
+  IF v_p_scaleval
+     AND pg_catalog.jsonb_typeof(v_scaleval) = 'object'
+     AND pg_catalog.cardinality(v_clear_scale_ids) > 0 THEN
+    v_scaleval := v_scaleval - v_clear_scale_ids;
   END IF;
 
   ---------------------------------------------------------------------------
@@ -762,7 +770,13 @@ BEGIN
       phone_top_apps    = CASE WHEN v_p_apps       THEN COALESCE(v_apps, '[]'::jsonb)
                                ELSE t.phone_top_apps END,
       ai_reflection     = CASE WHEN v_p_reflection THEN v_reflection        ELSE t.ai_reflection     END,
-      scale_values      = CASE WHEN v_p_scaleval   THEN v_scaleval          ELSE t.scale_values      END
+      scale_values      = CASE
+                            WHEN v_p_scaleval THEN v_scaleval
+                            WHEN pg_catalog.cardinality(v_clear_scale_ids) > 0
+                             AND pg_catalog.jsonb_typeof(t.scale_values) = 'object'
+                              THEN t.scale_values - v_clear_scale_ids
+                            ELSE t.scale_values
+                          END
      WHERE t.id = v_current.id
        AND t.user_id = v_actor
        AND t.date = v_date
@@ -820,8 +834,9 @@ BEGIN
 
   ---------------------------------------------------------------------------
   -- Mirror scale_values in the same transaction. Omitted means unchanged;
-  -- present values retain legacy JSONB semantics; positive owned IDs upsert,
-  -- exact explicit/zero clears delete only the caller's matching mirror rows.
+  -- positive owned IDs upsert, zero/negative values retain their legacy mirror,
+  -- explicit clears remove exact keys, and object replacement removes stale
+  -- owned mirrors. All mutations remain part of the entry-save transaction.
   -- Unlike the beta5 RPC's warning-only catch, a v2 mirror failure rolls the
   -- entire new save back so entries and statistics cannot diverge silently.
   ---------------------------------------------------------------------------
@@ -835,11 +850,19 @@ BEGIN
        AND s.id::text = ANY(v_clear_scale_ids);
   END IF;
 
-  IF v_p_scaleval AND pg_catalog.jsonb_typeof(p_payload -> 'scale_values') = 'object' THEN
+  IF v_p_scaleval AND pg_catalog.jsonb_typeof(v_scaleval) = 'object' THEN
+    DELETE FROM public.scale_entries AS se
+     USING public.scales AS s
+     WHERE se.user_id = v_actor
+       AND se.date = v_date
+       AND s.id = se.scale_id
+       AND s.user_id = v_actor
+       AND NOT (v_scaleval ? s.id::text);
+
     INSERT INTO public.scale_entries (user_id, scale_id, date, value)
     SELECT v_actor, s.id, v_date,
            pg_catalog.round((kv.value::text)::numeric)::integer
-      FROM pg_catalog.jsonb_each(p_payload -> 'scale_values') AS kv(key, value)
+      FROM pg_catalog.jsonb_each(v_scaleval) AS kv(key, value)
       JOIN public.scales AS s
         ON s.user_id = v_actor
        AND s.id::text = kv.key
@@ -865,6 +888,7 @@ $save$;
 
 ALTER FUNCTION public.save_daily_entry_v2(jsonb, boolean, uuid, bigint, uuid)
   OWNER TO diarium_entry_sync_owner;
+REVOKE CREATE ON SCHEMA public FROM diarium_entry_sync_owner;
 REVOKE ALL ON FUNCTION public.save_daily_entry_v2(jsonb, boolean, uuid, bigint, uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.save_daily_entry_v2(jsonb, boolean, uuid, bigint, uuid) FROM anon;
 REVOKE ALL ON FUNCTION public.save_daily_entry_v2(jsonb, boolean, uuid, bigint, uuid) FROM service_role;
