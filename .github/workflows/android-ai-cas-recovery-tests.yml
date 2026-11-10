@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/android-ai-cas-recovery-20261110
+      - ci/android-ai-cas-recovery-full-tests-20261110
 
 permissions:
   contents: read
@@ -39,16 +40,22 @@ jobs:
           test ! -e keystore.properties
           test ! -e local.properties
 
-      - name: Run app unit tests
-        run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest --tests 'cz.digitalnivedomi.diarium.ui.CheckInDraftRecoveryScreenTest' --tests 'cz.digitalnivedomi.diarium.ui.home.DashboardReflectionRecoveryScreenTest'
+      - name: Run complete app unit-test suite
+        run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest
+
+      - name: Run buildSrc tests
+        if: always()
+        run: ./gradlew -p buildSrc --no-daemon --max-workers=2 test
 
       - name: Upload synthetic unit-test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-ai-cas-recovery-test-reports
+          name: android-ai-cas-recovery-full-test-reports
           path: |
             app/build/test-results/testDebugUnitTest/TEST-*.xml
             app/build/reports/tests/testDebugUnitTest/**
+            buildSrc/build/test-results/test/TEST-*.xml
+            buildSrc/build/reports/tests/test/**
           if-no-files-found: warn
           retention-days: 7

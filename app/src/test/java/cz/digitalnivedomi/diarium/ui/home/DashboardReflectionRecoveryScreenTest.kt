@@ -1,5 +1,7 @@
 package cz.digitalnivedomi.diarium.ui.home
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -111,24 +113,117 @@ class DashboardReflectionRecoveryScreenTest {
         }
     }
 
-    private fun fixture(failFirstDraftWrite: Boolean): Fixture {
+    @Test
+    fun `permanent staging failure keeps reflection visible and offers copy recovery`() = runBlocking {
+        AppLanguage.set(context, Lang.CS)
+        val fixture = fixture(failAllDraftWrites = true)
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val previousClipboard = clipboard.primaryClip
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    DashboardScreen(
+                        deps = fixture.deps,
+                        holder = DashboardStateHolder(),
+                        today = LocalDate.parse(DATE),
+                    )
+                }
+            }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText("Vygenerovat reflexi", substring = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText("Vygenerovat reflexi", substring = true)
+                .performScrollTo().performClick()
+
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText(GENERATED_TEXT).assertExists()
+            compose.onNodeWithText("není uložená v telefonu", substring = true).assertExists()
+            compose.onNodeWithTag("dashboard_reflection_copy").performScrollTo().performClick()
+
+            assertEquals(GENERATED_TEXT, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+            assertNull("disk failure must not be presented as a durable local save", fixture.drafts.loadRecord(DATE))
+            assertEquals("manual copy must not bypass the durable-stage-before-CAS gate", 0, fixture.saveCalls.get())
+        } finally {
+            if (previousClipboard == null) clipboard.clearPrimaryClip() else clipboard.setPrimaryClip(previousClipboard)
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun `account switch blocks copying unsaved reflection from previous owner`() = runBlocking {
+        AppLanguage.set(context, Lang.CS)
+        val fixture = fixture(failAllDraftWrites = true)
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val previousClipboard = clipboard.primaryClip
+        val holder = DashboardStateHolder()
+        clipboard.setPrimaryClip(ClipData.newPlainText("existing clipboard", "other-account content"))
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    DashboardScreen(
+                        deps = fixture.deps,
+                        holder = holder,
+                        today = LocalDate.parse(DATE),
+                    )
+                }
+            }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText("Vygenerovat reflexi", substring = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText("Vygenerovat reflexi", substring = true)
+                .performScrollTo().performClick()
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("dashboard_reflection_copy").assertExists()
+
+            // Simulate a session change before Compose has recomposed. A stale visible
+            // callback must re-check the live owner rather than exporting owner A's text.
+            fixture.session.save(sessionPayload(OTHER_OWNER_ID))
+            compose.onNodeWithTag("dashboard_reflection_copy").performScrollTo().performClick()
+            assertEquals(
+                "a stale callback must not replace the clipboard after an account switch",
+                "other-account content",
+                clipboard.primaryClip?.getItemAt(0)?.text?.toString(),
+            )
+            assertEquals("copy recovery must never call the remote save path", 0, fixture.saveCalls.get())
+
+            // Force the same recomposition the authenticated app shell causes on owner change.
+            compose.runOnIdle { holder.markLoading() }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithTag("dashboard_reflection_copy").fetchSemanticsNodes().isEmpty() &&
+                    compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isEmpty()
+            }
+        } finally {
+            if (previousClipboard == null) clipboard.clearPrimaryClip() else clipboard.setPrimaryClip(previousClipboard)
+            fixture.close()
+        }
+    }
+
+    private fun fixture(
+        failFirstDraftWrite: Boolean = false,
+        failAllDraftWrites: Boolean = false,
+    ): Fixture {
         val session = SessionStore(context).apply {
             clear()
-            save(
-                JSONObject().apply {
-                    put("access_token", "synthetic-access-token")
-                    put("refresh_token", "synthetic-refresh-token")
-                    put("expires_at", System.currentTimeMillis() / 1000 + 3600)
-                    put("user", JSONObject().put("id", OWNER_ID))
-                },
-            )
+            save(sessionPayload(OWNER_ID))
         }
         val draftFile = tempFile("reflection_draft")
         val draftScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val draftBacking = PreferenceDataStoreFactory.create(scope = draftScope, produceFile = { draftFile })
         val draftWrites = AtomicInteger()
         val draftStore = DraftStore(
-            if (failFirstDraftWrite) FailFirstWriteDataStore(draftBacking, draftWrites) else draftBacking,
+            if (failAllDraftWrites) {
+                FailFirstWriteDataStore(draftBacking, draftWrites, failEveryWrite = true)
+            } else if (failFirstDraftWrite) {
+                FailFirstWriteDataStore(draftBacking, draftWrites)
+            } else {
+                draftBacking
+            },
             OWNER_ID,
         )
         val profileFile = tempFile("reflection_profile")
@@ -213,14 +308,23 @@ class DashboardReflectionRecoveryScreenTest {
 
     private fun entryRows(): String = """[{"user_id":"$OWNER_ID","id":"$ROW_ID","date":"$DATE","revision":7,"mood":4,"mood_emoji":"🙂","note":"Synthetic test entry","created_at":"2026-11-10T12:00:00Z","updated_at":"2026-11-10T12:00:00Z"}]"""
 
+    private fun sessionPayload(ownerId: String): JSONObject = JSONObject().apply {
+        put("access_token", "synthetic-access-token-$ownerId")
+        put("refresh_token", "synthetic-refresh-token-$ownerId")
+        put("expires_at", System.currentTimeMillis() / 1000 + 3600)
+        put("user", JSONObject().put("id", ownerId))
+    }
+
     private class FailFirstWriteDataStore(
         private val delegate: DataStore<Preferences>,
         private val writeCount: AtomicInteger,
+        private val failEveryWrite: Boolean = false,
     ) : DataStore<Preferences> {
         override val data: Flow<Preferences> get() = delegate.data
 
         override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
-            if (writeCount.incrementAndGet() == 1) throw IOException("synthetic disk full")
+            val attempt = writeCount.incrementAndGet()
+            if (failEveryWrite || attempt == 1) throw IOException("synthetic disk full")
             return delegate.updateData(transform)
         }
     }
@@ -249,6 +353,7 @@ class DashboardReflectionRecoveryScreenTest {
     private companion object {
         const val DATE = "2026-11-10"
         const val OWNER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
+        const val OTHER_OWNER_ID = "0a6e4d2b-018f-4c6f-9d3a-7e1b2c5f8a10"
         const val ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a36"
         const val BASE_URL = "https://example.supabase.co/rest/v1"
         const val AI_URL = "https://example.test/api/ai/reflect"
