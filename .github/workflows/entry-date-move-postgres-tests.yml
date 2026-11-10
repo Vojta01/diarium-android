@@ -1,0 +1,119 @@
+name: Atomic entry-date move PostgreSQL tests
+
+on:
+  push:
+    branches:
+      - ci/atomic-date-move-20261110-b5903caf
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-date-move:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TMPDIR: ${{ runner.temp }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out the test-only branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Run static SQL and script checks
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s database/tests -p 'test_*.py' -v
+          bash -n database/tests/run_postgres_tests.sh database/tests/race_save_daily_entry_v2.sh
+          bash -n database/tests/run_entry_date_move_tests.sh database/tests/race_entry_date_move_v1.sh
+          python3 -m py_compile \
+            database/tests/guard_local_test_database.py \
+            database/tests/verify_race.py \
+            database/tests/test_sql_contract.py \
+            database/tests/verify_entry_date_move_race.py \
+            database/tests/test_entry_date_move_sql_contract.py
+
+      - name: Create the disposable synthetic database
+        id: create_database
+        run: createdb --host=127.0.0.1 --port=5432 --username=postgres diarium_test_date_move
+
+      - name: Prepare the guarded synthetic CAS fixture
+        id: base_fixture
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_date_move
+        run: |
+          set -euo pipefail
+          database_name="$(python3 database/tests/guard_local_test_database.py)"
+          echo "Applying the synthetic CAS fixture to $database_name"
+          psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f database/tests/prepare_fixture.sql
+
+      - name: Run existing CAS PostgreSQL integration assertions
+        id: base_cas_integration
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_date_move
+        run: psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f database/tests/save_daily_entry_v2_transactional.sql
+
+      - name: Run existing CAS concurrent-session races
+        id: base_cas_races
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_date_move
+        run: bash database/tests/race_save_daily_entry_v2.sh
+
+      - name: Run CAS races independently after integration failure
+        if: ${{ always() && steps.base_fixture.outcome == 'success' && steps.base_cas_integration.outcome == 'failure' }}
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_date_move
+        run: |
+          set -euo pipefail
+          ready="$(psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT pg_catalog.to_regprocedure('public.save_daily_entry_v2(jsonb,boolean,uuid,bigint,uuid)') IS NOT NULL")"
+          if [ "$ready" != 't' ]; then
+            echo 'CAS race suite unavailable: the disposable fixture/migration did not finish.'
+            exit 1
+          fi
+          bash database/tests/race_save_daily_entry_v2.sh
+
+      - name: Apply the test-only atomic move SQL
+        id: move_migration
+        if: ${{ always() && steps.create_database.outcome == 'success' && steps.base_fixture.outcome == 'success' }}
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_date_move
+        run: bash database/tests/run_entry_date_move_tests.sh migration
+
+      - name: Run atomic date-move PostgreSQL integration assertions
+        id: move_integration
+        if: ${{ always() && steps.move_migration.outcome == 'success' }}
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_date_move
+        run: bash database/tests/run_entry_date_move_tests.sh integration
+
+      - name: Run atomic date-move concurrent-session races
+        id: move_races
+        if: ${{ always() && steps.move_integration.outcome == 'success' }}
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_date_move
+        run: bash database/tests/run_entry_date_move_tests.sh races
+
+      - name: Run move races independently after integration failure
+        if: ${{ always() && steps.move_migration.outcome == 'success' && steps.move_integration.outcome == 'failure' }}
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_date_move
+        run: |
+          set -euo pipefail
+          bash database/tests/run_entry_date_move_tests.sh races
