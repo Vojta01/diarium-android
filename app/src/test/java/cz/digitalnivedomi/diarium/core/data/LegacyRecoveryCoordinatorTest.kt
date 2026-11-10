@@ -99,9 +99,10 @@ class LegacyRecoveryCoordinatorTest {
         }
         fixture.currentOwner = OWNER_A
         val inventory = (fixture.coordinator.scan() as LegacyRecoveryScanResult.Ready).inventory
-        assertEquals(1, inventory.records.single { it.date == "2026-10-02" }.status.let {
-            if (it == LegacyRecoveryRecordStatus.MALFORMED) 1 else 0
-        })
+        assertEquals(
+            LegacyRecoveryRecordStatus.MALFORMED,
+            inventory.records.single { it.date == "2026-10-02" }.status,
+        )
         val unsupported = inventory.records.single { it.date == "2026-10-03" }
         assertEquals(LegacyRecoveryRecordStatus.UNSUPPORTED, unsupported.status)
         assertFalse(inventory.toString().contains("synthetic-token"))

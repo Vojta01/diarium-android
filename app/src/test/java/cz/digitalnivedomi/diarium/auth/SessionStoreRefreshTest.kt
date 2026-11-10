@@ -87,6 +87,20 @@ class SessionStoreRefreshTest {
         assertEquals(OWNER_B, store.userSubject())
     }
 
+    @Test
+    fun `offline recovery owner requires a persisted server-verified identity match`() {
+        val store = SessionStore(context)
+        store.save(session(OWNER_A))
+        assertEquals(OWNER_A, store.userSubject())
+        assertNull(store.verifiedUserSubject())
+
+        store.save(session(OWNER_A).put("verified_user_id", OWNER_A))
+        assertEquals(OWNER_A, store.verifiedUserSubject())
+
+        store.save(session(OWNER_A).put("verified_user_id", OWNER_B))
+        assertNull(store.verifiedUserSubject())
+    }
+
     private fun assertRejectedRefreshDoesNotMutate(refreshedAccessToken: String) {
         val initial = session(OWNER_A)
         var requestCount = 0
