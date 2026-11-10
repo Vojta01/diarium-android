@@ -29,7 +29,7 @@ class PendingSaveWorkerTest {
     fun `worker is owner pinned and waits for a connected network`() {
         val request = PendingSaveWorker.workRequest("account-a")
 
-        assertEquals("account-a", request.inputData.getString("owner_id"))
+        assertEquals("account-a", PendingSaveWorker.ownerFromInput(PendingSaveWorker.ownerInputData("account-a")))
         assertEquals(NetworkType.CONNECTED, PendingSaveWorker.networkConstraints().requiredNetworkType)
         assertTrue(request.tags.contains(PendingSaveWorker.TAG_PENDING_SAVE))
     }

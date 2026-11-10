@@ -85,6 +85,9 @@ class PendingSaveWorker(
         internal val uniqueWorkPolicy = ExistingWorkPolicy.APPEND_OR_REPLACE
         private const val INPUT_OWNER_ID = "owner_id"
 
+        internal fun ownerInputData(ownerId: String): Data =
+            Data.Builder().putString(INPUT_OWNER_ID, ownerId).build()
+
         internal fun ownerFromInput(inputData: Data): String? =
             inputData.getString(INPUT_OWNER_ID)?.takeIf { it.isNotBlank() }
 
@@ -97,7 +100,7 @@ class PendingSaveWorker(
 
         internal fun workRequest(ownerId: String): androidx.work.OneTimeWorkRequest =
             OneTimeWorkRequestBuilder<PendingSaveWorker>()
-                .setInputData(Data.Builder().putString(INPUT_OWNER_ID, ownerId).build())
+                .setInputData(ownerInputData(ownerId))
                 .setConstraints(networkConstraints())
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .addTag(TAG_PENDING_SAVE)
