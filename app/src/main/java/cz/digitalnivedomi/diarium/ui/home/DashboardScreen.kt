@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.ui.home
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
