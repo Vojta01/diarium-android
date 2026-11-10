@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import cz.digitalnivedomi.diarium.core.data.HttpRequest
 import cz.digitalnivedomi.diarium.core.data.HttpResponse
 import cz.digitalnivedomi.diarium.core.data.HttpTransport
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -119,7 +120,7 @@ class AuthIdentityVerificationTest {
             HttpResponse(200, authUser(OWNER_A).toString())
         })
 
-        val pending = async { verifier.verifyAndSave(candidate(OWNER_A)) }
+        val pending = async(Dispatchers.Default) { verifier.verifyAndSave(candidate(OWNER_A)) }
         assertTrue("verification request did not start", requestStarted.await(5, TimeUnit.SECONDS))
         store.save(legacySession(OWNER_B))
         val switchedSession = store.sessionJson()
@@ -147,7 +148,7 @@ class AuthIdentityVerificationTest {
             }
         })
 
-        val older = async { verifier.verifyAndSave(candidate(OWNER_A)) }
+        val older = async(Dispatchers.Default) { verifier.verifyAndSave(candidate(OWNER_A)) }
         assertTrue("older verification request did not start", oldStarted.await(5, TimeUnit.SECONDS))
         assertEquals(AuthCallbackOutcome.Verified(OWNER_B), verifier.verifyAndSave(candidate(OWNER_B)))
         finishOldRequest.countDown()

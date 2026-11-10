@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import cz.digitalnivedomi.diarium.core.data.HttpRequest
 import cz.digitalnivedomi.diarium.core.data.HttpResponse
 import cz.digitalnivedomi.diarium.core.data.HttpTransport
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -284,7 +285,7 @@ class AuthPkceFlowTest {
         val flow = flow(attempts, transport, store)
         flow.authorizationUrl()
         val attempt = attempts.read()!!
-        val pending = async { flow.handleCallback("${attempt.redirectUri}&code=issued-code") }
+        val pending = async(Dispatchers.Default) { flow.handleCallback("${attempt.redirectUri}&code=issued-code") }
 
         assertTrue("Auth user request did not start", userRequestStarted.await(5, TimeUnit.SECONDS))
         store.save(legacySession(OWNER_B))

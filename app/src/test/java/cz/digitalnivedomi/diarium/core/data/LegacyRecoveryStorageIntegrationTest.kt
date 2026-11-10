@@ -179,7 +179,17 @@ class LegacyRecoveryStorageIntegrationTest {
         )
         assertFalse("fixture must start without the encrypted store", secretFile.exists())
 
-        val inventory = LegacyRecoveryScanner.from(context).scan()
+        val secrets = EncryptedSecretSlot(context)
+        val storage = object : LegacyRecoveryStorage {
+            override suspend fun readDraftPreferences(): Map<String, Any?> = emptyMap()
+
+            override suspend fun readPendingSavePreferences(): Map<String, Any?> = emptyMap()
+
+            override suspend fun readProfilePreferenceNames(): Set<String> = emptySet()
+
+            override suspend fun legacyAiSecretStatus(): LegacySecretPresence = secrets.legacyValueStatus()
+        }
+        val inventory = LegacyRecoveryScanner(storage).scan()
 
         assertEquals(LegacySecretPresence.UNKNOWN, inventory.legacyAiSecretStatus)
         assertNull(inventory.legacyAiSecretPresent)
