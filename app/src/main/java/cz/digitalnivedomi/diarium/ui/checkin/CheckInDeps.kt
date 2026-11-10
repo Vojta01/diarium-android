@@ -7,6 +7,7 @@ import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.DraftStore
 import cz.digitalnivedomi.diarium.core.data.EntriesCacheStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
+import cz.digitalnivedomi.diarium.core.data.EntryMoveStore
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
 import cz.digitalnivedomi.diarium.core.data.PhotoCandidateStore
@@ -67,6 +68,7 @@ class CheckInDeps(
                     pending = PendingSaveStore.from(context, ownerId),
                     expectedOwnerId = ownerId,
                     photoCandidates = ownerId?.let { PhotoCandidateStore.from(context, it) },
+                    moveOutbox = ownerId?.let { EntryMoveStore.from(context, it) },
                 ),
                 pickers = PickersRepository(client, session),
                 drafts = ownerId?.let { DraftStore.from(context, it) },

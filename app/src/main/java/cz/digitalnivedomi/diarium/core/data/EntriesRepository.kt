@@ -12,6 +12,7 @@ import java.io.IOException
 import java.net.URI
 import java.net.URLDecoder
 import java.time.LocalDate
+import java.time.ZoneId
 import java.util.UUID
 
 /**
@@ -108,9 +109,15 @@ class EntriesRepository(
     private val photoCandidates: PhotoCandidateRegistry? = null,
     /** Read-only outbox guard for worker cleanup, separate from the save write barrier. */
     private val photoCleanupOutbox: PendingSaveStore? = null,
+    /** Restart-safe, owner-keyed outbox required before any atomic move can dispatch. */
+    private val moveOutbox: EntryMoveStore? = null,
 ) {
 
     suspend fun currentUserId(): String? = authorizedUserId()
+
+    /** True only when this live owner has an owner-matched durable move outbox. */
+    val supportsAtomicDateMove: Boolean
+        get() = authorizedUserId()?.let { moveOutboxFor(it) != null } == true
 
     private fun authorizedUserId(): String? = session.userId()?.takeIf { current ->
         expectedOwnerId == null || current == expectedOwnerId
@@ -206,6 +213,7 @@ class EntriesRepository(
             updatedAt = row.plainString("updated_at").takeIf { it.isNotBlank() },
             id = row.plainString("id").takeIf { it.isNotBlank() },
             revision = if (row.has("revision") && !row.isNull("revision")) row.optLong("revision") else null,
+            rawRowJson = row.toString(),
         )
     }
 
@@ -392,6 +400,13 @@ class EntriesRepository(
         }
         val userId = authorizedUserId()
             ?: return Result.failure(IllegalStateException(SIGNED_OUT))
+        try {
+            rejectPendingMove(userId, date)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            return Result.failure(failure)
+        }
         val outbox = pendingFor(userId)
         if (pending != null && outbox == null) {
             return Result.failure(IllegalStateException(SIGNED_OUT))
@@ -445,6 +460,13 @@ class EntriesRepository(
         }
         if (runCatching { UUID.fromString(request.requestId) }.isFailure) {
             return Result.failure(IllegalArgumentException("The conditional save request ID is invalid."))
+        }
+        try {
+            rejectPendingMove(userId, request.date)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            return Result.failure(failure)
         }
         val outbox = pendingFor(userId)
         if (pending != null && outbox == null) {
@@ -985,6 +1007,13 @@ class EntriesRepository(
     suspend fun delete(date: String): Result<Unit> {
         val userId = authorizedUserId()
             ?: return Result.failure(IllegalStateException(SIGNED_OUT))
+        try {
+            rejectPendingMove(userId, date)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            return Result.failure(failure)
+        }
         val outbox = pendingFor(userId)
         if (pending != null && outbox == null) {
             return Result.failure(IllegalStateException(SIGNED_OUT))
@@ -1048,21 +1077,363 @@ class EntriesRepository(
     }
 
     /**
-     * A two-date move cannot be made safe with the server's currently available
-     * blind save RPC plus a separate DELETE. Re-reading both rows is not atomic and
-     * still permits either a concurrent target overwrite or source loss. Fail closed
-     * without issuing a read or write until an atomic move/CAS RPC is available.
+     * Captures both live row tokens before showing the overwrite prompt. A failed
+     * source or target read is a failure, never an absent-date token. The source
+     * token may be pinned to the row the screen displayed; a mismatch requires a
+     * refresh instead of moving a row the user has not reviewed.
      */
-    suspend fun move(entry: DiaryEntry, fromDate: String, toDate: String): Result<Unit> =
-        withContext(Dispatchers.IO) {
-            if (fromDate == toDate) {
-                return@withContext Result.failure(IllegalArgumentException("Cílový den musí být jiný."))
-            }
-            if (authorizedUserId() == null) {
-                return@withContext Result.failure(IllegalStateException(SIGNED_OUT))
-            }
-            Result.failure(UnsafeMoveException())
+    suspend fun prepareMove(
+        fromDate: String,
+        toDate: String,
+        expectedSourceId: String? = null,
+        expectedSourceRevision: Long? = null,
+    ): Result<EntryMoveCandidate> = withContext(Dispatchers.IO) {
+        val userId = authorizedUserId()
+            ?: return@withContext Result.failure(IllegalStateException(SIGNED_OUT))
+        val outbox = moveOutboxFor(userId)
+            ?: return@withContext Result.failure(UnsafeMoveException())
+        if (runCatching { LocalDate.parse(fromDate) }.isFailure ||
+            runCatching { LocalDate.parse(toDate) }.isFailure
+        ) {
+            return@withContext Result.failure(IllegalArgumentException("Datum přesunu není platné."))
         }
+        if (toDate > LocalDate.now(ZoneId.of("Europe/Prague")).toString()) {
+            return@withContext Result.failure(IllegalArgumentException("Přesun do budoucího dne není povolen."))
+        }
+        if ((expectedSourceId == null) != (expectedSourceRevision == null) ||
+            expectedSourceId != null && (
+                runCatching { UUID.fromString(expectedSourceId) }.isFailure ||
+                    expectedSourceRevision == null || expectedSourceRevision < 1
+                )
+        ) {
+            return@withContext Result.failure(IllegalArgumentException("Verze zdrojového dne není platná."))
+        }
+        if (hasPendingSave(userId, fromDate) || hasPendingSave(userId, toDate)) {
+            return@withContext Result.failure(PendingEntryMoveException())
+        }
+        try {
+            if (outbox.pendingForDate(fromDate) != null || outbox.pendingForDate(toDate) != null) {
+                return@withContext Result.failure(PendingEntryMoveException())
+            }
+            val source = readEntrySnapshot(fromDate, userId)
+                ?: return@withContext Result.failure(IllegalStateException("Zdrojový den už na serveru není."))
+            if (!validMoveSnapshot(source)) {
+                return@withContext Result.failure(EntryMoveUnavailableException("Zdrojový řádek nemá platnou verzi."))
+            }
+            if (expectedSourceId != null &&
+                (source.id != expectedSourceId || source.revision != expectedSourceRevision)
+            ) {
+                return@withContext Result.failure(EntryMoveConflictException("stale_source"))
+            }
+            val target = if (fromDate == toDate) source else readEntrySnapshot(toDate, userId)
+            if (target != null && !validMoveSnapshot(target)) {
+                return@withContext Result.failure(EntryMoveUnavailableException("Cílový řádek nemá platnou verzi."))
+            }
+            if (authorizedUserId() != userId) {
+                return@withContext Result.failure(SessionOwnerMismatchException())
+            }
+            Result.success(
+                EntryMoveCandidate(
+                    ownerId = userId,
+                    sourceDate = fromDate,
+                    sourceSnapshot = source,
+                    targetDate = toDate,
+                    targetSnapshot = target,
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Result.failure(failure)
+        }
+    }
+
+    /** Compatibility entrypoint for callers without a confirmation UI: absent-target only. */
+    suspend fun move(entry: DiaryEntry, fromDate: String, toDate: String): Result<EntryMoveReceipt> {
+        val userId = authorizedUserId()
+            ?: return Result.failure(IllegalStateException(SIGNED_OUT))
+        if (moveOutboxFor(userId) == null) return Result.failure(UnsafeMoveException())
+        val candidate = prepareMove(fromDate, toDate).getOrElse { return Result.failure(it) }
+        if (candidate.sourceSnapshot.entry != entry) {
+            return Result.failure(EntryMoveConflictException("stale_source"))
+        }
+        return move(candidate, confirmOverwrite = false)
+    }
+
+    /**
+     * Persists the exact token payload and both full row snapshots before dispatch.
+     * An occupied target is never sent until [confirmOverwrite] is explicit.
+     */
+    suspend fun move(
+        candidate: EntryMoveCandidate,
+        confirmOverwrite: Boolean,
+    ): Result<EntryMoveReceipt> = withContext(Dispatchers.IO) {
+        val userId = authorizedUserId()
+            ?: return@withContext Result.failure(IllegalStateException(SIGNED_OUT))
+        if (candidate.ownerId != userId) {
+            return@withContext Result.failure(SessionOwnerMismatchException())
+        }
+        val targetExists = candidate.targetSnapshot != null
+        if (targetExists && !confirmOverwrite) {
+            return@withContext Result.failure(EntryMoveConfirmationRequiredException())
+        }
+        if (!targetExists && confirmOverwrite) {
+            return@withContext Result.failure(IllegalArgumentException("Potvrzení přepsání vyžaduje obsazený cílový den."))
+        }
+        if (candidate.sourceDate == candidate.targetDate && confirmOverwrite) {
+            return@withContext Result.failure(IllegalArgumentException("Přesun na stejný den nelze potvrdit jako přepsání."))
+        }
+        val outbox = moveOutboxFor(userId)
+            ?: return@withContext Result.failure(UnsafeMoveException())
+        if (hasPendingSave(userId, candidate.sourceDate) || hasPendingSave(userId, candidate.targetDate)) {
+            return@withContext Result.failure(PendingEntryMoveException())
+        }
+        val source = candidate.sourceSnapshot
+        val target = candidate.targetSnapshot
+        val request = EntryMoveRequest(
+            ownerId = userId,
+            sourceDate = candidate.sourceDate,
+            sourceId = source.id.orEmpty(),
+            sourceRevision = source.revision ?: 0L,
+            targetDate = candidate.targetDate,
+            targetExpectedExists = targetExists,
+            targetExpectedId = target?.id,
+            targetExpectedRevision = target?.revision,
+            confirmOverwrite = confirmOverwrite,
+            requestId = UUID.randomUUID().toString(),
+            sourceSnapshot = source,
+            targetSnapshot = target,
+        )
+        outbox.withDispatchLock {
+            if (authorizedUserId() != userId) {
+                return@withDispatchLock Result.failure(SessionOwnerMismatchException())
+            }
+            try {
+                outbox.stage(request)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                return@withDispatchLock Result.failure(failure)
+            }
+            if (authorizedUserId() != userId) {
+                return@withDispatchLock Result.failure(SessionOwnerMismatchException())
+            }
+            dispatchMove(request, outbox)
+        }
+    }
+
+    /** Retry a durable request after timeout/restart; its ID and CAS payload are unchanged. */
+    suspend fun retryPendingMove(requestId: String): Result<EntryMoveReceipt> = withContext(Dispatchers.IO) {
+        val userId = authorizedUserId()
+            ?: return@withContext Result.failure(IllegalStateException(SIGNED_OUT))
+        val outbox = moveOutboxFor(userId)
+            ?: return@withContext Result.failure(UnsafeMoveException())
+        outbox.withDispatchLock {
+            if (authorizedUserId() != userId) {
+                return@withDispatchLock Result.failure(SessionOwnerMismatchException())
+            }
+            val request = try {
+                outbox.pendingForId(requestId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                return@withDispatchLock Result.failure(failure)
+            } ?: return@withDispatchLock Result.failure(IllegalStateException("Přesun k opakování nebyl nalezen."))
+            if (request.ownerId != userId) {
+                return@withDispatchLock Result.failure(SessionOwnerMismatchException())
+            }
+            dispatchMove(request, outbox)
+        }
+    }
+
+    /** Local recovery lookup; owner mismatch or malformed outbox is never rebound. */
+    suspend fun pendingMoveForDate(date: String): Result<EntryMoveRequest?> = withContext(Dispatchers.IO) {
+        val userId = authorizedUserId()
+            ?: return@withContext Result.failure(IllegalStateException(SIGNED_OUT))
+        val outbox = moveOutboxFor(userId)
+            ?: return@withContext Result.success(null)
+        try {
+            val request = outbox.pendingForDate(date)
+            if (authorizedUserId() != userId) Result.failure(SessionOwnerMismatchException())
+            else Result.success(request)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Result.failure(failure)
+        }
+    }
+
+    private fun moveOutboxFor(userId: String): EntryMoveStore? =
+        moveOutbox?.takeIf { it.ownerId == userId }
+
+    private suspend fun rejectPendingMove(userId: String, date: String) {
+        val outbox = moveOutboxFor(userId) ?: return
+        if (outbox.pendingForDate(date) != null) throw PendingEntryMoveException()
+    }
+
+    private fun hasPendingSave(userId: String, date: String): Boolean =
+        pendingFor(userId)?.let { it.peekRecord(date) != null || it.recoveryIssueForDate(date) != null } == true
+
+    private fun validMoveSnapshot(snapshot: StoredEntrySnapshot): Boolean =
+        !snapshot.id.isNullOrBlank() && runCatching { UUID.fromString(snapshot.id) }.isSuccess &&
+            snapshot.revision != null && snapshot.revision >= 1 && !snapshot.rawRowJson.isNullOrBlank()
+
+    private suspend fun dispatchMove(
+        request: EntryMoveRequest,
+        outbox: EntryMoveStore,
+    ): Result<EntryMoveReceipt> {
+        val userId = authorizedUserId()
+            ?: return Result.failure(IllegalStateException(SIGNED_OUT))
+        if (request.ownerId != userId || outbox.ownerId != userId) {
+            return Result.failure(SessionOwnerMismatchException())
+        }
+        val body = JSONObject()
+            .put("p_source_date", request.sourceDate)
+            .put("p_source_id", request.sourceId)
+            .put("p_source_revision", request.sourceRevision)
+            .put("p_target_date", request.targetDate)
+            .put("p_target_expected_exists", request.targetExpectedExists)
+            .put("p_target_expected_id", request.targetExpectedId ?: JSONObject.NULL)
+            .put("p_target_expected_revision", request.targetExpectedRevision ?: JSONObject.NULL)
+            .put("p_confirm_overwrite", request.confirmOverwrite)
+            .put("p_request_id", request.requestId)
+        val response = try {
+            ownerClient(userId).post("rpc/move_daily_entry_v1", body)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: SessionOwnerMismatchException) {
+            return Result.failure(failure)
+        } catch (failure: Exception) {
+            return Result.failure(EntryMoveUnknownException(request.requestId, failure))
+        }
+        if (!response.isSuccessful) {
+            return when {
+                response.code == 404 -> Result.failure(
+                    EntryMoveUnavailableException(
+                        "Server nepodporuje atomický přesun. Nic se nezapsalo; místní kopie a požadavek zůstaly zachované.",
+                    ),
+                )
+                response.code == 408 || response.code == 429 || response.code >= 500 ->
+                    Result.failure(EntryMoveUnknownException(request.requestId))
+                response.code in 400..499 -> Result.failure(
+                    EntryMoveUnavailableException(
+                        response.errorMessage
+                            ?: "Server přesun odmítl (${response.code}). Místní kopie a původní požadavek zůstaly zachované.",
+                    ),
+                )
+                else -> Result.failure(EntryMoveUnknownException(request.requestId))
+            }
+        }
+        val envelope = response.asJsonObject()
+            ?: return Result.failure(EntryMoveUnknownException(request.requestId))
+        when (envelope.plainString("status")) {
+            "conflict" -> {
+                return try {
+                    outbox.remove(request.requestId)
+                    Result.failure(EntryMoveConflictException(envelope.plainString("reason")))
+                } catch (failure: Exception) {
+                    Result.failure(EntryMoveUnknownException(request.requestId, failure))
+                }
+            }
+            "confirmation_required" -> {
+                return try {
+                    outbox.remove(request.requestId)
+                    Result.failure(EntryMoveConfirmationRequiredException())
+                } catch (failure: Exception) {
+                    Result.failure(EntryMoveUnknownException(request.requestId, failure))
+                }
+            }
+            "moved", "unchanged" -> Unit
+            else -> return Result.failure(EntryMoveUnknownException(request.requestId))
+        }
+        val status = envelope.plainString("status")
+        val row = envelope.optJSONObject("entry")
+            ?: return Result.failure(EntryMoveUnknownException(request.requestId))
+        if (!validMoveResponse(request, envelope, row, status)) {
+            return Result.failure(EntryMoveUnknownException(request.requestId))
+        }
+        if (authorizedUserId() != userId) {
+            return Result.failure(SessionOwnerMismatchException())
+        }
+        try {
+            cacheFor(userId)?.moveDate(request.sourceDate, request.targetDate, row)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            return Result.failure(EntryMoveUnknownException(request.requestId, failure))
+        }
+        if (authorizedUserId() != userId) {
+            return Result.failure(SessionOwnerMismatchException())
+        }
+        try {
+            outbox.remove(request.requestId)
+        } catch (failure: Exception) {
+            return Result.failure(EntryMoveUnknownException(request.requestId, failure))
+        }
+        val revision = row.optLong("revision", -1L)
+        return Result.success(
+            EntryMoveReceipt(
+                status = if (status == "moved") EntryMoveStatus.MOVED else EntryMoveStatus.UNCHANGED,
+                entry = StoredEntrySnapshot(
+                    entry = fromRow(row),
+                    updatedAt = row.plainString("updated_at").takeIf { it.isNotBlank() },
+                    id = row.plainString("id"),
+                    revision = revision,
+                    rawRowJson = row.toString(),
+                ),
+                replayed = envelope.optBoolean("replayed", false),
+                scaleRowsMoved = envelope.optLong("scale_rows_moved", 0L),
+            ),
+        )
+    }
+
+    private fun validMoveResponse(
+        request: EntryMoveRequest,
+        envelope: JSONObject,
+        movedRow: JSONObject,
+        status: String,
+    ): Boolean {
+        val id = movedRow.plainString("id")
+        val revision = movedRow.optLong("revision", -1L)
+        if (envelope.plainString("source_date") != request.sourceDate ||
+            envelope.plainString("target_date") != request.targetDate ||
+            envelope.plainString("entry_id") != request.sourceId || id != request.sourceId ||
+            movedRow.plainString("user_id") != request.ownerId ||
+            movedRow.plainString("date") != request.targetDate || revision < 1 ||
+            envelope.optLong("revision", -1L) != revision
+        ) return false
+        if (status == "moved") {
+            if (request.sourceDate == request.targetDate || revision <= request.sourceRevision ||
+                envelope.optBoolean("overwrote", !request.targetExpectedExists) != request.targetExpectedExists ||
+                envelope.optLong("scale_rows_moved", -1L) < 0L
+            ) return false
+        } else if (request.sourceDate != request.targetDate ||
+            !request.targetExpectedExists || request.targetExpectedId != request.sourceId ||
+            request.targetExpectedRevision != request.sourceRevision || revision != request.sourceRevision
+        ) {
+            return false
+        }
+        val sourceRow = try {
+            JSONObject(request.sourceSnapshot.rawRowJson ?: return false)
+        } catch (_: Exception) {
+            return false
+        }
+        val mutableFields = if (status == "moved") setOf("date", "revision", "updated_at") else emptySet()
+        val sourceKeys = sourceRow.keys().asSequence().toSet() - mutableFields
+        val movedKeys = movedRow.keys().asSequence().toSet() - mutableFields
+        if (sourceKeys != movedKeys) return false
+        return sourceKeys.all { key -> canonicalJson(sourceRow.opt(key)) == canonicalJson(movedRow.opt(key)) }
+    }
+
+    private fun canonicalJson(value: Any?): String = when (value) {
+        null, JSONObject.NULL -> "null"
+        is JSONObject -> value.keys().asSequence().sorted()
+            .joinToString(prefix = "{", postfix = "}") { key -> "${canonicalJson(key)}:${canonicalJson(value.opt(key))}" }
+        is JSONArray -> (0 until value.length()).joinToString(prefix = "[", postfix = "]") {
+            canonicalJson(value.opt(it))
+        }
+        else -> value.toString()
+    }
 
     /**
      * Stages the day's photo at a unique owner-scoped path in the public
@@ -1309,6 +1680,17 @@ data class StoredEntrySnapshot(
     val updatedAt: String?,
     val id: String? = null,
     val revision: Long? = null,
+    /** Exact server row retained for safe move recovery and cache replacement. */
+    val rawRowJson: String? = null,
+)
+
+enum class EntryMoveStatus { MOVED, UNCHANGED }
+
+data class EntryMoveReceipt(
+    val status: EntryMoveStatus,
+    val entry: StoredEntrySnapshot,
+    val replayed: Boolean,
+    val scaleRowsMoved: Long,
 )
 
 /**
@@ -1319,9 +1701,9 @@ data class StoredEntrySnapshot(
 class QueuedOfflineException :
     Exception("Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle.")
 
-/** Date moves are disabled until the backend can compare and move both rows atomically. */
+/** Fail-closed when the caller has no owner-matched durable move outbox. */
 class UnsafeMoveException : IllegalStateException(
-    "Přesun je dočasně vypnutý: server neumí bezpečně ověřit oba dny najednou. Původní zápis zůstal beze změny.",
+    "Přesun není dostupný bez bezpečného místního úložiště požadavku; původní zápis zůstal beze změny.",
 )
 
 /** Target persistence succeeded, but source deletion was not confirmed. */
