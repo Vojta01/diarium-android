@@ -18,6 +18,16 @@ class EntryDateMoveSqlContractTests(unittest.TestCase):
         cls.cas = BASE_CAS.read_text(encoding="utf-8").lower()
         cls.workflow = WORKFLOW.read_text(encoding="utf-8").lower()
 
+    def test_transactional_script_uses_single_backslash_psql_meta_commands(self):
+        lines = (ROOT / "tests" / "entry_date_move_v1_transactional.sql").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        self.assertEqual(lines[0], r"\set ON_ERROR_STOP on")
+        self.assertEqual(
+            lines[-1],
+            r"\echo 'All atomic date-move PostgreSQL integration assertions passed.'",
+        )
+
     def test_adds_a_separate_authenticated_rpc_without_changing_cas_save(self):
         self.assertRegex(
             self.code,

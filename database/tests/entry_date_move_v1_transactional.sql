@@ -1,4 +1,4 @@
-\\set ON_ERROR_STOP on
+\set ON_ERROR_STOP on
 BEGIN;
 
 -- All fixtures are deterministic synthetic rows in the guarded CI database.
@@ -328,4 +328,4 @@ BEGIN
 END;
 $verify_other_owner$;
 
-\\echo 'All atomic date-move PostgreSQL integration assertions passed.'
+\echo 'All atomic date-move PostgreSQL integration assertions passed.'
