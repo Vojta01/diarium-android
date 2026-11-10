@@ -12,8 +12,6 @@ jobs:
   postgres-date-move:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      TMPDIR: ${{ runner.temp }}
     services:
       postgres:
         image: postgres:16

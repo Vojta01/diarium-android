@@ -114,6 +114,7 @@ class EntryDateMoveSqlContractTests(unittest.TestCase):
         self.assertIn("image: postgres:16", self.workflow)
         self.assertIn("diarium_test_date_move", self.workflow)
         self.assertNotIn("workflow_dispatch", self.workflow)
+        self.assertNotIn("${{ runner.temp }}", self.workflow)
         self.assertNotIn("secrets.", self.workflow)
 
     def test_entry_scale_mirrors_and_photo_pointer_move_atomically(self):
