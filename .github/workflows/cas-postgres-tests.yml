@@ -43,9 +43,24 @@ jobs:
           python3 -m py_compile database/tests/guard_local_test_database.py database/tests/verify_race.py database/tests/test_sql_contract.py
 
       - name: Create disposable synthetic test database
+        id: create_database
         run: createdb --host=127.0.0.1 --port=5432 --username=postgres diarium_test_cas
 
       - name: Run real PostgreSQL integration and concurrent-session race tests
+        id: postgres_tests
         env:
           LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_cas
         run: bash database/tests/run_postgres_tests.sh
+
+      - name: Run race suite if integration assertions stopped the runner
+        if: ${{ always() && steps.create_database.outcome == 'success' && steps.postgres_tests.outcome == 'failure' }}
+        env:
+          LOCAL_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/diarium_test_cas
+        run: |
+          set -euo pipefail
+          ready="$(psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT pg_catalog.to_regprocedure('public.save_daily_entry_v2(jsonb,boolean,uuid,bigint,uuid)') IS NOT NULL")"
+          if [ "$ready" != 't' ]; then
+            echo 'Race suite unavailable: the disposable fixture/migration did not finish.'
+            exit 1
+          fi
+          bash database/tests/race_save_daily_entry_v2.sh
