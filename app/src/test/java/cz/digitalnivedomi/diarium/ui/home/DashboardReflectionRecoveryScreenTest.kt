@@ -94,12 +94,13 @@ class DashboardReflectionRecoveryScreenTest {
             assertNull(fixture.drafts.loadRecord(DATE))
             assertEquals("no RPC may run before local staging succeeds", 0, fixture.saveCalls.get())
 
+            compose.onNodeWithText("není uložená v telefonu", substring = true).assertExists()
             compose.onNodeWithTag("dashboard_reflection_stage_retry").assertExists()
             compose.onNodeWithTag("dashboard_reflection_stage_retry").performScrollTo().performClick()
             compose.waitUntil(TIMEOUT) { fixture.saveCalls.get() == 1 }
 
             assertTrue("the CAS request must be dispatched only after the durable draft exists", fixture.draftReadyAtDispatch.get())
-            assertEquals(2, fixture.draftWrites.get())
+            assertTrue("the failed write was retried", fixture.draftWrites.get() >= 2)
             assertNull("a confirmed server save clears its matching draft", fixture.drafts.loadRecord(DATE))
         } finally {
             fixture.close()

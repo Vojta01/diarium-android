@@ -58,6 +58,7 @@ import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GeneratedReflectionDraftException
 import cz.digitalnivedomi.diarium.core.data.SessionOwnerMismatchException
 import cz.digitalnivedomi.diarium.core.data.SessionContext
+import cz.digitalnivedomi.diarium.core.data.StoredEntrySnapshot
 import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import java.time.LocalDate
 import cz.digitalnivedomi.diarium.core.data.DashboardData
@@ -1630,6 +1631,14 @@ private fun GoalsLink(text: String, onOpen: (String) -> Unit) {
     }
 }
 
+/** Text and original CAS snapshot retained in memory when initial local staging fails. */
+private data class GeneratedReflectionStageRetry(
+    val ownerId: String,
+    val date: String,
+    val snapshot: StoredEntrySnapshot,
+    val reflection: String,
+)
+
 /**
  * 🤖 The AI reflection the dashboard shows.
  *
@@ -1668,10 +1677,91 @@ private fun ReflectionCard(
     var label by remember(ownerId, shownDate) { mutableStateOf(shownDate) }
     var loading by remember(ownerId, shownDate) { mutableStateOf(false) }
     var error by remember(ownerId, shownDate) { mutableStateOf<String?>(null) }
+    var stageRetry by remember(ownerId) { mutableStateOf<GeneratedReflectionStageRetry?>(null) }
+    var stageRetryLoading by remember(ownerId) { mutableStateOf(false) }
+    val pendingStageRetry = stageRetry?.takeIf { it.ownerId == ownerId }
 
     // Only a recorded day can have a reflection generated: an unrecorded one has
     // nothing to reflect on.
     val missing = anchor?.takeIf { it.reflection.isNullOrBlank() }
+
+    suspend fun retryGeneratedReflection(retry: GeneratedReflectionStageRetry) {
+        val repoEntries = entries ?: throw IllegalStateException("Ukládání reflexe vyžaduje přihlášení.")
+        val draftStore = drafts ?: throw IllegalStateException("Místní návrh reflexe není dostupný.")
+        val saveCoordinator = saver ?: throw IllegalStateException("Bezpečné uložení reflexe není dostupné.")
+        if (ownerId != retry.ownerId || repoEntries.currentUserId() != retry.ownerId ||
+            draftStore.ownerId != retry.ownerId
+        ) {
+            throw SessionOwnerMismatchException()
+        }
+        if (repoEntries.pendingSaveRecord(retry.date) != null) {
+            error = "Pro tento den už čeká jiný místní zápis. Nic jsem nepřepsal."
+            return
+        }
+
+        val expectedEntry = retry.snapshot.entry.copy(aiReflection = retry.reflection)
+        val existingDraft = try {
+            draftStore.loadRecord(retry.date)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            error = "Místní návrh nejde ověřit. Nic jsem nepřepsal; zkopíruj zobrazenou reflexi."
+            return
+        }
+        if (existingDraft != null &&
+            (existingDraft.ownerId != retry.ownerId || existingDraft.entry != expectedEntry ||
+                existingDraft.pendingAiReflection != retry.reflection || existingDraft.pendingSaveRequestId != null)
+        ) {
+            error = "Jiný místní návrh už existuje. Nic jsem nepřepsal; zkopíruj zobrazenou reflexi."
+            return
+        }
+
+        val result = saveCoordinator.save(
+            date = retry.date,
+            snapshot = retry.snapshot,
+            fallbackEntry = retry.snapshot.entry,
+            reflection = retry.reflection,
+        )
+        if (repoEntries.currentUserId() != retry.ownerId) {
+            error = AiReflectionRepository.MESSAGE_SIGNED_OUT
+            return
+        }
+        if (result.isSuccess) {
+            text = retry.reflection
+            label = retry.date
+            stageRetry = null
+            error = null
+            return
+        }
+
+        val failure = result.exceptionOrNull()
+        val persisted = try {
+            draftStore.loadRecord(retry.date)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        val isDurable = persisted != null && persisted.ownerId == retry.ownerId &&
+            persisted.entry == expectedEntry && persisted.pendingAiReflection == retry.reflection
+        if (!isDurable) {
+            error = failure?.message ?: "Reflexi se nepodařilo uložit. Zatím není bezpečně uložená."
+            return
+        }
+
+        if (failure is ConditionalSaveUnknownException) {
+            val queued = repoEntries.pendingSaveRecord(retry.date)
+            if (queued != null && queued.conditionalRequest?.requestId == persisted?.pendingSaveRequestId &&
+                queued.isReplayable
+            ) {
+                PendingSaveWorker.enqueue(context, retry.ownerId)
+            }
+        }
+        text = retry.reflection
+        label = retry.date
+        stageRetry = null
+        error = "${failure?.message ?: "Uložení na server se nepodařilo potvrdit."} Místní kopie je uložená v tomto telefonu."
+    }
 
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         SectionHeader("🤖 AI Reflexe")
@@ -1682,10 +1772,10 @@ private fun ReflectionCard(
             color = TextPrimary,
         )
         VSpace(2)
-        label?.let { date -> SectionHint("Ze dne ${shortDateOf(date)}") }
+        (pendingStageRetry?.date ?: label)?.let { date -> SectionHint("Ze dne ${shortDateOf(date)}") }
         VSpace(10)
 
-        val current = text
+        val current = pendingStageRetry?.reflection ?: text
         if (!current.isNullOrBlank()) {
             ReflectionBox(text = current)
         } else {
@@ -1703,12 +1793,12 @@ private fun ReflectionCard(
                 SectionHint("AI není zapnutá nebo profil není dostupný — zapni ji v Nastavení.")
             } else {
                 GlassActionButton(
-                    text = if (loading) {
-                        "Generuji reflexi…"
-                    } else {
-                        "Vygenerovat reflexi za ${shortDateOf(missing.date)}"
+                    text = when {
+                        loading -> "Generuji reflexi…"
+                        pendingStageRetry != null -> "Nejdřív ulož nedokončenou reflexi"
+                        else -> "Vygenerovat reflexi za ${shortDateOf(missing.date)}"
                     },
-                    enabled = !loading,
+                    enabled = !loading && pendingStageRetry == null,
                     leadingSpinner = loading,
                 ) {
                     // The only place a request is ever fired: the user's tap.
@@ -1779,6 +1869,7 @@ private fun ReflectionCard(
                                         if (saved.isSuccess) {
                                             text = reflection
                                             label = missing.date
+                                            stageRetry = null
                                             error = null
                                         } else {
                                             val failure = saved.exceptionOrNull()
@@ -1805,6 +1896,12 @@ private fun ReflectionCard(
                                             if (stagedText != null) {
                                                 text = stagedText
                                                 label = missing.date
+                                                stageRetry = GeneratedReflectionStageRetry(
+                                                    ownerId = owner,
+                                                    date = missing.date,
+                                                    snapshot = snapshot,
+                                                    reflection = stagedText,
+                                                )
                                             }
                                             error = failure.message ?: AiReflectionRepository.MESSAGE_GENERIC
                                         }
@@ -1823,6 +1920,38 @@ private fun ReflectionCard(
                     }
                 }
             }
+        }
+
+        pendingStageRetry?.let { retry ->
+            VSpace(10)
+            SectionHint(
+                "Reflexe zatím není uložená v telefonu; pokud aplikaci zavřeš, může se ztratit. Zkus opětovné uložení.",
+            )
+            VSpace(8)
+            PrimaryButton(
+                text = if (stageRetryLoading) "Ukládám reflexi…" else "Zkusit uložit reflexi znovu",
+                enabled = !stageRetryLoading,
+                testTag = "dashboard_reflection_stage_retry",
+                onClick = {
+                    if (!stageRetryLoading) {
+                        stageRetryLoading = true
+                        error = null
+                        scope.launch {
+                            try {
+                                retryGeneratedReflection(retry)
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (failure: Exception) {
+                                if (entries?.currentUserId() == retry.ownerId) {
+                                    error = failure.message ?: AiReflectionRepository.MESSAGE_GENERIC
+                                }
+                            } finally {
+                                stageRetryLoading = false
+                            }
+                        }
+                    }
+                },
+            )
         }
 
         error?.let { message ->
