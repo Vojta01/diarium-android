@@ -3,6 +3,7 @@ package cz.digitalnivedomi.diarium.ui.home
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -119,14 +120,18 @@ class DashboardReflectionRecoveryScreenTest {
         val fixture = fixture(failAllDraftWrites = true)
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val previousClipboard = clipboard.primaryClip
+        val dashboardVisible = mutableStateOf(true)
+        val dashboardHolder = DashboardStateHolder()
         try {
             compose.setContent {
                 DiariumTheme {
-                    DashboardScreen(
-                        deps = fixture.deps,
-                        holder = DashboardStateHolder(),
-                        today = LocalDate.parse(DATE),
-                    )
+                    if (dashboardVisible.value) {
+                        DashboardScreen(
+                            deps = fixture.deps,
+                            holder = dashboardHolder,
+                            today = LocalDate.parse(DATE),
+                        )
+                    }
                 }
             }
             compose.waitUntil(TIMEOUT) {
@@ -136,6 +141,19 @@ class DashboardReflectionRecoveryScreenTest {
             compose.onNodeWithText("Vygenerovat reflexi", substring = true)
                 .performScrollTo().performClick()
 
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText(GENERATED_TEXT).assertExists()
+            compose.onNodeWithText("není uložená v telefonu", substring = true).assertExists()
+
+            // Navigation Compose disposes the destination composition when leaving it.
+            // Recreate the screen with the same app-shell owner and state holder.
+            compose.runOnIdle { dashboardVisible.value = false }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isEmpty()
+            }
+            compose.runOnIdle { dashboardVisible.value = true }
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
             }
