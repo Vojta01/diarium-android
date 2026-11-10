@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -255,16 +257,19 @@ class DashboardReflectionRecoveryScreenTest {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val previousClipboard = clipboard.primaryClip
         val holder = DashboardStateHolder()
+        val displayedOwner = mutableStateOf(OWNER_ID)
         clipboard.setPrimaryClip(ClipData.newPlainText("existing clipboard", "other-account content"))
         try {
             compose.setContent {
                 DiariumTheme {
-                    DashboardScreen(
-                        deps = fixture.deps,
-                        holder = holder,
-                        today = LocalDate.parse(DATE),
-                        stageRetryHolder = stageRetryHolder,
-                    )
+                    key(displayedOwner.value) {
+                        DashboardScreen(
+                            deps = fixture.deps,
+                            holder = holder,
+                            today = LocalDate.parse(DATE),
+                            stageRetryHolder = stageRetryHolder,
+                        )
+                    }
                 }
             }
             compose.waitUntil(TIMEOUT) {
@@ -291,8 +296,9 @@ class DashboardReflectionRecoveryScreenTest {
             )
             assertEquals("copy recovery must never call the remote save path", 0, fixture.saveCalls.get())
 
-            // Force the same recomposition the authenticated app shell causes on owner change.
-            compose.runOnIdle { holder.markLoading() }
+            // The app shell keys its authenticated scaffold by owner, disposing the
+            // previous owner's destination while the app-shell retry holder survives.
+            compose.runOnIdle { displayedOwner.value = OTHER_OWNER_ID }
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithTag("dashboard_reflection_copy").fetchSemanticsNodes().isEmpty() &&
                     compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isEmpty()
@@ -300,9 +306,9 @@ class DashboardReflectionRecoveryScreenTest {
             assertEquals(GENERATED_TEXT, stageRetryHolder.get(OWNER_ID, DATE)?.reflection)
             assertNull(stageRetryHolder.get(OTHER_OWNER_ID, DATE))
 
-            // Returning to the original owner reveals that owner's in-process retry again.
+            // Returning to the original owner rebuilds its dashboard destination.
             fixture.session.save(sessionPayload(OWNER_ID))
-            compose.runOnIdle { holder.markLoading() }
+            compose.runOnIdle { displayedOwner.value = OWNER_ID }
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithTag("dashboard_reflection_copy").fetchSemanticsNodes().isNotEmpty() &&
                     compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
