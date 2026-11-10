@@ -82,6 +82,12 @@ class EnglishUiTest {
         assertEquals("📅 Today", translate("📅 Dnes"))
         assertEquals("🕰️ On this day in history", translate("🕰️ Tenhle den v historii"))
         assertEquals("🤖 AI Reflection", translate("🤖 AI Reflexe"))
+        assertEquals(
+            "This reflection isn't saved on this phone yet. It remains in memory during this session when switching screens or accounts, but may be lost if you close or restart the app. Try saving again or copy it.",
+            translate(
+                "Reflexe zatím není uložená v telefonu. Při přepnutí obrazovky nebo účtu zůstane v paměti této relace, ale po zavření či restartu aplikace se může ztratit. Zkus opětovné uložení nebo ji zkopíruj.",
+            ),
+        )
         assertEquals("Photo", translate("Fotka"))
         assertEquals("📷 Photo", translate("📷 Fotka"))
         assertEquals("🏃 Activities", translate("🏃 Aktivity"))

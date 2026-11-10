@@ -74,6 +74,7 @@ import cz.digitalnivedomi.diarium.ui.components.ScreenHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
 import cz.digitalnivedomi.diarium.ui.history.HistoryRoute
 import cz.digitalnivedomi.diarium.ui.home.DashboardRoute
+import cz.digitalnivedomi.diarium.ui.home.GeneratedReflectionStageRetryHolder
 import cz.digitalnivedomi.diarium.ui.nav.DiariumBottomBar
 import cz.digitalnivedomi.diarium.ui.nav.DiariumShellBackdrop
 import cz.digitalnivedomi.diarium.ui.nav.Routes
@@ -109,6 +110,9 @@ fun DiariumApp(
     /** The route was placed (or cannot be placed) — the host clears it. */
     onNotificationHandled: () -> Unit = {},
 ) {
+    // This holder deliberately sits outside the owner-keyed scaffold and NavHost:
+    // tab changes and account switches cannot dispose another owner's retry.
+    val reflectionStageRetries = remember { GeneratedReflectionStageRetryHolder() }
     val authStatus by authState.status.collectAsState()
     val currentOwnerId by authState.ownerId.collectAsState()
     var signInInProgress by remember { mutableStateOf(false) }
@@ -158,6 +162,7 @@ fun DiariumApp(
             AuthStatus.AUTHENTICATED -> key(currentOwnerId) {
                 AuthenticatedScaffold(
                     profileOwnerId = currentOwnerId,
+                    reflectionStageRetries = reflectionStageRetries,
                     onSignOut = authState::signOut,
                     notificationRoute = notificationRoute,
                     notificationReportType = notificationReportType,
@@ -193,6 +198,7 @@ fun DiariumApp(
 @Composable
 private fun AuthenticatedScaffold(
     profileOwnerId: String?,
+    reflectionStageRetries: GeneratedReflectionStageRetryHolder,
     onSignOut: () -> Unit,
     notificationRoute: State<String?>,
     notificationReportType: State<String?>,
@@ -305,6 +311,7 @@ private fun AuthenticatedScaffold(
                     composable(Routes.HOME) {
                         DashboardRoute(
                             holder = screenStates.dashboard,
+                            stageRetryHolder = reflectionStageRetries,
                             // Switching tabs (not pushing a second tab) so the bottom bar
                             // stays in the state it would be in had check-in been tapped.
                             // A pushed screen keeps its own back-stack entry for the same destination,

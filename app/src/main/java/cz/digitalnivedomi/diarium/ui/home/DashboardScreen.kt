@@ -32,6 +32,7 @@ import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,7 +64,6 @@ import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GeneratedReflectionDraftException
 import cz.digitalnivedomi.diarium.core.data.SessionOwnerMismatchException
 import cz.digitalnivedomi.diarium.core.data.SessionContext
-import cz.digitalnivedomi.diarium.core.data.StoredEntrySnapshot
 import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import java.time.LocalDate
 import cz.digitalnivedomi.diarium.core.data.DashboardData
@@ -158,6 +158,8 @@ fun DashboardScreen(
     // the loaded numbers have to outlive this composable, otherwise returning from a
     // sub-screen re-reads everything and lands back at the top of the list.
     holder: DashboardStateHolder = remember { DashboardStateHolder() },
+    /** Process-memory recovery owned above navigation by the app shell. */
+    stageRetryHolder: GeneratedReflectionStageRetryHolder = remember { GeneratedReflectionStageRetryHolder() },
     /**
      * The day the screen treats as today. A parameter, not a call to the wall clock,
      * so a screenshot (or a test) can pin the whole dashboard to one date; production
@@ -253,6 +255,7 @@ fun DashboardScreen(
                 sessionStore = deps.sessionStore,
                 goalsProgress = goalsProgress,
                 profile = profile,
+                stageRetryHolder = stageRetryHolder,
             )
         }
 
@@ -332,6 +335,7 @@ private fun DashboardContent(
     goalsProgress: List<GoalProgress>?,
     /** Null while unknown — the reflection card then keeps the AI enabled path. */
     profile: ProfileData?,
+    stageRetryHolder: GeneratedReflectionStageRetryHolder,
 ) {
     // One day opened from the mood strip, one hero number opened as a fourteen-day
     // breakdown. Both live here: they only decide which window is on top of the
@@ -395,6 +399,7 @@ private fun DashboardContent(
                     ownerId = reflectionOwnerId,
                     sessionStore = sessionStore,
                     profile = profile,
+                    stageRetryHolder = stageRetryHolder,
                 )
             }
         }
@@ -1639,14 +1644,6 @@ private fun GoalsLink(text: String, onOpen: (String) -> Unit) {
     }
 }
 
-/** Text and original CAS snapshot retained in memory when initial local staging fails. */
-private data class GeneratedReflectionStageRetry(
-    val ownerId: String,
-    val date: String,
-    val snapshot: StoredEntrySnapshot,
-    val reflection: String,
-)
-
 /**
  * 🤖 The AI reflection the dashboard shows.
  *
@@ -1676,6 +1673,7 @@ private fun ReflectionCard(
     sessionStore: SessionStore?,
     /** The on-device profile: the AI master switch and the prompt's name/birth year. */
     profile: ProfileData?,
+    stageRetryHolder: GeneratedReflectionStageRetryHolder,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -1686,15 +1684,17 @@ private fun ReflectionCard(
     var label by remember(ownerId, shownDate) { mutableStateOf(shownDate) }
     var loading by remember(ownerId, shownDate) { mutableStateOf(false) }
     var error by remember(ownerId, shownDate) { mutableStateOf<String?>(null) }
-    var stageRetry by remember(ownerId) { mutableStateOf<GeneratedReflectionStageRetry?>(null) }
     var stageRetryLoading by remember(ownerId) { mutableStateOf(false) }
-    val pendingStageRetry = stageRetry?.takeIf { it.ownerId == ownerId }
 
     // Only a recorded day can have a reflection generated: an unrecorded one has
     // nothing to reflect on.
     val missing = anchor?.takeIf { it.reflection.isNullOrBlank() }
+    val retryVersion by stageRetryHolder.version.collectAsState()
+    val pendingStageRetry = remember(stageRetryHolder, retryVersion, ownerId, missing?.date) {
+        stageRetryHolder.get(ownerId, missing?.date)
+    }
 
-    suspend fun retryGeneratedReflection(retry: GeneratedReflectionStageRetry) {
+    suspend fun retryGeneratedReflection(retry: PendingGeneratedReflectionStage) {
         val repoEntries = entries ?: throw IllegalStateException("Ukládání reflexe vyžaduje přihlášení.")
         val draftStore = drafts ?: throw IllegalStateException("Místní návrh reflexe není dostupný.")
         val saveCoordinator = saver ?: throw IllegalStateException("Bezpečné uložení reflexe není dostupné.")
@@ -1736,9 +1736,9 @@ private fun ReflectionCard(
             return
         }
         if (result.isSuccess) {
+            stageRetryHolder.clear(retry)
             text = retry.reflection
             label = retry.date
-            stageRetry = null
             error = null
             return
         }
@@ -1758,6 +1758,7 @@ private fun ReflectionCard(
             return
         }
 
+        stageRetryHolder.clear(retry)
         if (failure is ConditionalSaveUnknownException) {
             val queued = repoEntries.pendingSaveRecord(retry.date)
             if (queued != null && queued.conditionalRequest?.requestId == persisted?.pendingSaveRequestId &&
@@ -1768,7 +1769,6 @@ private fun ReflectionCard(
         }
         text = retry.reflection
         label = retry.date
-        stageRetry = null
         error = "${failure?.message ?: "Uložení na server se nepodařilo potvrdit."} Místní kopie je uložená v tomto telefonu."
     }
 
@@ -1878,7 +1878,6 @@ private fun ReflectionCard(
                                         if (saved.isSuccess) {
                                             text = reflection
                                             label = missing.date
-                                            stageRetry = null
                                             error = null
                                         } else {
                                             val failure = saved.exceptionOrNull()
@@ -1905,11 +1904,13 @@ private fun ReflectionCard(
                                             if (stagedText != null) {
                                                 text = stagedText
                                                 label = missing.date
-                                                stageRetry = GeneratedReflectionStageRetry(
-                                                    ownerId = owner,
-                                                    date = missing.date,
-                                                    snapshot = snapshot,
-                                                    reflection = stagedText,
+                                                stageRetryHolder.put(
+                                                    PendingGeneratedReflectionStage(
+                                                        ownerId = owner,
+                                                        date = missing.date,
+                                                        snapshot = snapshot,
+                                                        reflection = stagedText,
+                                                    ),
                                                 )
                                             }
                                             error = failure.message ?: AiReflectionRepository.MESSAGE_GENERIC
@@ -1934,7 +1935,7 @@ private fun ReflectionCard(
         pendingStageRetry?.let { retry ->
             VSpace(10)
             SectionHint(
-                "Reflexe zatím není uložená v telefonu; pokud aplikaci zavřeš, může se ztratit. Zkus opětovné uložení.",
+                UNSAVED_REFLECTION_STAGE_WARNING,
             )
             VSpace(8)
             PrimaryButton(

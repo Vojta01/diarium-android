@@ -3,7 +3,12 @@ package cz.digitalnivedomi.diarium.ui.home
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -11,6 +16,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -73,6 +81,7 @@ class DashboardReflectionRecoveryScreenTest {
     fun `generated reflection staging can be retried before any remote write`() = runBlocking {
         AppLanguage.set(context, Lang.CS)
         val fixture = fixture(failFirstDraftWrite = true)
+        val stageRetryHolder = GeneratedReflectionStageRetryHolder()
         try {
             compose.setContent {
                 DiariumTheme {
@@ -80,6 +89,7 @@ class DashboardReflectionRecoveryScreenTest {
                         deps = fixture.deps,
                         holder = DashboardStateHolder(),
                         today = LocalDate.parse(DATE),
+                        stageRetryHolder = stageRetryHolder,
                     )
                 }
             }
@@ -109,6 +119,48 @@ class DashboardReflectionRecoveryScreenTest {
             assertTrue("the CAS request must be dispatched only after the durable draft exists", fixture.draftReadyAtDispatch.get())
             assertTrue("the failed write was retried", fixture.draftWrites.get() >= 2)
             assertNull("a confirmed server save clears its matching draft", fixture.drafts.loadRecord(DATE))
+            assertNull("a confirmed durable save clears only the transient retry", stageRetryHolder.get(OWNER_ID, DATE))
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun `confirmed durable retry clears transient text but preserves local draft on server rejection`() = runBlocking {
+        AppLanguage.set(context, Lang.CS)
+        val fixture = fixture(failFirstDraftWrite = true, failConditionalSave = true)
+        val stageRetryHolder = GeneratedReflectionStageRetryHolder()
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    DashboardScreen(
+                        deps = fixture.deps,
+                        holder = DashboardStateHolder(),
+                        today = LocalDate.parse(DATE),
+                        stageRetryHolder = stageRetryHolder,
+                    )
+                }
+            }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText("Vygenerovat reflexi", substring = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText("Vygenerovat reflexi", substring = true)
+                .performScrollTo().performClick()
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithTag("dashboard_reflection_stage_retry").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("dashboard_reflection_stage_retry").performScrollTo().performClick()
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithTag("dashboard_reflection_stage_retry").fetchSemanticsNodes().isEmpty()
+            }
+
+            val durableDraft = fixture.drafts.loadRecord(DATE)
+            assertEquals(OWNER_ID, durableDraft?.ownerId)
+            assertEquals(GENERATED_TEXT, durableDraft?.pendingAiReflection)
+            assertEquals(GENERATED_TEXT, durableDraft?.entry?.aiReflection)
+            assertNull("transient text clears only after the durable local copy is verified", stageRetryHolder.get(OWNER_ID, DATE))
+            assertEquals(1, fixture.saveCalls.get())
         } finally {
             fixture.close()
         }
@@ -118,19 +170,38 @@ class DashboardReflectionRecoveryScreenTest {
     fun `permanent staging failure keeps reflection visible and offers copy recovery`() = runBlocking {
         AppLanguage.set(context, Lang.CS)
         val fixture = fixture(failAllDraftWrites = true)
+        val stageRetryHolder = GeneratedReflectionStageRetryHolder()
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val previousClipboard = clipboard.primaryClip
-        val dashboardVisible = mutableStateOf(true)
         val dashboardHolder = DashboardStateHolder()
         try {
             compose.setContent {
                 DiariumTheme {
-                    if (dashboardVisible.value) {
-                        DashboardScreen(
-                            deps = fixture.deps,
-                            holder = dashboardHolder,
-                            today = LocalDate.parse(DATE),
-                        )
+                    val navController = rememberNavController()
+                    NavHost(navController = navController, startDestination = "dashboard") {
+                        composable("dashboard") {
+                            Box(Modifier.fillMaxSize()) {
+                                DashboardScreen(
+                                    deps = fixture.deps,
+                                    holder = dashboardHolder,
+                                    today = LocalDate.parse(DATE),
+                                    stageRetryHolder = stageRetryHolder,
+                                )
+                                Button(
+                                    onClick = { navController.navigate("away") },
+                                    modifier = Modifier.align(Alignment.TopEnd),
+                                ) {
+                                    Text("Navigate away")
+                                }
+                            }
+                        }
+                        composable("away") {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Button(onClick = { navController.popBackStack() }) {
+                                    Text("Return to dashboard")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -146,14 +217,20 @@ class DashboardReflectionRecoveryScreenTest {
             }
             compose.onNodeWithText(GENERATED_TEXT).assertExists()
             compose.onNodeWithText("není uložená v telefonu", substring = true).assertExists()
+            compose.onNodeWithText("restartu aplikace", substring = true).assertExists()
+            assertEquals(GENERATED_TEXT, stageRetryHolder.get(OWNER_ID, DATE)?.reflection)
+            assertNull(stageRetryHolder.get(OTHER_OWNER_ID, DATE))
+            assertNull(
+                "a fresh process has no access to text that could not be staged",
+                GeneratedReflectionStageRetryHolder().get(OWNER_ID, DATE),
+            )
 
-            // Navigation Compose disposes the destination composition when leaving it.
-            // Recreate the screen with the same app-shell owner and state holder.
-            compose.runOnIdle { dashboardVisible.value = false }
+            // A real Navigation Compose push disposes the dashboard destination.
+            compose.onNodeWithText("Navigate away").performClick()
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isEmpty()
             }
-            compose.runOnIdle { dashboardVisible.value = true }
+            compose.onNodeWithText("Return to dashboard").performClick()
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
             }
@@ -174,6 +251,7 @@ class DashboardReflectionRecoveryScreenTest {
     fun `account switch blocks copying unsaved reflection from previous owner`() = runBlocking {
         AppLanguage.set(context, Lang.CS)
         val fixture = fixture(failAllDraftWrites = true)
+        val stageRetryHolder = GeneratedReflectionStageRetryHolder()
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val previousClipboard = clipboard.primaryClip
         val holder = DashboardStateHolder()
@@ -185,6 +263,7 @@ class DashboardReflectionRecoveryScreenTest {
                         deps = fixture.deps,
                         holder = holder,
                         today = LocalDate.parse(DATE),
+                        stageRetryHolder = stageRetryHolder,
                     )
                 }
             }
@@ -198,6 +277,8 @@ class DashboardReflectionRecoveryScreenTest {
                 compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
             }
             compose.onNodeWithTag("dashboard_reflection_copy").assertExists()
+            assertEquals(GENERATED_TEXT, stageRetryHolder.get(OWNER_ID, DATE)?.reflection)
+            assertNull("another account cannot retrieve this staged text", stageRetryHolder.get(OTHER_OWNER_ID, DATE))
 
             // Simulate a session change before Compose has recomposed. A stale visible
             // callback must re-check the live owner rather than exporting owner A's text.
@@ -216,6 +297,18 @@ class DashboardReflectionRecoveryScreenTest {
                 compose.onAllNodesWithTag("dashboard_reflection_copy").fetchSemanticsNodes().isEmpty() &&
                     compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isEmpty()
             }
+            assertEquals(GENERATED_TEXT, stageRetryHolder.get(OWNER_ID, DATE)?.reflection)
+            assertNull(stageRetryHolder.get(OTHER_OWNER_ID, DATE))
+
+            // Returning to the original owner reveals that owner's in-process retry again.
+            fixture.session.save(sessionPayload(OWNER_ID))
+            compose.runOnIdle { holder.markLoading() }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithTag("dashboard_reflection_copy").fetchSemanticsNodes().isNotEmpty() &&
+                    compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("dashboard_reflection_copy").performScrollTo().performClick()
+            assertEquals(GENERATED_TEXT, clipboard.primaryClip?.getItemAt(0)?.text?.toString())
         } finally {
             if (previousClipboard == null) clipboard.clearPrimaryClip() else clipboard.setPrimaryClip(previousClipboard)
             fixture.close()
@@ -225,6 +318,7 @@ class DashboardReflectionRecoveryScreenTest {
     private fun fixture(
         failFirstDraftWrite: Boolean = false,
         failAllDraftWrites: Boolean = false,
+        failConditionalSave: Boolean = false,
     ): Fixture {
         val session = SessionStore(context).apply {
             clear()
@@ -267,15 +361,19 @@ class DashboardReflectionRecoveryScreenTest {
                     draftReadyAtDispatch.set(
                         runBlocking { draftStore.loadRecord(DATE)?.pendingAiReflection == GENERATED_TEXT },
                     )
-                    HttpResponse(
-                        200,
-                        JSONObject()
-                            .put("status", "saved")
-                            .put("entry_id", ROW_ID)
-                            .put("revision", 8)
-                            .put("replayed", false)
-                            .toString(),
-                    )
+                    if (failConditionalSave) {
+                        HttpResponse(400, JSONObject().put("message", "synthetic CAS rejection").toString())
+                    } else {
+                        HttpResponse(
+                            200,
+                            JSONObject()
+                                .put("status", "saved")
+                                .put("entry_id", ROW_ID)
+                                .put("revision", 8)
+                                .put("replayed", false)
+                                .toString(),
+                        )
+                    }
                 }
                 else -> HttpResponse(200, "[]")
             }
