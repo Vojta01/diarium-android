@@ -721,6 +721,47 @@ class EntriesRepositoryWriteTest {
         assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("škál"))
     }
 
+    @Test
+    fun `foreground save uses the conditional v2 rpc`() = runTest {
+        val result = repository().save(
+            DiaryEntry(mood = 4, note = "synthetic"),
+            DATE,
+            baselineExists = false,
+        )
+
+        assertTrue(result.isSuccess)
+        assertTrue("normal check-in saves must use the conditional RPC", sent.any {
+            it.method == "POST" && it.url.endsWith("/rpc/save_daily_entry_v2")
+        })
+        assertTrue("foreground saves must never fall back to blind writes", sent.none {
+            it.url.endsWith("/rpc/save_daily_entry")
+        })
+    }
+
+    @Test
+    fun `photo and scale clears travel inside the atomic foreground rpc`() = runTest {
+        val result = repository().save(
+            DiaryEntry(
+                mood = 4,
+                clearPhoto = true,
+                clearedScaleIds = setOf("focus", "energy"),
+            ),
+            DATE,
+            baselineExists = false,
+        )
+
+        assertTrue(result.isSuccess)
+        val payload = savePayload()
+        assertTrue(payload.getBoolean("clear_photo"))
+        assertEquals(listOf("energy", "focus"), payload.getJSONArray("clear_scale_ids").let { array ->
+            (0 until array.length()).map(array::getString)
+        })
+        assertTrue("row/mirror clears must not be separate destructive requests", sent.none {
+            it.method == "PATCH" && it.url.contains("/entries?") ||
+                it.method == "DELETE" && it.url.contains("/scale_entries")
+        })
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────────
 
     private fun savePayload(): JSONObject {
