@@ -110,6 +110,30 @@ class AiReflectionRepositoryTest {
     }
 
     @Test
+    fun `reflection generation never writes directly to the entries table`() = runTest {
+        val databaseRequests = mutableListOf<HttpRequest>()
+        val repo = AiReflectionRepository(
+            sessionStore = signedInStore(),
+            transport = transport,
+            endpoint = "https://example.invalid/api/ai/reflect",
+            supabase = SupabaseClient(
+                sessionStore = signedInStore(),
+                transport = HttpTransport { request ->
+                    databaseRequests += request
+                    HttpResponse(204, "")
+                },
+                baseUrl = "https://example.invalid/rest/v1",
+                anonKey = "test-anon",
+            ),
+            expectedOwnerId = USER_ID,
+        )
+
+        assertEquals("Dnes sis to užil.", repo.generate(DATE, DiaryEntry(mood = 4)).getOrNull())
+
+        assertTrue("generated text must be saved only through conditional v2 CAS", databaseRequests.isEmpty())
+    }
+
+    @Test
     fun `a cached reflection is returned as the text`() = runTest {
         response = HttpResponse(200, """{"reflection":"Včera dobrý, dnes lepší.","cached":true}""")
 

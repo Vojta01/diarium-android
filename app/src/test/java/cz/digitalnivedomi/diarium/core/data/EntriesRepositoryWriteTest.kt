@@ -1020,14 +1020,24 @@ class EntriesRepositoryWriteTest {
     @Test
     fun `unknown worker response retries exact request after process restart`() = runTest {
         var firstAttempt = true
+        val acceptedRow = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 1)
+            .put("mood", 4)
+            .put("note", "unknown response survives")
         respond = { request ->
-            if (request.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt) {
-                firstAttempt = false // Commit happened but the response was lost.
-                throw IOException("response timeout")
+            when {
+                request.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt -> {
+                    firstAttempt = false // Commit happened but the response was lost.
+                    throw IOException("response timeout")
+                }
+                request.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                request.method == "GET" && request.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(acceptedRow).toString())
+                else -> null
             }
-            if (request.url.endsWith("/rpc/save_daily_entry_v2")) {
-                HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
-            } else null
         }
         val request = ConditionalEntrySaveRequest(
             ownerId = USER_ID,
@@ -1058,6 +1068,148 @@ class EntriesRepositoryWriteTest {
         )
         assertNull(afterRestartStore.peekRecord(DATE))
         assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") })
+    }
+
+    @Test
+    fun `a replayed receipt is retained when a legacy write advanced the server revision`() = runTest {
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "accepted CAS payload"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_RETRY,
+        )
+        val pending = PendingSaveStore.from(context, USER_ID)
+        assertTrue(pending.enqueueConditional(request))
+        val current = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 2)
+            .put("mood", 5)
+            .put("note", "intervening legacy write")
+        respond = { sentRequest ->
+            when {
+                sentRequest.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                sentRequest.method == "GET" && sentRequest.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(current).toString())
+                else -> null
+            }
+        }
+
+        val result = flushThroughRepository(pending, repository(pending))
+        val retained = pending.peekRecord(DATE)
+
+        assertTrue("a historical receipt is not proof the current row still matches", result is PendingSaveFlush.RecoveryRequired)
+        assertEquals(request, retained?.conditionalRequest)
+        assertEquals("accepted CAS payload", retained?.entry?.note)
+        assertTrue(retained?.recoveryReason.orEmpty().contains("replayed_receipt"))
+        assertEquals("intervening legacy write", current.getString("note"))
+        assertEquals(1, sent.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
+        assertTrue("reconciliation must not issue a blind fallback", sent.none {
+            it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH"
+        })
+    }
+
+    @Test
+    fun `a replayed receipt is retained when the current row identity differs`() = runTest {
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "accepted CAS payload"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_RACE,
+        )
+        val pending = PendingSaveStore.from(context, USER_ID)
+        assertTrue(pending.enqueueConditional(request))
+        val current = JSONObject()
+            .put("id", OTHER_ROW_ID)
+            .put("date", DATE)
+            .put("revision", 1)
+            .put("mood", 5)
+            .put("note", "replacement row")
+        respond = { sentRequest ->
+            when {
+                sentRequest.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                sentRequest.method == "GET" && sentRequest.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(current).toString())
+                else -> null
+            }
+        }
+
+        val result = flushThroughRepository(pending, repository(pending))
+
+        assertTrue(result is PendingSaveFlush.RecoveryRequired)
+        assertEquals(request, pending.peekRecord(DATE)?.conditionalRequest)
+        assertTrue(pending.peekRecord(DATE)?.recoveryReason.orEmpty().contains("replayed_receipt"))
+        assertEquals(OTHER_ROW_ID, current.getString("id"))
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" })
+    }
+
+    @Test
+    fun `a replayed receipt is retained when the current row cannot be read`() = runTest {
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "accepted CAS payload"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_STALE,
+        )
+        val pending = PendingSaveStore.from(context, USER_ID)
+        assertTrue(pending.enqueueConditional(request))
+        respond = { sentRequest ->
+            when {
+                sentRequest.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                sentRequest.method == "GET" && sentRequest.url.contains("/entries?") ->
+                    HttpResponse(503, """{"message":"read unavailable"}""")
+                else -> null
+            }
+        }
+
+        val result = flushThroughRepository(pending, repository(pending))
+        val retained = pending.peekRecord(DATE)
+
+        assertTrue(result is PendingSaveFlush.RecoveryRequired)
+        assertEquals(request, retained?.conditionalRequest)
+        assertTrue(retained?.recoveryReason.orEmpty().contains("replayed_receipt"))
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" })
+    }
+
+    @Test
+    fun `a replayed receipt remains saved only when the server confirms its identity and revision`() = runTest {
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "accepted CAS payload"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_RETRY,
+        )
+        val pending = PendingSaveStore.from(context, USER_ID)
+        assertTrue(pending.enqueueConditional(request))
+        val current = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 1)
+            .put("mood", 4)
+            .put("note", "accepted CAS payload")
+        respond = { sentRequest ->
+            when {
+                sentRequest.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                sentRequest.method == "GET" && sentRequest.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(current).toString())
+                else -> null
+            }
+        }
+
+        val result = flushThroughRepository(pending, repository(pending))
+
+        assertTrue("the accepted write is synced after its current receipt is verified", result is PendingSaveFlush.Saved)
+        assertNull(pending.peekRecord(DATE))
+        assertEquals(1, sent.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
+        assertTrue(sent.any { it.method == "GET" && it.url.contains("/entries?") })
     }
 
     @Test
@@ -1343,6 +1495,7 @@ class EntriesRepositoryWriteTest {
         const val USER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
         const val OTHER_USER_ID = "9e0a6e91-36c0-4e84-a6ed-f05d92e0d521"
         const val ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a36"
+        const val OTHER_ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a37"
         const val REQUEST_CREATE = "10000000-0000-4000-8000-000000000001"
         const val REQUEST_RACE = "10000000-0000-4000-8000-000000000002"
         const val REQUEST_STALE = "10000000-0000-4000-8000-000000000003"

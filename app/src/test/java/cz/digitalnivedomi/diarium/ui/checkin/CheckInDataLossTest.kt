@@ -112,6 +112,23 @@ class CheckInDataLossTest {
     }
 
     @Test
+    fun `save and date navigation are blocked while reflection generation is in flight`() {
+        val holder = holder()
+        holder.load(
+            DiaryEntry(mood = 4, note = "already stored"),
+            stored = true,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+        )
+        holder.markReflectionLoading()
+
+        assertFalse("save stays disabled until generated text is safely persisted", holder.state.canSave)
+        assertFalse("date navigation cannot race the reflection save", holder.beginDateNavigation())
+        assertEquals(null, holder.beginSaveRequest(OWNER_ID))
+    }
+
+    @Test
     fun `a legitimate empty day is still editable and savable`() {
         val holder = holder()
 
