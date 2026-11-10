@@ -40,7 +40,7 @@ jobs:
           test ! -e local.properties
 
       - name: Run app unit tests
-        run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest --tests 'cz.digitalnivedomi.diarium.ui.CheckInDraftRecoveryScreenTest'
+        run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest --tests 'cz.digitalnivedomi.diarium.ui.CheckInDraftRecoveryScreenTest' --tests 'cz.digitalnivedomi.diarium.ui.home.DashboardReflectionRecoveryScreenTest'
 
       - name: Upload synthetic unit-test reports
         if: always()
