@@ -40,6 +40,11 @@ DECLARE
   v_rejected boolean;
   v_count integer;
   v_value integer;
+  v_scale_entry_id uuid;
+  v_scale_revision bigint;
+  v_scale_state jsonb;
+  v_mirror_state jsonb;
+  v_scale_error text;
 BEGIN
   v_payload := pg_catalog.jsonb_build_object(
     'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -317,6 +322,228 @@ BEGIN
     RAISE EXCEPTION 'scale replacement left a stale mirror for a removed JSON key';
   END IF;
 
+  -- An explicit JSON null is not a request to clear scale state: reject it
+  -- before writes. Omission remains a no-op; an empty object is the explicit
+  -- replacement that clears the map and its positive mirrors.
+  v_result := public.save_daily_entry_v2(
+    pg_catalog.jsonb_build_object(
+      'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'date', '2001-01-02',
+      'scale_values', pg_catalog.jsonb_build_object(
+        '11111111-1111-1111-1111-111111111111', 4,
+        '44444444-4444-4444-4444-444444444444', 3
+      )
+    ),
+    false, NULL, NULL,
+    'aaaaaaaa-0000-0000-0000-000000000010'
+  );
+  IF v_result ->> 'status' <> 'saved' THEN
+    RAISE EXCEPTION 'scale null test setup should save: %', v_result;
+  END IF;
+  v_scale_entry_id := ((v_result -> 'entry') ->> 'id')::uuid;
+  v_scale_revision := ((v_result -> 'entry') ->> 'revision')::bigint;
+  v_rejected := false;
+  v_scale_error := NULL;
+  BEGIN
+    PERFORM public.save_daily_entry_v2(
+      pg_catalog.jsonb_build_object(
+        'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'date', '2001-01-02',
+        'scale_values', NULL
+      ),
+      true, v_scale_entry_id, v_scale_revision,
+      'aaaaaaaa-0000-0000-0000-000000000011'
+    );
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    v_rejected := true;
+    GET STACKED DIAGNOSTICS v_scale_error = MESSAGE_TEXT;
+  END;
+  IF NOT v_rejected OR v_scale_error IS DISTINCT FROM
+       'save_daily_entry_v2: scale_values must not be null; omit it to leave scale state unchanged or use {} to clear it' THEN
+    RAISE EXCEPTION 'explicit scale_values null must raise the controlled validation error, got %', v_scale_error;
+  END IF;
+  SELECT e.scale_values, e.revision INTO v_scale_state, v_scale_revision
+    FROM public.entries e WHERE e.id = v_scale_entry_id;
+  SELECT COALESCE(pg_catalog.jsonb_object_agg(se.scale_id::text, se.value), '{}'::jsonb)
+    INTO v_mirror_state
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.date = '2001-01-02';
+  IF v_scale_state IS DISTINCT FROM
+       '{"11111111-1111-1111-1111-111111111111": 4, "44444444-4444-4444-4444-444444444444": 3}'::jsonb
+     OR v_mirror_state IS DISTINCT FROM
+       '{"11111111-1111-1111-1111-111111111111": 4, "44444444-4444-4444-4444-444444444444": 3}'::jsonb
+     OR v_scale_revision <> 1 THEN
+    RAISE EXCEPTION 'rejected scale_values null changed JSON, mirrors, or revision: %, %, %',
+      v_scale_state, v_mirror_state, v_scale_revision;
+  END IF;
+
+  v_result := public.save_daily_entry_v2(
+    pg_catalog.jsonb_build_object(
+      'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'date', '2001-01-02', 'note', 'omitted scale map'
+    ),
+    true, v_scale_entry_id, v_scale_revision,
+    'aaaaaaaa-0000-0000-0000-000000000012'
+  );
+  IF v_result ->> 'status' <> 'saved'
+     OR (v_result -> 'entry') -> 'scale_values' IS DISTINCT FROM
+       '{"11111111-1111-1111-1111-111111111111": 4, "44444444-4444-4444-4444-444444444444": 3}'::jsonb THEN
+    RAISE EXCEPTION 'omitted scale_values must preserve the JSON map: %', v_result;
+  END IF;
+  v_scale_revision := ((v_result -> 'entry') ->> 'revision')::bigint;
+  SELECT e.scale_values INTO v_scale_state
+    FROM public.entries e WHERE e.id = v_scale_entry_id;
+  SELECT COALESCE(pg_catalog.jsonb_object_agg(se.scale_id::text, se.value), '{}'::jsonb)
+    INTO v_mirror_state
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.date = '2001-01-02';
+  IF v_scale_state IS DISTINCT FROM
+       '{"11111111-1111-1111-1111-111111111111": 4, "44444444-4444-4444-4444-444444444444": 3}'::jsonb
+     OR v_mirror_state IS DISTINCT FROM
+       '{"11111111-1111-1111-1111-111111111111": 4, "44444444-4444-4444-4444-444444444444": 3}'::jsonb THEN
+    RAISE EXCEPTION 'omitted scale_values changed JSON or positive mirrors: %, %',
+      v_scale_state, v_mirror_state;
+  END IF;
+
+  v_result := public.save_daily_entry_v2(
+    pg_catalog.jsonb_build_object(
+      'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'date', '2001-01-02', 'scale_values', '{}'::jsonb
+    ),
+    true, v_scale_entry_id, v_scale_revision,
+    'aaaaaaaa-0000-0000-0000-000000000013'
+  );
+  IF v_result ->> 'status' <> 'saved'
+     OR (v_result -> 'entry') -> 'scale_values' IS DISTINCT FROM '{}'::jsonb THEN
+    RAISE EXCEPTION 'empty scale_values object must explicitly clear the JSON map: %', v_result;
+  END IF;
+  SELECT e.scale_values INTO v_scale_state
+    FROM public.entries e WHERE e.id = v_scale_entry_id;
+  SELECT COALESCE(pg_catalog.jsonb_object_agg(se.scale_id::text, se.value), '{}'::jsonb)
+    INTO v_mirror_state
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.date = '2001-01-02';
+  IF v_scale_state IS DISTINCT FROM '{}'::jsonb
+     OR v_mirror_state IS DISTINCT FROM '{}'::jsonb THEN
+    RAISE EXCEPTION 'empty scale_values object must clear the JSON map and positive mirrors: %, %',
+      v_scale_state, v_mirror_state;
+  END IF;
+
+  -- The same contract applies when clear_scale_ids accompanies scale_values:
+  -- null rejects the entire request without applying its clear; omission lets
+  -- only the explicit clear run; {} replaces the whole map and all mirrors.
+  v_result := public.save_daily_entry_v2(
+    pg_catalog.jsonb_build_object(
+      'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'date', '2001-01-03',
+      'scale_values', pg_catalog.jsonb_build_object(
+        '11111111-1111-1111-1111-111111111111', 4,
+        '44444444-4444-4444-4444-444444444444', 3
+      )
+    ),
+    false, NULL, NULL,
+    'aaaaaaaa-0000-0000-0000-000000000014'
+  );
+  IF v_result ->> 'status' <> 'saved' THEN
+    RAISE EXCEPTION 'clear_scale_ids null test setup should save: %', v_result;
+  END IF;
+  v_scale_entry_id := ((v_result -> 'entry') ->> 'id')::uuid;
+  v_scale_revision := ((v_result -> 'entry') ->> 'revision')::bigint;
+  v_rejected := false;
+  v_scale_error := NULL;
+  BEGIN
+    PERFORM public.save_daily_entry_v2(
+      pg_catalog.jsonb_build_object(
+        'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'date', '2001-01-03',
+        'scale_values', NULL,
+        'clear_scale_ids', pg_catalog.jsonb_build_array('11111111-1111-1111-1111-111111111111')
+      ),
+      true, v_scale_entry_id, v_scale_revision,
+      'aaaaaaaa-0000-0000-0000-000000000015'
+    );
+  EXCEPTION WHEN SQLSTATE '22023' THEN
+    v_rejected := true;
+    GET STACKED DIAGNOSTICS v_scale_error = MESSAGE_TEXT;
+  END;
+  IF NOT v_rejected OR v_scale_error IS DISTINCT FROM
+       'save_daily_entry_v2: scale_values must not be null; omit it to leave scale state unchanged or use {} to clear it' THEN
+    RAISE EXCEPTION 'scale_values null with clear_scale_ids must raise the controlled validation error, got %', v_scale_error;
+  END IF;
+  SELECT e.scale_values, e.revision INTO v_scale_state, v_scale_revision
+    FROM public.entries e WHERE e.id = v_scale_entry_id;
+  SELECT COALESCE(pg_catalog.jsonb_object_agg(se.scale_id::text, se.value), '{}'::jsonb)
+    INTO v_mirror_state
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.date = '2001-01-03';
+  IF v_scale_state IS DISTINCT FROM
+       '{"11111111-1111-1111-1111-111111111111": 4, "44444444-4444-4444-4444-444444444444": 3}'::jsonb
+     OR v_mirror_state IS DISTINCT FROM
+       '{"11111111-1111-1111-1111-111111111111": 4, "44444444-4444-4444-4444-444444444444": 3}'::jsonb
+     OR v_scale_revision <> 1 THEN
+    RAISE EXCEPTION 'rejected null plus clear_scale_ids changed JSON, mirrors, or revision: %, %, %',
+      v_scale_state, v_mirror_state, v_scale_revision;
+  END IF;
+
+  v_result := public.save_daily_entry_v2(
+    pg_catalog.jsonb_build_object(
+      'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'date', '2001-01-03',
+      'clear_scale_ids', pg_catalog.jsonb_build_array('11111111-1111-1111-1111-111111111111')
+    ),
+    true, v_scale_entry_id, v_scale_revision,
+    'aaaaaaaa-0000-0000-0000-000000000016'
+  );
+  IF v_result ->> 'status' <> 'saved'
+     OR (v_result -> 'entry') -> 'scale_values' IS DISTINCT FROM
+       '{"44444444-4444-4444-4444-444444444444": 3}'::jsonb THEN
+    RAISE EXCEPTION 'omitted scale_values with clear_scale_ids must clear only the named JSON key: %', v_result;
+  END IF;
+  v_scale_revision := ((v_result -> 'entry') ->> 'revision')::bigint;
+  SELECT e.scale_values INTO v_scale_state
+    FROM public.entries e WHERE e.id = v_scale_entry_id;
+  SELECT COALESCE(pg_catalog.jsonb_object_agg(se.scale_id::text, se.value), '{}'::jsonb)
+    INTO v_mirror_state
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.date = '2001-01-03';
+  IF v_scale_state IS DISTINCT FROM '{"44444444-4444-4444-4444-444444444444": 3}'::jsonb
+     OR v_mirror_state IS DISTINCT FROM '{"44444444-4444-4444-4444-444444444444": 3}'::jsonb THEN
+    RAISE EXCEPTION 'omitted map plus clear_scale_ids changed an unrelated JSON value or mirror: %, %',
+      v_scale_state, v_mirror_state;
+  END IF;
+
+  v_result := public.save_daily_entry_v2(
+    pg_catalog.jsonb_build_object(
+      'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'date', '2001-01-03',
+      'scale_values', '{}'::jsonb,
+      'clear_scale_ids', pg_catalog.jsonb_build_array('44444444-4444-4444-4444-444444444444')
+    ),
+    true, v_scale_entry_id, v_scale_revision,
+    'aaaaaaaa-0000-0000-0000-000000000017'
+  );
+  IF v_result ->> 'status' <> 'saved'
+     OR (v_result -> 'entry') -> 'scale_values' IS DISTINCT FROM '{}'::jsonb THEN
+    RAISE EXCEPTION 'empty map with clear_scale_ids must replace the JSON map: %', v_result;
+  END IF;
+  SELECT e.scale_values INTO v_scale_state
+    FROM public.entries e WHERE e.id = v_scale_entry_id;
+  SELECT COALESCE(pg_catalog.jsonb_object_agg(se.scale_id::text, se.value), '{}'::jsonb)
+    INTO v_mirror_state
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.date = '2001-01-03';
+  IF v_scale_state IS DISTINCT FROM '{}'::jsonb
+     OR v_mirror_state IS DISTINCT FROM '{}'::jsonb THEN
+    RAISE EXCEPTION 'empty map with clear_scale_ids must clear the full JSON map and mirrors: %, %',
+      v_scale_state, v_mirror_state;
+  END IF;
+
   -- Same request ID with different semantics is rejected without a write.
   v_rejected := false;
   BEGIN
@@ -442,6 +669,16 @@ BEGIN
        AND pg_catalog.strpos(r.outcome::text, 'private synthetic note') > 0
   ) THEN
     RAISE EXCEPTION 'receipt must not persist journal text';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.entry_save_v2_receipts r
+     WHERE r.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+       AND r.request_id IN (
+         'aaaaaaaa-0000-0000-0000-000000000011',
+         'aaaaaaaa-0000-0000-0000-000000000015'
+       )
+  ) THEN
+    RAISE EXCEPTION 'rejected scale_values null requests must not create receipts';
   END IF;
 END;
 $privileges$;
