@@ -632,7 +632,7 @@ BEGIN
       FROM pg_catalog.jsonb_array_elements(p_payload -> 'clear_scale_ids') AS item(value);
   END IF;
 
-  -- Scale values are stored verbatim when present. A present zero or negative
+  -- For object maps, scale_values are stored verbatim. A present zero or negative
   -- value does not delete its mirror under the legacy RPC's semantics. Explicit
   -- clear_scale_ids removes the named JSON key and mirror; replacing the object
   -- also removes mirrors for owned keys no longer present. Positive, owned IDs
