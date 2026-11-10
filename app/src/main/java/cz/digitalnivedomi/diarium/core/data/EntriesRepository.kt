@@ -371,8 +371,6 @@ class EntriesRepository(
                     requestId = requestId,
                 ),
                 cleanupPhotoAfterPersistence = cleanupPhotoAfterPersistence,
-                allowOfflineQueue = allowOfflineQueue,
-                baselineUpdatedAt = baselineUpdatedAt,
             ).map { Unit }
         }
         val userId = authorizedUserId()
@@ -411,7 +409,10 @@ class EntriesRepository(
     }
 
     /** Foreground compare-and-swap. A retry must receive the same immutable request. */
-    suspend fun save(request: ConditionalEntrySaveRequest): Result<ConditionalSaveReceipt> {
+    suspend fun save(
+        request: ConditionalEntrySaveRequest,
+        cleanupPhotoAfterPersistence: Boolean = true,
+    ): Result<ConditionalSaveReceipt> {
         val userId = authorizedUserId()
             ?: return Result.failure(IllegalStateException(SIGNED_OUT))
         if (userId != request.ownerId) return Result.failure(SessionOwnerMismatchException())
@@ -432,13 +433,14 @@ class EntriesRepository(
             if (authorizedUserId() != userId) {
                 return@withContext Result.failure(SessionOwnerMismatchException())
             }
-            saveConditionalAuthorized(request, userId)
+            saveConditionalAuthorized(request, userId, cleanupPhotoAfterPersistence)
         }
     }
 
     private suspend fun saveConditionalAuthorized(
         request: ConditionalEntrySaveRequest,
         userId: String,
+        cleanupPhotoAfterPersistence: Boolean,
     ): Result<ConditionalSaveReceipt> {
         if (authorizedUserId() != userId || request.ownerId != userId) {
             return Result.failure(SessionOwnerMismatchException())
@@ -530,11 +532,13 @@ class EntriesRepository(
                 )
                 val cached = envelope.optJSONObject("entry") ?: buildCacheRow(payload, entry, receipt)
                 runCatching { cacheFor(userId)?.upsertRows(listOf(cached)) }
-                cleanupPhotoCandidates(
-                    request.date,
-                    preservePaths = entry.photoPath?.takeIf { !entry.clearPhoto }?.let(::setOf).orEmpty(),
-                    confirmedPaths = entry.photoPath?.takeIf { !entry.clearPhoto }?.let(::setOf).orEmpty(),
-                )
+                if (cleanupPhotoAfterPersistence) {
+                    cleanupPhotoCandidates(
+                        request.date,
+                        preservePaths = entry.photoPath?.takeIf { !entry.clearPhoto }?.let(::setOf).orEmpty(),
+                        confirmedPaths = entry.photoPath?.takeIf { !entry.clearPhoto }?.let(::setOf).orEmpty(),
+                    )
+                }
                 if (!receipt.replayed) {
                     runCatching {
                         ownerClient(userId).post("rpc/check_achievements", buildAchievementsPayload(entry, userId))
