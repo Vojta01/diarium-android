@@ -316,6 +316,8 @@ class DraftStore(
         return mutation.mutex.withLock {
             val raw = try {
                 dataStore.data.first()[stringPreferencesKey(key(owner, date))]
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
                 return@withLock LegacyRecoveryFinalizeResult.FAILED
             } ?: return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED

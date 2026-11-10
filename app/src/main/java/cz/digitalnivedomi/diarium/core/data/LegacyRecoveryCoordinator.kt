@@ -1,5 +1,7 @@
 package cz.digitalnivedomi.diarium.core.data
 
+import kotlinx.coroutines.CancellationException
+
 /**
  * The only write-side port used by manual legacy recovery. It intentionally has no
  * network, repository, queue, or server-save dependency: imports create local drafts.
@@ -90,6 +92,8 @@ class LegacyRecoveryCoordinator(
             ?: return LegacyRecoveryScanResult.OwnerUnavailable
         val inventory = try {
             scanner.scan()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             return LegacyRecoveryScanResult.ReadFailed
         }
@@ -111,6 +115,8 @@ class LegacyRecoveryCoordinator(
         }
         val inventory = try {
             scanner.scan()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             return LegacyRecoveryAuthorizationResult.ReadFailed
         }
@@ -152,6 +158,8 @@ class LegacyRecoveryCoordinator(
             }
         val outcome = try {
             writer.copyToAccountDraft(owner, attestation.recordId, payload)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             LegacyRecoveryCopyResult.FAILED
         }
@@ -179,6 +187,8 @@ class LegacyRecoveryCoordinator(
             }
         val outcome = try {
             writer.confirmNoConflictAndRemoveOriginal(owner, attestation.recordId, payload)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             LegacyRecoveryFinalizeResult.FAILED
         }
@@ -192,6 +202,8 @@ class LegacyRecoveryCoordinator(
             val record = inventory.records.firstOrNull { it.id == id } ?: return null
             if (record.status != LegacyRecoveryRecordStatus.PREVIEWABLE) return null
             scanner.readPayload(id)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             null
         }
