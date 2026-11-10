@@ -150,9 +150,10 @@ class UsageSyncRepositoryIsolationTest {
     }
 
     @Test
-    fun `refresh followed by opt out and owner switch is rechecked at dispatch`() = runBlocking {
+    fun `opt out during token refresh stops before collecting usage`() = runBlocking {
         val refreshStarted = CountDownLatch(1)
         val releaseRefresh = CountDownLatch(1)
+        val usageRead = java.util.concurrent.atomic.AtomicBoolean(false)
         sessionStore = SessionStore(context) { _ ->
             refreshStarted.countDown()
             check(releaseRefresh.await(5, TimeUnit.SECONDS))
@@ -163,34 +164,16 @@ class UsageSyncRepositoryIsolationTest {
         }
         sessionStore.save(session(OWNER_A, expiresAt = 0))
         consentStore.setEnabledFor(OWNER_A, true)
-
-        val readingStarted = CountDownLatch(1)
-        val releaseReading = CountDownLatch(1)
-        val repository = repository(
-            usageStats = fakeUsage {
-                readingStarted.countDown()
-                check(releaseReading.await(5, TimeUnit.SECONDS))
-            },
-        )
+        val repository = repository(usageStats = fakeUsage { usageRead.set(true) })
 
         val worker = async(Dispatchers.IO) { repository.pushDay(OWNER_A, DATE) }
         assertTrue("token refresh never reached its barrier", refreshStarted.await(5, TimeUnit.SECONDS))
         consentStore.setEnabledFor(OWNER_A, false)
-
-        val switchStarted = CountDownLatch(1)
-        val switched = async(Dispatchers.IO) {
-            switchStarted.countDown()
-            sessionStore.save(session(OWNER_B))
-        }
-        assertTrue("owner switch did not start", switchStarted.await(5, TimeUnit.SECONDS))
         releaseRefresh.countDown()
-        assertTrue("usage read never started after refresh", readingStarted.await(5, TimeUnit.SECONDS))
-        switched.await()
-        releaseReading.countDown()
 
-        assertEquals(UsagePushOutcome.OWNER_CHANGED, worker.await())
-        assertEquals(OWNER_B, sessionStore.userSubject())
-        assertTrue("neither a revoked nor an old-owner upload may dispatch", requests.isEmpty())
+        assertEquals(UsagePushOutcome.CONSENT_DISABLED, worker.await())
+        assertFalse("revoked consent stops the worker before collecting new phone usage", usageRead.get())
+        assertTrue("no diary read or write may start after consent is withdrawn", requests.isEmpty())
     }
 
     @Test
