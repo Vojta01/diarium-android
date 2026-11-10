@@ -14,6 +14,7 @@ $guard$;
 INSERT INTO public.scales (id, user_id, name) VALUES
   ('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'energy'),
   ('22222222-2222-2222-2222-222222222222', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'focus'),
+  ('44444444-4444-4444-4444-444444444444', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'calm'),
   ('33333333-3333-3333-3333-333333333333', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'other-user');
 INSERT INTO public.scale_entries (user_id, scale_id, date, value) VALUES
   ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '22222222-2222-2222-2222-222222222222', '2001-01-01', 2),
@@ -60,6 +61,7 @@ BEGIN
     'scale_values', pg_catalog.jsonb_build_object(
       '11111111-1111-1111-1111-111111111111', 4,
       '22222222-2222-2222-2222-222222222222', 0,
+      '44444444-4444-4444-4444-444444444444', 3,
       '33333333-3333-3333-3333-333333333333', 5,
       'not-a-scale-id', 3
     )
@@ -107,6 +109,14 @@ BEGIN
      AND se.scale_id = '11111111-1111-1111-1111-111111111111';
   IF v_count <> 1 OR v_value <> 4 THEN
     RAISE EXCEPTION 'owned positive scale value was not mirrored';
+  END IF;
+  SELECT count(*), max(se.value) INTO v_count, v_value
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.date = '2001-01-01'
+     AND se.scale_id = '44444444-4444-4444-4444-444444444444';
+  IF v_count <> 1 OR v_value <> 3 THEN
+    RAISE EXCEPTION 'second owned positive scale value was not mirrored';
   END IF;
   SELECT count(*), max(se.value) INTO v_count, v_value
     FROM public.scale_entries se
@@ -246,8 +256,9 @@ BEGIN
     'aaaaaaaa-0000-0000-0000-000000000005'
   );
   IF v_clear_scale ->> 'status' <> 'saved'
-     OR (v_clear_scale -> 'entry') -> 'scale_values' <> (v_payload -> 'scale_values') THEN
-    RAISE EXCEPTION 'explicit scale clear must not rewrite omitted JSON scale_values: %', v_clear_scale;
+     OR (v_clear_scale -> 'entry') -> 'scale_values'
+          <> ((v_payload -> 'scale_values') - '22222222-2222-2222-2222-222222222222') THEN
+    RAISE EXCEPTION 'explicit scale clear must remove the JSON key and preserve unrelated values: %', v_clear_scale;
   END IF;
   SELECT count(*) INTO v_count
     FROM public.scale_entries se
@@ -256,6 +267,54 @@ BEGIN
      AND se.date = '2001-01-01';
   IF v_count <> 0 THEN
     RAISE EXCEPTION 'explicit scale clear did not remove exact owner mirror';
+  END IF;
+  SELECT count(*), max(se.value) INTO v_count, v_value
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.scale_id = '44444444-4444-4444-4444-444444444444'
+     AND se.date = '2001-01-01';
+  IF v_count <> 1 OR v_value <> 3 THEN
+    RAISE EXCEPTION 'clearing one scale must preserve an unrelated scale mirror';
+  END IF;
+
+  -- Replacing scale_values removes keys absent from the new JSON and their
+  -- stale mirrors, while preserving unrelated entry fields and other owners.
+  v_revision := ((v_clear_scale -> 'entry') ->> 'revision')::bigint;
+  v_result := public.save_daily_entry_v2(
+    pg_catalog.jsonb_build_object(
+      'user_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'date', '2001-01-01',
+      'scale_values', pg_catalog.jsonb_build_object(
+        '11111111-1111-1111-1111-111111111111', 7
+      )
+    ),
+    true, v_id, v_revision,
+    'aaaaaaaa-0000-0000-0000-00000000000a'
+  );
+  IF v_result ->> 'status' <> 'saved' THEN
+    RAISE EXCEPTION 'scale replacement should save: %', v_result;
+  END IF;
+  v_entry := v_result -> 'entry';
+  IF v_entry -> 'scale_values' <> '{"11111111-1111-1111-1111-111111111111": 7}'::jsonb
+     OR v_entry ->> 'note' <> 'partial update'
+     OR v_entry ->> 'mood' <> '4' THEN
+    RAISE EXCEPTION 'scale replacement changed unrelated JSON or entry fields: %', v_entry;
+  END IF;
+  SELECT count(*), max(se.value) INTO v_count, v_value
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.scale_id = '11111111-1111-1111-1111-111111111111'
+     AND se.date = '2001-01-01';
+  IF v_count <> 1 OR v_value <> 7 THEN
+    RAISE EXCEPTION 'scale replacement did not update the retained mirror';
+  END IF;
+  SELECT count(*) INTO v_count
+    FROM public.scale_entries se
+   WHERE se.user_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+     AND se.scale_id = '44444444-4444-4444-4444-444444444444'
+     AND se.date = '2001-01-01';
+  IF v_count <> 0 THEN
+    RAISE EXCEPTION 'scale replacement left a stale mirror for a removed JSON key';
   END IF;
 
   -- Same request ID with different semantics is rejected without a write.
@@ -358,6 +417,9 @@ BEGIN
      OR pg_catalog.pg_has_role('service_role'::name, 'diarium_entry_sync_owner'::name, 'MEMBER')
      OR pg_catalog.pg_has_role('anon'::name, 'diarium_entry_sync_owner'::name, 'MEMBER') THEN
     RAISE EXCEPTION 'an API role can assume the function owner';
+  END IF;
+  IF pg_catalog.has_schema_privilege('diarium_entry_sync_owner', 'public', 'CREATE') THEN
+    RAISE EXCEPTION 'function owner must not retain CREATE on public';
   END IF;
   IF EXISTS (
     SELECT 1 FROM public.entries e
