@@ -362,7 +362,7 @@ class PendingSaveStore private constructor(
             val entry = if (hasConditionalRequest) {
                 decodeConditionalEntry(entryJson) ?: return null
             } else {
-                DiaryEntry.fromJson(entryJson.toString())
+                DiaryEntry.fromJson(entryJson)
             }
             val transactionId = blob.optString("transactionId").takeIf { it.isNotBlank() } ?: return null
             val conditionalRequest = if (conditionalJson != null) {
@@ -466,7 +466,7 @@ class PendingSaveStore private constructor(
             is String -> raw
             else -> return null
         }
-        return DiaryEntry.fromJson(json.toString()).copy(aiReflection = aiReflection)
+        return DiaryEntry.fromJson(json).copy(aiReflection = aiReflection)
     }
 
     private fun conditionalEntryJson(entry: DiaryEntry): JSONObject = entry.toJson().apply {

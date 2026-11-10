@@ -54,7 +54,7 @@ class PendingSaveWorker(
                 currentOwnerId = { session.userSubject() },
                 dispatch = { record ->
                     val request = record.conditionalRequest
-                        ?: return@flushRecord Result.failure(IllegalStateException("CAS request is missing."))
+                        ?: return@flushRecord kotlin.Result.failure(IllegalStateException("CAS request is missing."))
                     repository.replayPendingSave(request).map { Unit }
                 },
                 afterSaved = { record ->
