@@ -1047,11 +1047,7 @@ class EntriesRepositoryWriteTest {
             it.url.endsWith("/rpc/save_daily_entry_v2") || it.url.endsWith("/rpc/save_daily_entry")
         }
         val body = JSONObject(post.body!!)
-        return if (post.url.endsWith("/rpc/save_daily_entry_v2")) {
-            body.getJSONObject("p_payload")
-        } else {
-            body
-        }
+        return body.getJSONObject("p_payload")
     }
 
     private fun decoded(request: HttpRequest): String =
