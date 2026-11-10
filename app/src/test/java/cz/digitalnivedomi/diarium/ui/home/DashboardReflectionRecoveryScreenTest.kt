@@ -83,8 +83,8 @@ class DashboardReflectionRecoveryScreenTest {
                 compose.onAllNodesWithText("Vygenerovat reflexi", substring = true)
                     .fetchSemanticsNodes().isNotEmpty()
             }
-            compose.onAllNodesWithText("Vygenerovat reflexi", substring = true)
-                .onFirst().performScrollTo().performClick()
+            compose.onNodeWithText("Vygenerovat reflexi", substring = true)
+                .performScrollTo().performClick()
 
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
