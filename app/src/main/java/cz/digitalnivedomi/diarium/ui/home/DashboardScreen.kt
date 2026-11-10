@@ -1,5 +1,8 @@
 package cz.digitalnivedomi.diarium.ui.home
 
+import android.content.ClipData
+import android.content.ClipboardManager
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -50,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil.compose.AsyncImage
+import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.AiReflectionSaveCoordinator
 import cz.digitalnivedomi.diarium.core.data.ConditionalSaveUnknownException
@@ -245,6 +249,7 @@ fun DashboardScreen(
                 reflectionDrafts = deps.reflectionDrafts,
                 reflectionSaver = deps.reflectionSaver,
                 reflectionOwnerId = reflectionOwnerId,
+                sessionStore = deps.sessionStore,
                 goalsProgress = goalsProgress,
                 profile = profile,
             )
@@ -321,6 +326,7 @@ private fun DashboardContent(
     reflectionDrafts: DraftStore?,
     reflectionSaver: AiReflectionSaveCoordinator?,
     reflectionOwnerId: String?,
+    sessionStore: SessionStore?,
     /** Null while unknown/failed — the goals card hides rather than guessing. */
     goalsProgress: List<GoalProgress>?,
     /** Null while unknown — the reflection card then keeps the AI enabled path. */
@@ -386,6 +392,7 @@ private fun DashboardContent(
                     drafts = reflectionDrafts,
                     saver = reflectionSaver,
                     ownerId = reflectionOwnerId,
+                    sessionStore = sessionStore,
                     profile = profile,
                 )
             }
@@ -1665,6 +1672,7 @@ private fun ReflectionCard(
     drafts: DraftStore?,
     saver: AiReflectionSaveCoordinator?,
     ownerId: String?,
+    sessionStore: SessionStore?,
     /** The on-device profile: the AI master switch and the prompt's name/birth year. */
     profile: ProfileData?,
 ) {
@@ -1952,6 +1960,38 @@ private fun ReflectionCard(
                     }
                 },
             )
+            VSpace(8)
+            SecondaryButton(
+                text = "Zkopírovat reflexi",
+                modifier = Modifier.fillMaxWidth(),
+                testTag = "dashboard_reflection_copy",
+            ) {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                if (clipboard == null) {
+                    error = "Schránka není dostupná."
+                } else {
+                    try {
+                        // Serialize the owner check with session changes so a stale UI callback
+                        // cannot copy one account's unsaved text after another account signs in.
+                        val copiedForCurrentOwner = if (
+                            ownerId == retry.ownerId && drafts?.ownerId == retry.ownerId
+                        ) {
+                            sessionStore?.withCurrentOwnerLock(retry.ownerId) {
+                                clipboard.setPrimaryClip(ClipData.newPlainText("Diarium", retry.reflection))
+                            }
+                        } else {
+                            null
+                        }
+                        if (copiedForCurrentOwner == null) {
+                            error = "Účet se změnil. Reflexi do schránky nekopíruji."
+                        } else {
+                            error = null
+                        }
+                    } catch (_: Exception) {
+                        error = "Reflexi se nepodařilo zkopírovat."
+                    }
+                }
+            }
         }
 
         error?.let { message ->

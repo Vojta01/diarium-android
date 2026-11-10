@@ -105,6 +105,13 @@ internal object EnStrings {
             "Screen time data hasn't synced yet. Once your phone sends them, you'll see the columns here.",
         "Počet odemknutí se ještě nenasynchronizoval. Až je telefon odešle, uvidíš tady sloupce." to
             "Unlock count hasn't synced yet. Once your phone sends them, you'll see the columns here.",
+        "Reflexe zatím není uložená v telefonu; pokud aplikaci zavřeš, může se ztratit. Zkus opětovné uložení." to
+            "This reflection isn't saved on this phone yet; it could be lost if you close the app. Try saving again.",
+        "Zkopírovat reflexi" to "Copy reflection",
+        "Účet se změnil. Reflexi do schránky nekopíruji." to
+            "The account changed. This reflection wasn't copied to the clipboard.",
+        "Schránka není dostupná." to "Clipboard unavailable.",
+        "Reflexi se nepodařilo zkopírovat." to "Couldn't copy the reflection.",
     )
 
     private fun part1(): Map<String, String> = mapOf(
