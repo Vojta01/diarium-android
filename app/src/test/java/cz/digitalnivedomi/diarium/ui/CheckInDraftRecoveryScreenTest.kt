@@ -521,7 +521,7 @@ class CheckInDraftRecoveryScreenTest {
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithText(PENDING_TITLE).fetchSemanticsNodes().isNotEmpty()
             }
-            compose.onNodeWithText(UNSYNCED_STATUS).assertExists()
+            compose.onNodeWithText("queued local copy").assertExists()
 
             val workerResult = pending.flushRecord(
                 date = DATE,
