@@ -223,8 +223,15 @@ class LegacyRecoveryStorageIntegrationTest {
         val writer = PreferenceLegacyRecoveryWriter(context)
         val coordinator = LegacyRecoveryCoordinator(scanner, writer) { currentOwner }
         val inventory = coordinator.scan() as LegacyRecoveryScanResult.Ready
-        val draftId = inventory.inventory.records.single { it.date == date }.id
-        val conflictId = inventory.inventory.records.single { it.date == conflictDate }.id
+        val inventoryIds = inventory.inventory.records.map { "${it.type}:${it.date}:${it.status}" }.toSet()
+        assertEquals(
+            setOf("DRAFT:$date:PREVIEWABLE", "DRAFT:$conflictDate:PREVIEWABLE"),
+            inventoryIds,
+        )
+        val draftId = inventory.inventory.records.single { it.type == LegacyRecoveryType.DRAFT && it.date == date }.id
+        val conflictId = inventory.inventory.records.single {
+            it.type == LegacyRecoveryType.DRAFT && it.date == conflictDate
+        }.id
 
         val attestation = (coordinator.authorize(
             draftId,
@@ -305,7 +312,11 @@ class LegacyRecoveryStorageIntegrationTest {
             verifiedOwnerId = { currentOwner },
         )
         val inventory = coordinator.scan() as LegacyRecoveryScanResult.Ready
-        val id = inventory.inventory.records.single().id
+        val inventoryIds = inventory.inventory.records.map { "${it.type}:${it.date}:${it.status}" }
+        assertEquals(listOf("PENDING_SAVE:$date:PREVIEWABLE"), inventoryIds)
+        val id = inventory.inventory.records.single {
+            it.type == LegacyRecoveryType.PENDING_SAVE && it.date == date
+        }.id
         assertEquals(LegacyRecoveryType.PENDING_SAVE, id.type)
         val attestation = (coordinator.authorize(
             id,
