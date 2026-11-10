@@ -479,6 +479,10 @@ BEGIN
   v_p_apps       := p_payload ? 'phone_top_apps';
   v_p_reflection := p_payload ? 'ai_reflection';
   v_p_scaleval   := p_payload ? 'scale_values';
+  IF v_p_scaleval AND pg_catalog.jsonb_typeof(p_payload -> 'scale_values') = 'null' THEN
+    RAISE EXCEPTION 'save_daily_entry_v2: scale_values must not be null; omit it to leave scale state unchanged or use {} to clear it'
+      USING ERRCODE = '22023';
+  END IF;
 
   IF p_payload ? 'clear_photo' THEN
     IF pg_catalog.jsonb_typeof(p_payload -> 'clear_photo') <> 'boolean' THEN
@@ -602,8 +606,9 @@ BEGIN
       v_p_apps := false;
   END CASE;
 
-  v_scaleval := CASE WHEN pg_catalog.jsonb_typeof(p_payload -> 'scale_values') = 'null'
-                     THEN NULL ELSE p_payload -> 'scale_values' END;
+  -- A missing key leaves scale state alone; explicit JSON null was rejected
+  -- above so it cannot diverge from the scale_entries mirror.
+  v_scaleval := p_payload -> 'scale_values';
 
   IF p_payload ? 'clear_scale_ids' THEN
     IF pg_catalog.jsonb_typeof(p_payload -> 'clear_scale_ids') <> 'array' THEN
