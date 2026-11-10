@@ -40,7 +40,7 @@ jobs:
           test ! -e local.properties
 
       - name: Run Android unit tests
-        run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest
+        run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest --tests 'cz.digitalnivedomi.diarium.core.data.EntriesRepositoryDateMoveTest'
 
       - name: Upload unit-test reports
         if: always()
