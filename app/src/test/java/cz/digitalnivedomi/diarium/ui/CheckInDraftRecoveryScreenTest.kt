@@ -388,6 +388,103 @@ class CheckInDraftRecoveryScreenTest {
     }
 
     @Test
+    fun `worker completion during recovery read clears stale unsynced screen`() = runBlocking {
+        val file = File.createTempFile("diarium_pending_worker_race", ".preferences_pb").also { it.delete() }
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        val drafts = DraftStore(dataStore, OWNER_ID)
+        val pending = PendingSaveStore.from(context, OWNER_ID)
+        pending.remove(DATE)
+        val requests = CopyOnWriteArrayList<HttpRequest>()
+        val dayReads = AtomicInteger()
+        val workerSaved = AtomicBoolean(false)
+        val recoveryReadStarted = CountDownLatch(1)
+        val releaseRecoveryRead = CountDownLatch(1)
+        val transport = HttpTransport { request ->
+            requests += request
+            when {
+                request.method == "GET" && request.url.contains("/entries?") -> {
+                    when (dayReads.incrementAndGet()) {
+                        1 -> HttpResponse(200, "[]")
+                        2 -> {
+                            recoveryReadStarted.countDown()
+                            check(releaseRecoveryRead.await(10_000L, TimeUnit.MILLISECONDS)) {
+                                "test did not release the recovery read"
+                            }
+                            // This response began before the worker replay completed.
+                            HttpResponse(200, "[]")
+                        }
+                        else -> if (workerSaved.get()) {
+                            HttpResponse(
+                                200,
+                                """[{"user_id":"$OWNER_ID","id":"$ROW_ID","date":"$DATE","revision":8,"mood":4,"mood_emoji":"🙂","note":"saved by worker","updated_at":"$NEW_REVISION"}]""",
+                            )
+                        } else {
+                            HttpResponse(200, "[]")
+                        }
+                    }
+                }
+                request.method == "POST" && request.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    throw IOException("connection lost after request")
+                else -> HttpResponse(200, "{}")
+            }
+        }
+
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    CheckInScreen(
+                        deps = CheckInDeps(
+                            entries = repository(pending = pending, transportOverride = transport),
+                            drafts = drafts,
+                        ),
+                        today = LocalDate.parse(DATE),
+                        lateNight = false,
+                    )
+                }
+            }
+            waitForEditableForm()
+            compose.onNodeWithTag("note").performScrollTo().performTextInput("local update")
+            compose.onNodeWithTag("save_button").performScrollTo().performClick()
+            assertTrue(
+                "refreshPendingRecovery should be blocked in its server read",
+                recoveryReadStarted.await(TIMEOUT, TimeUnit.MILLISECONDS),
+            )
+
+            val workerResult = pending.flushRecord(
+                date = DATE,
+                expectedOwnerId = OWNER_ID,
+                currentOwnerId = { OWNER_ID },
+                dispatch = { record ->
+                    assertEquals("local update", record.entry.note)
+                    workerSaved.set(true)
+                    Result.success(Unit)
+                },
+                afterSaved = { record ->
+                    val request = requireNotNull(record.conditionalRequest)
+                    drafts.clearIfUnchanged(DATE, request.entry, request.requestId)
+                },
+            )
+            assertTrue(workerResult is cz.digitalnivedomi.diarium.core.data.PendingSaveFlush.Saved)
+            assertNull(pending.peekRecord(DATE))
+            releaseRecoveryRead.countDown()
+
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText("saved by worker").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText("saved by worker").assertExists()
+            assertTrue(compose.onAllNodesWithText(UNSYNCED_STATUS).fetchSemanticsNodes().isEmpty())
+            assertTrue(compose.onAllNodesWithText(PENDING_TITLE).fetchSemanticsNodes().isEmpty())
+            assertNull(pending.peekRecord(DATE))
+        } finally {
+            releaseRecoveryRead.countDown()
+            pending.remove(DATE)
+            scope.coroutineContext[Job]?.cancelAndJoin()
+            file.delete()
+        }
+    }
+
+    @Test
     fun `ownerless legacy entry is visibly quarantined and never sent`() = runBlocking {
         val preferences = context.getSharedPreferences(PendingSaveStore.PREFS_NAME, Context.MODE_PRIVATE)
         val legacy = JSONObject()
