@@ -238,7 +238,6 @@ class DraftStore(
                 }
                 prefs[targetKey] = encode(
                     owner = owner,
-                    date = date,
                     entry = entry,
                     baselineUpdatedAt = null,
                     baselineExists = null,
