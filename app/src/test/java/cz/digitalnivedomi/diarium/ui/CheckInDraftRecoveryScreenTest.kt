@@ -474,6 +474,79 @@ class CheckInDraftRecoveryScreenTest {
     }
 
     @Test
+    fun `worker completion after pending state appears refreshes the active screen`() = runBlocking {
+        val pending = PendingSaveStore.from(context, OWNER_ID)
+        pending.remove(DATE)
+        val localEntry = DiaryEntry(mood = 4, moodEmoji = "🙂", note = "queued local copy")
+        assertTrue(
+            pending.enqueueConditional(
+                ConditionalEntrySaveRequest(
+                    ownerId = OWNER_ID,
+                    date = DATE,
+                    entry = localEntry,
+                    baseline = EntryBaseline(exists = true, id = ROW_ID, revision = 7),
+                    requestId = "b8e3eaf4-3fe0-4692-90bc-67bdbb51106a",
+                ),
+            ),
+        )
+        val workerSaved = AtomicBoolean(false)
+        val transport = HttpTransport { request ->
+            if (request.method == "GET" && request.url.contains("/entries?")) {
+                if (workerSaved.get()) {
+                    HttpResponse(
+                        200,
+                        """[{"user_id":"$OWNER_ID","id":"$ROW_ID","date":"$DATE","revision":8,"mood":4,"mood_emoji":"🙂","note":"saved by worker","updated_at":"$NEW_REVISION"}]""",
+                    )
+                } else {
+                    HttpResponse(
+                        200,
+                        """[{"user_id":"$OWNER_ID","id":"$ROW_ID","date":"$DATE","revision":7,"mood":3,"mood_emoji":"😐","note":"older server row","updated_at":"$OLD_REVISION"}]""",
+                    )
+                }
+            } else {
+                HttpResponse(200, "{}")
+            }
+        }
+
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    CheckInScreen(
+                        deps = CheckInDeps(entries = repository(pending = pending, transportOverride = transport)),
+                        today = LocalDate.parse(DATE),
+                        lateNight = false,
+                    )
+                }
+            }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText(PENDING_TITLE).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText(UNSYNCED_STATUS).assertExists()
+
+            val workerResult = pending.flushRecord(
+                date = DATE,
+                expectedOwnerId = OWNER_ID,
+                currentOwnerId = { OWNER_ID },
+                dispatch = { record ->
+                    assertEquals(localEntry, record.entry)
+                    workerSaved.set(true)
+                    Result.success(Unit)
+                },
+            )
+            assertTrue(workerResult is cz.digitalnivedomi.diarium.core.data.PendingSaveFlush.Saved)
+            assertNull(pending.peekRecord(DATE))
+
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText("saved by worker").fetchSemanticsNodes().isNotEmpty()
+            }
+            assertTrue(compose.onAllNodesWithText(UNSYNCED_STATUS).fetchSemanticsNodes().isEmpty())
+            assertTrue(compose.onAllNodesWithText(PENDING_TITLE).fetchSemanticsNodes().isEmpty())
+        } finally {
+            pending.remove(DATE)
+        }
+    }
+
+    @Test
     fun `ownerless legacy entry is visibly quarantined and never sent`() = runBlocking {
         val preferences = context.getSharedPreferences(PendingSaveStore.PREFS_NAME, Context.MODE_PRIVATE)
         val legacy = JSONObject()

@@ -162,6 +162,7 @@ fun CheckInScreen(
     var pendingRecovery by remember(ownerId, state.date) { mutableStateOf<PendingRecoveryView?>(null) }
     var pendingRecoveryIssue by remember(ownerId, state.date) { mutableStateOf<PendingSaveRecoveryIssue?>(null) }
     var pendingRecoveryChoice by remember(ownerId, state.date) { mutableStateOf(PendingRecoveryChoice.LOCAL) }
+    var reloadToken by remember { mutableStateOf(0) }
     var dateNavigationInProgress by remember(ownerId) { mutableStateOf(false) }
     val dateNavigationGuard = remember(ownerId) { AtomicBoolean(false) }
     val goalsRepo: GoalsRepository? = deps.goals
@@ -242,15 +243,27 @@ fun CheckInScreen(
 
     suspend fun refreshPendingRecovery(date: String) {
         val repo = entriesRepo ?: return
+        if (ownerId == null || repo.currentUserId() != ownerId) return
         val record = repo.pendingSaveRecord(date)
         pendingRecoveryIssue = repo.pendingSaveRecoveryIssue(date)
         if (record == null) {
             pendingRecovery = null
+            holder.setLoading(true)
+            reloadToken++
             return
         }
         val remote = repo.loadRemoteEntrySnapshot(date)
+        if (repo.currentUserId() != ownerId) return
+        val latestRecord = repo.pendingSaveRecord(date)
+        pendingRecoveryIssue = repo.pendingSaveRecoveryIssue(date)
+        if (latestRecord == null || latestRecord.transactionId != record.transactionId) {
+            pendingRecovery = null
+            holder.setLoading(true)
+            reloadToken++
+            return
+        }
         pendingRecovery = PendingRecoveryView(
-            record = record,
+            record = latestRecord,
             remote = remote.getOrNull(),
             remoteError = remote.exceptionOrNull()?.message,
         )
@@ -309,7 +322,6 @@ fun CheckInScreen(
     val busy = state.loading || state.saving || uploadingPhoto || dateNavigationInProgress
     // Bumped by the load error's retry button: the load effect keys on it as well as
     // the date, so a failed read can be attempted again without leaving the day.
-    var reloadToken by remember { mutableStateOf(0) }
     fun retryDayLoad() {
         val snapshot = holder.state
         traceDraftRecovery("retry click loading=${snapshot.loading} dirty=${snapshot.draftDirty} storeError=${snapshot.draftStoreError != null}")
@@ -435,6 +447,14 @@ fun CheckInScreen(
 
         traceDraftRecovery("remote read starting")
         val loaded = repo.loadRemoteEntrySnapshot(state.date)
+        val latestQueued = repo.pendingSaveRecord(state.date)
+        if (latestQueued?.transactionId != queued?.transactionId) {
+            pendingRecovery = null
+            pendingRecoveryIssue = repo.pendingSaveRecoveryIssue(state.date)
+            holder.setLoading(true)
+            reloadToken++
+            return@LaunchedEffect
+        }
         if (loaded.isFailure) {
             val failure = loaded.exceptionOrNull()?.message ?: LOAD_FAILED_MESSAGE
             val retryEntry = holder.state.entry.takeIf { holder.state.loadError != null && it.hasContent() }
