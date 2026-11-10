@@ -6,8 +6,12 @@ import android.content.Context
  * Local-only implementation of [LegacyRecoveryWriter]. It copies into DraftStore
  * and never touches EntriesRepository, PendingSaveWorker, or any HTTP client.
  */
-class PreferenceLegacyRecoveryWriter(context: Context) : LegacyRecoveryWriter {
+class PreferenceLegacyRecoveryWriter(
+    context: Context,
+    draftStoreFactory: ((String) -> DraftStore)? = null,
+) : LegacyRecoveryWriter {
     private val appContext = context.applicationContext
+    private val draftStoreForOwner = draftStoreFactory ?: { ownerId -> DraftStore.from(appContext, ownerId) }
     private val ownerlessPendingSaves = PendingSaveStore.from(appContext, ownerId = null)
 
     override suspend fun copyToAccountDraft(
@@ -17,7 +21,7 @@ class PreferenceLegacyRecoveryWriter(context: Context) : LegacyRecoveryWriter {
     ): LegacyRecoveryCopyResult {
         if (ownerId.isBlank()) return LegacyRecoveryCopyResult.OWNER_UNAVAILABLE
         if (id.date.isBlank()) return LegacyRecoveryCopyResult.RECORD_NOT_RECOVERABLE
-        val target = DraftStore.from(appContext, ownerId)
+        val target = draftStoreForOwner(ownerId)
         val sourceUnchanged = {
             when (id.type) {
                 LegacyRecoveryType.DRAFT -> true // Checked atomically inside the shared DataStore edit.
@@ -39,7 +43,7 @@ class PreferenceLegacyRecoveryWriter(context: Context) : LegacyRecoveryWriter {
         payload: LegacyRecoveryPayload,
     ): LegacyRecoveryFinalizeResult {
         if (ownerId.isBlank()) return LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE
-        val target = DraftStore.from(appContext, ownerId)
+        val target = draftStoreForOwner(ownerId)
         return when (id.type) {
             LegacyRecoveryType.DRAFT -> target.confirmAndRemoveLegacyDraftSource(
                 date = id.date,
