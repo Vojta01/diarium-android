@@ -43,9 +43,12 @@ class BackupRulesTest {
         val appInfo = context.applicationInfo
 
         assertTrue(appInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP != 0)
-        assertEquals(R.xml.backup_rules, appInfo.fullBackupContent)
-        assertEquals(R.xml.data_extraction_rules, appInfo.dataExtractionRules)
+        assertEquals(R.xml.backup_rules, appInfo.resourceField("fullBackupContent"))
+        assertEquals(R.xml.data_extraction_rules, appInfo.resourceField("dataExtractionRulesRes"))
     }
+
+    private fun ApplicationInfo.resourceField(fieldName: String): Int =
+        javaClass.getField(fieldName).getInt(this)
 
     private fun readRules(resourceId: Int): Map<String, Rules> {
         val parser = context.resources.getXml(resourceId)
