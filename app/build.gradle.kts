@@ -1,3 +1,4 @@
+import cz.digitalnivedomi.diarium.build.AppVersionCode
 import java.util.Properties
 import org.gradle.api.tasks.testing.Test
 
@@ -57,8 +58,10 @@ android {
         applicationId = "cz.digitalnivedomi.diarium"
         minSdk = 26
         targetSdk = 34
-        versionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull() ?: 1
-        versionName = System.getenv("APP_VERSION_NAME") ?: "1.0.0"
+        // Preserve configured v1 release codes; generate ordered codes for v2+.
+        val appVersionName = System.getenv("APP_VERSION_NAME") ?: "1.0.0"
+        versionCode = AppVersionCode.resolve(appVersionName, System.getenv("APP_VERSION_CODE"))
+        versionName = appVersionName
 
         // Supabase project — the native app talks to PostgREST/Edge Functions
         // directly with the user's JWT. The anon key is public by design.

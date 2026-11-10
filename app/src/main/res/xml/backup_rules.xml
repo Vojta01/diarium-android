@@ -1,14 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Android auto-backup (API ≤ 30) rules.
+  Android Auto Backup rules for API 23–30.
 
-  The user's DeepSeek API key lives in the EncryptedSharedPreferences file
-  `diarium_ai_secrets` (option C, "bring your own key"). Its master key sits in
-  the Android Keystore, which is device-bound and never leaves the phone — so a
-  backed-up copy of the file could never be decrypted. Excluding it keeps a dead
-  blob out of the backup and guarantees the key cannot travel through any cloud
-  path, accident included.
+  Keep Android's default backup scope: there is no include allow-list, so existing
+  preferences, files and databases remain eligible under the user's backup setting.
+  This preserves local drafts, unsynced diary saves, profile data, photo candidates,
+  and the entries cache. Only credential stores are omitted: AiKeyStore (user AI
+  key), SessionStore (Supabase JWTs), EncryptedOAuthAttemptStore (PKCE verifier),
+  PushTokensRepository.PrefsLastTokenStore (FCM token), and the Firebase SDK's
+  `com.google.android.gms.appid` installation/token state.
+
+  These rules govern future backup/restore and do not erase local data or an
+  existing cloud backup.
 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="diarium_ai_secrets.xml" />
+    <exclude domain="sharedpref" path="diarium_session.xml" />
+    <exclude domain="sharedpref" path="diarium_oauth_attempt.xml" />
+    <exclude domain="sharedpref" path="diarium_fcm.xml" />
+    <exclude domain="sharedpref" path="com.google.android.gms.appid.xml" />
 </full-backup-content>

@@ -1,0 +1,59 @@
+name: Android version and backup patch CI
+
+on:
+  push:
+    branches:
+      - ci/android-version-backup-ci-5a1092dd
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Build debug and run unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Confirm private build inputs are absent
+        run: |
+          test ! -e app/google-services.json
+          test ! -e keystore.properties
+          test ! -e local.properties
+
+      - name: Run buildSrc tests
+        run: ./gradlew -p buildSrc --no-daemon --max-workers=2 test
+
+      - name: Assemble debug APK and run app unit tests
+        run: ./gradlew --no-daemon --max-workers=2 :app:assembleDebug :app:testDebugUnitTest
+
+      - name: Upload unit-test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-version-backup-test-reports
+          path: |
+            buildSrc/build/test-results/test/TEST-*.xml
+            buildSrc/build/reports/tests/test/**
+            app/build/test-results/testDebugUnitTest/TEST-*.xml
+            app/build/reports/tests/testDebugUnitTest/**
+          if-no-files-found: warn
+          retention-days: 7
