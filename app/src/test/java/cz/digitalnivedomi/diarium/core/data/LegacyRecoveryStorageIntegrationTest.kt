@@ -22,6 +22,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -377,5 +378,6 @@ class LegacyRecoveryStorageIntegrationTest {
 
     private companion object {
         const val OWNER_A = "synthetic-owner-a"
+        const val OWNER_B = "synthetic-owner-b"
     }
 }
