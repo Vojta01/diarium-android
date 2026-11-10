@@ -24,8 +24,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The offline outbox: a save that could not reach the server stays queued per
- * date, the newest local save wins, and reads stay lenient when a stored value
- * is corrupt.
+ * date, the newest legacy local save wins, verified conditional requests survive
+ * retries unchanged, and corrupt or ownerless values remain quarantined.
  *
  * Robolectric with the real SharedPreferences on purpose — the store's whole
  * contract is "what the save path wrote is what the worker reads back", so a
@@ -114,7 +114,7 @@ class PendingSaveStoreTest {
             },
         )
 
-        assertFalse("no atomic server compare-and-swap is available", result is PendingSaveFlush.Saved)
+        assertFalse("unverified legacy records cannot be sent without a CAS token", result is PendingSaveFlush.Saved)
         assertEquals(0, dispatchCount.get())
         assertEquals("revision-2", serverRevision.get())
         assertEquals("newer client B edit", serverEntry.get().note)

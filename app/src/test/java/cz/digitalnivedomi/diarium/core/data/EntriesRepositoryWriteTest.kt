@@ -1125,6 +1125,47 @@ class EntriesRepositoryWriteTest {
     }
 
     @Test
+    fun `legacy saves leave CAS and malformed recovery records untouched`() = runTest {
+        val pending = PendingSaveStore.from(context, USER_ID)
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 2, note = "original CAS payload"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_RETRY,
+        )
+        assertTrue(pending.enqueueConditional(request))
+        val blockedWhileReplayable = repository(pending).save(DiaryEntry(mood = 5, note = "new legacy edit"), DATE)
+        assertTrue(blockedWhileReplayable.isFailure)
+        assertEquals(request, pending.peekRecord(DATE)?.conditionalRequest)
+        assertNull(pending.peekRecord(DATE)?.recoveryReason)
+        assertTrue(sent.isEmpty())
+
+        val conflict = pending.flushRecord(
+            date = DATE,
+            expectedOwnerId = USER_ID,
+            currentOwnerId = { sessionStore.userSubject() },
+            dispatch = { Result.failure(ConditionalSaveConflictException("stale_revision", null)) },
+        )
+        assertTrue(conflict is PendingSaveFlush.RecoveryRequired)
+
+        val blocked = repository(pending).save(DiaryEntry(mood = 5, note = "new legacy edit"), DATE)
+        assertTrue(blocked.isFailure)
+        assertEquals(request, pending.peekRecord(DATE)?.conditionalRequest)
+        assertTrue(pending.peekRecord(DATE)?.recoveryReason?.contains("stale_revision") == true)
+        assertTrue(sent.isEmpty())
+
+        val malformed = "not-json"
+        context.getSharedPreferences(PendingSaveStore.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(PendingSaveStore.key(USER_ID, DATE), malformed).commit()
+        val malformedAttempt = repository(pending).save(DiaryEntry(mood = 1, note = "must not replace"), DATE)
+        assertTrue(malformedAttempt.isFailure)
+        assertEquals(malformed, context.getSharedPreferences(PendingSaveStore.PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PendingSaveStore.key(USER_ID, DATE), null))
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
     fun `a server without the v2 rpc fails closed without a legacy write`() = runTest {
         respond = { request ->
             if (request.url.endsWith("/rpc/save_daily_entry_v2")) {

@@ -57,6 +57,8 @@ internal object EnStrings {
             "The local record cannot be verified safely. It remains untouched; automatic sending is disabled.",
         "Ukládání je zablokované, dokud kopii nezkontroluješ." to
             "Saving is blocked until you review the copy.",
+        "Místní zápis čeká na bezpečné dokončení nebo ruční kontrolu. Původní kopie zůstala zachovaná." to
+            "A local entry is awaiting safe completion or manual review. The original copy remains preserved.",
         "Serverovou kopii se nepodařilo načíst. Místní kopie zůstává uložená." to
             "Couldn't load the server copy. The local copy remains saved.",
         "Na serveru pro tento den není žádný záznam. Výběr nic neodešle ani nesmaže." to

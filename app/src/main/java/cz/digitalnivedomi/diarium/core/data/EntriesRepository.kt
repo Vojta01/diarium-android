@@ -95,9 +95,9 @@ class EntriesRepository(
      */
     private val cache: EntriesCacheStore? = null,
     /**
-     * Offline outbox (see [PendingSaveStore]): a save that never reached the
-     * server lands here. It is retained for explicit recovery; there is no
-     * verified atomic compare-and-swap with which a worker could replay it safely.
+     * Offline outbox. Ambiguous v2 saves persist the exact immutable CAS request
+     * and may be replayed only for the verified owner and baseline. Legacy,
+     * malformed, rejected, and conflicting records remain local for recovery.
      */
     private val pending: PendingSaveStore? = null,
     /** A screen/worker may pin the repository to the owner it was created for. */
@@ -450,7 +450,7 @@ class EntriesRepository(
                 if (outbox?.peekRecord(request.date) != null ||
                     outbox?.recoveryIssueForDate(request.date) != null
                 ) {
-                    return Result.failure(IllegalStateException(MOVE_OFFLINE_BLOCKED))
+                    return Result.failure(IllegalStateException(PENDING_SAVE_RECOVERY_BLOCKED))
                 }
                 val result = saveConditionalAuthorized(request, userId, cleanupPhotoAfterPersistence)
                 if (result.exceptionOrNull() is ConditionalSaveUnknownException && outbox != null) {
@@ -711,14 +711,20 @@ class EntriesRepository(
         if (authorizedUserId() != userId) {
             return Result.failure(SessionOwnerMismatchException())
         }
-        if (outbox?.peekRecord(date) != null) {
+        val queuedRecord = outbox?.peekRecord(date)
+        if (outbox?.recoveryIssueForDate(date) != null ||
+            queuedRecord?.conditionalRequest != null || queuedRecord?.recoveryReason != null
+        ) {
+            return Result.failure(IllegalStateException(PENDING_SAVE_RECOVERY_BLOCKED))
+        }
+        if (queuedRecord != null) {
             if (!allowOfflineQueue) return Result.failure(IllegalStateException(MOVE_OFFLINE_BLOCKED))
-            if (!outbox.enqueue(
+            if (outbox?.enqueue(
                     date,
                     entry,
                     baselineUpdatedAt = baselineUpdatedAt,
                     baselineExists = baselineExists,
-                )
+                ) != true
             ) {
                 return Result.failure(IllegalStateException(CONNECT_FAILED))
             }
@@ -1163,6 +1169,9 @@ class EntriesRepository(
         /** A move is two remote writes; queuing only its target would duplicate the day. */
         private const val MOVE_OFFLINE_BLOCKED =
             "Přesun data vyžaduje připojení. Zápis zůstal v původním dni; zkus to znovu online."
+
+        private const val PENDING_SAVE_RECOVERY_BLOCKED =
+            "Místní zápis čeká na bezpečné dokončení nebo ruční kontrolu. Původní kopie zůstala zachovaná."
 
         /**
          * Maps a [DiaryEntry] onto the exact `save_daily_entry(jsonb)` payload.
