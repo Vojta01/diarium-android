@@ -21,10 +21,13 @@ internal object EnStrings {
     private fun manual(): Map<String, String> = mapOf(
         // Existing-day draft recovery: review both copies without writing either.
         "Místní návrh se liší od uloženého dne" to "The local draft differs from the saved day",
+        "Serverová verze se od zahájení úpravy změnila" to "The server version has changed since you started editing.",
         "Serverovou kopii se nepodařilo načíst" to "Couldn't load the server copy",
         "Serverovou kopii se nepodařilo načíst." to "Couldn't load the server copy.",
         "Na tento den jsou dvě verze. Vyber, kterou chceš prohlédnout. Obě kopie zůstanou zachované." to
             "There are two versions of this day. Choose which one you want to review. Both copies remain preserved.",
+        "Na tento den jsou dvě verze. Místní návrh i kopie na serveru zůstávají zachované; prohlédni si obě." to
+            "There are two versions of this day. The local draft and server copy are both preserved; review both.",
         "Místní návrh zůstává uložený. Nejdřív zkus znovu načíst serverovou kopii." to
             "The local draft is still saved. Retry loading the server copy to review it too.",
         "Na serveru pro tento den už žádný záznam není." to "There is no server entry for this day anymore.",
@@ -54,6 +57,8 @@ internal object EnStrings {
         "Zápis uložený jen v telefonu" to "Entry saved only on this phone",
         "Ukládání je zablokované, protože server neumí bezpečně porovnat verze." to
             "Saving is blocked because the server can't safely compare versions.",
+        "Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše." to
+            "Saving remains blocked. Review both copies; choosing either won't overwrite anything.",
         "Ukládání je zablokované, dokud se nepodaří načíst serverovou kopii." to
             "Saving is blocked until the server copy can be loaded.",
         "Zápis je uložený jen v tomto telefonu; reflexe teď není dostupná." to

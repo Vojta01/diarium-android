@@ -19,17 +19,67 @@ import java.util.UUID
  */
 data class PhotoUpload(val url: String? = null, val error: String? = null)
 
+/** Server token captured by the successful foreground day read. */
+data class EntryBaseline(
+    val exists: Boolean?,
+    val id: String?,
+    val revision: Long?,
+) {
+    val isValid: Boolean
+        get() = when (exists) {
+            false -> id == null && revision == null
+            true -> !id.isNullOrBlank() && revision != null && revision >= 1
+            null -> false
+        }
+}
+
+/** Immutable request retained across retries; never mutate a request after dispatch. */
+data class ConditionalEntrySaveRequest(
+    val ownerId: String,
+    val date: String,
+    val entry: DiaryEntry,
+    val baseline: EntryBaseline,
+    val requestId: String,
+    /** Include only when this request is intentionally persisting new AI text. */
+    val writeAiReflection: Boolean = false,
+)
+
+data class ConditionalSaveReceipt(
+    val entryId: String,
+    val revision: Long,
+    val replayed: Boolean,
+)
+
+class ConditionalSaveConflictException(
+    val reason: String,
+    val currentSnapshot: StoredEntrySnapshot?,
+    val currentReadError: String? = null,
+) : IllegalStateException(
+    when {
+        currentReadError != null -> "Server version changed; your local draft is preserved, but the current server copy could not be read."
+        currentSnapshot == null -> "Server version changed; your local draft is preserved and the server day is now empty."
+        else -> "Server version changed; your local draft and the current server copy are both preserved for review."
+    },
+)
+
+class ConditionalSaveUnknownException(
+    val requestId: String,
+    cause: Throwable? = null,
+) : IllegalStateException(
+    "Uložení nelze potvrdit. Návrh zůstal zachovaný; opakování pošli se stejným požadavkem.",
+    cause,
+)
+
+class ConditionalSaveUnavailableException(message: String) : IllegalStateException(message)
+
 private enum class PhotoCleanupResult { DELETED, REFERENCED, FAILED }
 
 /**
- * Reads and writes the `entries` table through the server-side RPCs — the same
- * contract the web app's `/api/save-entry` uses.
- *
- * Why the RPC rather than a plain PostgREST upsert: `save_daily_entry(jsonb)`
- * owns the conflict target (`user_id, date`), the `scale_entries` mirroring and
- * the "only overwrite a column when the payload actually carries it" rule.
- * Re-implementing that in Kotlin would drift from the web the first time the SQL
- * changes.
+ * Reads the `entries` table through an owner-pinned PostgREST client. The ordinary
+ * foreground check-in uses [save] with a [ConditionalEntrySaveRequest], which calls
+ * `save_daily_entry_v2` with the read-time `(exists, id, revision)` token and a stable
+ * request ID. The compatibility save path below remains for existing non-foreground
+ * callers and retains their legacy write/cleanup behavior.
  */
 class EntriesRepository(
     private val client: SupabaseClient,
@@ -106,9 +156,9 @@ class EntriesRepository(
     }
 
     /**
-     * Reads the actual server row even when a local outbox record exists. Recovery UI
-     * uses this to show both copies; it is informational only and does not authorize
-     * a later write because the server has no atomic revision CAS.
+     * Reads the actual server row for recovery and returns its row-token fields. A GET
+     * alone does not authorize a write; the foreground v2 save sends this snapshot's
+     * `(exists, id, revision)` as an atomic compare-and-swap baseline.
      */
     suspend fun loadRemoteEntrySnapshot(date: String): Result<StoredEntrySnapshot?> =
         withContext(Dispatchers.IO) {
@@ -149,6 +199,8 @@ class EntriesRepository(
         return StoredEntrySnapshot(
             entry = fromRow(row),
             updatedAt = row.plainString("updated_at").takeIf { it.isNotBlank() },
+            id = row.plainString("id").takeIf { it.isNotBlank() },
+            revision = if (row.has("revision") && !row.isNull("revision")) row.optLong("revision") else null,
         )
     }
 
@@ -287,19 +339,11 @@ class EntriesRepository(
     }
 
     /**
-     * Upserts the day's check-in via `save_daily_entry`, then fires
-     * `check_achievements`. Re-saving the same date updates in place, because the
-     * RPC's conflict target is `(user_id, date)`.
-     *
-     * The payload never carries a cleared column: `photo_path` is omitted when the
-     * form asked to remove the photo, and a cleared scale is absent from
-     * `scale_values` (see [DiaryEntry.clearPhoto] / [DiaryEntry.clearedScaleIds]).
-     * Both removals are then applied by the app itself, after the save landed, so a
-     * failed save can never destroy the stored value:
-     *  - `entries.photo_path = null` via an RLS-scoped PATCH, and
-     *  - the corresponding `scale_entries` rows via an RLS-scoped DELETE.
-     * Photo cleanup is best-effort after persistence; a storage failure can leave
-     * an orphan object but can never remove the image still referenced by a row.
+     * Compatibility save path retained for non-foreground callers. When a baseline
+     * token is supplied it dispatches through [save] with a
+     * [ConditionalEntrySaveRequest]; the normal foreground screen passes that typed
+     * immutable request directly. Calls without a token retain the existing legacy
+     * RPC and cleanup behavior; they must not be used for check-in foreground saves.
      */
     suspend fun save(
         entry: DiaryEntry,
@@ -311,7 +355,26 @@ class EntriesRepository(
         baselineUpdatedAt: String? = null,
         /** Whether a server row existed when editing began, if it was verified. */
         baselineExists: Boolean? = null,
+        baselineId: String? = null,
+        baselineRevision: Long? = null,
+        requestId: String = UUID.randomUUID().toString(),
     ): Result<Unit> {
+        if (baselineExists != null || baselineId != null || baselineRevision != null) {
+            val ownerId = authorizedUserId()
+                ?: return Result.failure(IllegalStateException(SIGNED_OUT))
+            return save(
+                ConditionalEntrySaveRequest(
+                    ownerId = ownerId,
+                    date = date,
+                    entry = entry,
+                    baseline = EntryBaseline(baselineExists, baselineId, baselineRevision),
+                    requestId = requestId,
+                ),
+                cleanupPhotoAfterPersistence = cleanupPhotoAfterPersistence,
+                allowOfflineQueue = allowOfflineQueue,
+                baselineUpdatedAt = baselineUpdatedAt,
+            ).map { Unit }
+        }
         val userId = authorizedUserId()
             ?: return Result.failure(IllegalStateException(SIGNED_OUT))
         val outbox = pendingFor(userId)
@@ -345,6 +408,159 @@ class EntriesRepository(
                 )
             }
         }
+    }
+
+    /** Foreground compare-and-swap. A retry must receive the same immutable request. */
+    suspend fun save(request: ConditionalEntrySaveRequest): Result<ConditionalSaveReceipt> {
+        val userId = authorizedUserId()
+            ?: return Result.failure(IllegalStateException(SIGNED_OUT))
+        if (userId != request.ownerId) return Result.failure(SessionOwnerMismatchException())
+        if (!request.baseline.isValid) {
+            return Result.failure(
+                ConditionalSaveUnavailableException(
+                    "The server version for this day is not verified. Your draft is preserved and nothing was sent.",
+                ),
+            )
+        }
+        if (runCatching { UUID.fromString(request.requestId) }.isFailure) {
+            return Result.failure(IllegalArgumentException("The conditional save request ID is invalid."))
+        }
+        if (pendingFor(userId)?.peekRecord(request.date) != null) {
+            return Result.failure(IllegalStateException(MOVE_OFFLINE_BLOCKED))
+        }
+        return withContext(Dispatchers.IO) {
+            if (authorizedUserId() != userId) {
+                return@withContext Result.failure(SessionOwnerMismatchException())
+            }
+            saveConditionalAuthorized(request, userId)
+        }
+    }
+
+    private suspend fun saveConditionalAuthorized(
+        request: ConditionalEntrySaveRequest,
+        userId: String,
+    ): Result<ConditionalSaveReceipt> {
+        if (authorizedUserId() != userId || request.ownerId != userId) {
+            return Result.failure(SessionOwnerMismatchException())
+        }
+        val entry = request.entry
+        val oldPhotoPath = if (entry.clearPhoto) {
+            entry.photoPathToDelete ?: entry.photoPath
+        } else {
+            entry.photoPathToDelete?.takeIf { it.isNotBlank() && it != entry.photoPath }
+        }
+        if (!oldPhotoPath.isNullOrBlank()) {
+            val candidates = photoCandidates?.takeIf { it.ownerId == userId }
+                ?: return Result.failure(IllegalStateException(PHOTO_CANDIDATE_TRACK_FAILED))
+            if (!runCatching { candidates.track(request.date, oldPhotoPath) }.getOrDefault(false)) {
+                return Result.failure(IllegalStateException(PHOTO_CANDIDATE_TRACK_FAILED))
+            }
+        }
+
+        val payload = buildPayload(entry, userId, request.date).apply {
+            if (!request.writeAiReflection) remove("ai_reflection")
+            put("clear_photo", entry.clearPhoto)
+            put("clear_scale_ids", JSONArray(entry.clearedScaleIds.sorted()))
+        }
+        val body = JSONObject()
+            .put("p_payload", payload)
+            .put("p_expected_exists", request.baseline.exists)
+            .put("p_expected_id", request.baseline.id ?: JSONObject.NULL)
+            .put("p_expected_revision", request.baseline.revision ?: JSONObject.NULL)
+            .put("p_request_id", request.requestId)
+        val response = try {
+            ownerClient(userId).post("rpc/save_daily_entry_v2", body)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: IOException) {
+            return Result.failure(ConditionalSaveUnknownException(request.requestId, failure))
+        } catch (failure: Exception) {
+            return Result.failure(failure)
+        }
+
+        if (!response.isSuccessful) {
+            if (response.code == 404) {
+                return Result.failure(
+                    ConditionalSaveUnavailableException(
+                        "This server does not support safe conditional saves. Your local draft is preserved; no legacy write was attempted.",
+                    ),
+                )
+            }
+            if (response.code >= 500 || response.code == 408 || response.code == 429) {
+                return Result.failure(
+                    ConditionalSaveUnknownException(
+                        request.requestId,
+                        IllegalStateException("Server returned HTTP ${response.code}."),
+                    ),
+                )
+            }
+            return Result.failure(
+                IllegalStateException(response.errorMessage ?: "Uložení se nezdařilo (${response.code})."),
+            )
+        }
+        val envelope = response.asJsonObject()
+            ?: return Result.failure(ConditionalSaveUnknownException(request.requestId))
+        return when (envelope.plainString("status")) {
+            "conflict" -> {
+                val reason = envelope.plainString("reason").ifBlank { "unknown_conflict" }
+                val current = try {
+                    readEntrySnapshot(request.date, userId)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    return Result.failure(
+                        ConditionalSaveConflictException(reason, null, failure.message ?: CONNECT_FAILED),
+                    )
+                }
+                Result.failure(ConditionalSaveConflictException(reason, current))
+            }
+            "saved" -> {
+                val entryId = envelope.plainString("entry_id")
+                val revision = if (envelope.has("revision")) envelope.optLong("revision") else 0L
+                if (entryId.isBlank() || revision < 1) {
+                    return Result.failure(ConditionalSaveUnknownException(request.requestId))
+                }
+                if (authorizedUserId() != userId) {
+                    return Result.failure(SessionOwnerMismatchException())
+                }
+                val receipt = ConditionalSaveReceipt(
+                    entryId = entryId,
+                    revision = revision,
+                    replayed = envelope.optBoolean("replayed", false),
+                )
+                val cached = envelope.optJSONObject("entry") ?: buildCacheRow(payload, entry, receipt)
+                runCatching { cacheFor(userId)?.upsertRows(listOf(cached)) }
+                cleanupPhotoCandidates(
+                    request.date,
+                    preservePaths = entry.photoPath?.takeIf { !entry.clearPhoto }?.let(::setOf).orEmpty(),
+                    confirmedPaths = entry.photoPath?.takeIf { !entry.clearPhoto }?.let(::setOf).orEmpty(),
+                )
+                if (!receipt.replayed) {
+                    runCatching {
+                        ownerClient(userId).post("rpc/check_achievements", buildAchievementsPayload(entry, userId))
+                    }
+                }
+                Result.success(receipt)
+            }
+            else -> Result.failure(ConditionalSaveUnknownException(request.requestId))
+        }
+    }
+
+    private fun buildCacheRow(
+        payload: JSONObject,
+        entry: DiaryEntry,
+        receipt: ConditionalSaveReceipt,
+    ): JSONObject = JSONObject(payload.toString()).apply {
+        remove("clear_photo")
+        remove("clear_scale_ids")
+        if (entry.clearPhoto) put("photo_path", JSONObject.NULL)
+        if (entry.clearedScaleIds.isNotEmpty()) {
+            val scales = optJSONObject("scale_values") ?: JSONObject()
+            entry.clearedScaleIds.forEach(scales::remove)
+            put("scale_values", scales)
+        }
+        put("id", receipt.entryId)
+        put("revision", receipt.revision)
     }
 
     /** Caller holds the per-date lock when an owner-bound outbox is present. */
@@ -905,10 +1121,11 @@ class EntriesRepository(
          * empty one) can never blank out what the AI endpoint stored. That is the
          * behaviour of `src/app/api/save-entry/route.ts` on the web side.
          *
-         * `photo_path` is omitted when the form asked to remove the photo: the RPC
-         * only assigns keys present in the payload, so sending nothing keeps the
-         * old value until [save] clears it with a null PATCH. An ordinary edit of a
-         * day that still has its photo keeps sending the URL, exactly as before.
+         * `photo_path` is omitted when the form asked to remove the photo. Legacy
+         * callers still clear it after persistence; the foreground v2 request carries
+         * an explicit `clear_photo` intent so the column clear is part of the atomic
+         * RPC transaction. An ordinary edit of a day that still has its photo keeps
+         * sending the URL, exactly as before.
          */
         fun buildPayload(entry: DiaryEntry, userId: String, date: String): JSONObject =
             JSONObject().apply {
@@ -968,8 +1185,13 @@ class EntriesRepository(
  */
 data class DatedEntry(val date: String, val entry: DiaryEntry)
 
-/** A server entry plus an optional row revision (`updated_at`) for draft comparison. */
-data class StoredEntrySnapshot(val entry: DiaryEntry, val updatedAt: String?)
+/** A server entry together with the row identity/revision used by foreground compare-and-swap. */
+data class StoredEntrySnapshot(
+    val entry: DiaryEntry,
+    val updatedAt: String?,
+    val id: String? = null,
+    val revision: Long? = null,
+)
 
 /**
  * The save went to the on-device outbox instead of the server. It is retained for

@@ -43,6 +43,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import cz.digitalnivedomi.diarium.core.data.ActivityDef
 import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
+import cz.digitalnivedomi.diarium.core.data.ConditionalEntrySaveRequest
+import cz.digitalnivedomi.diarium.core.data.ConditionalSaveConflictException
+import cz.digitalnivedomi.diarium.core.data.ConditionalSaveReceipt
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.DraftRecord
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
@@ -101,10 +104,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Sections, in the web's order: datum, nálada, spánek, stres, aktivity, návyky,
  * vděčnost, počasí, fotka, škály, poznámka, cíle (read-only progress computed from
- * the diary), the read-only screen time and the AI reflection. Saving goes through
- * `save_daily_entry(jsonb)`; the
- * reflection comes from our `/api/ai/reflect` endpoint, called with the signed-in
- * user's JWT, and is stored on the entry by a second save.
+ * the diary), the read-only screen time and the AI reflection. Foreground writes use
+ * `save_daily_entry_v2` with the row token captured by the day's successful read.
+ * Date moves and offline replay remain separate paths.
  *
  * State lives in [CheckInStateHolder] so the whole form is drivable from a JVM
  * test; [CheckInDeps] carries the repositories so the screen renders offline.
@@ -163,7 +165,16 @@ fun CheckInScreen(
         if (d.ownerId != ownerId) return
         if (!s.draftDirty || s.saved || s.saving || s.draftStoreError != null || !s.entry.hasContent()) return
         if (draftRecovery != null || pendingRecovery != null) return
-        val flush = d.flush(s.date, s.entry, s.baselineUpdatedAt, s.baselineExists)
+        val flush = d.flush(
+            s.date,
+            s.entry,
+            s.baselineUpdatedAt,
+            s.baselineExists,
+            s.baselineId,
+            s.baselineRevision,
+            s.pendingSaveRequestId,
+            s.pendingAiReflection,
+        )
         flush.invokeOnCompletion { failure ->
             if (failure != null && failure !is CancellationException) {
                 // The write outlives this screen's coroutine. Report failure back on
@@ -193,6 +204,10 @@ fun CheckInScreen(
                     snapshot.entry,
                     snapshot.baselineUpdatedAt,
                     snapshot.baselineExists,
+                    snapshot.baselineId,
+                    snapshot.baselineRevision,
+                    snapshot.pendingSaveRequestId,
+                    snapshot.pendingAiReflection,
                 )
                 true
             } ?: false
@@ -286,7 +301,16 @@ fun CheckInScreen(
         holder.setLoading(true)
         val staged = drafts?.takeIf { it.ownerId == ownerId }?.let { store ->
             if (snapshot.draftDirty && !snapshot.saved && snapshot.entry.hasContent()) {
-                store.stage(snapshot.date, snapshot.entry, snapshot.baselineUpdatedAt, snapshot.baselineExists)
+                store.stage(
+                    snapshot.date,
+                    snapshot.entry,
+                    snapshot.baselineUpdatedAt,
+                    snapshot.baselineExists,
+                    snapshot.baselineId,
+                    snapshot.baselineRevision,
+                    snapshot.pendingSaveRequestId,
+                    snapshot.pendingAiReflection,
+                )
             } else {
                 null
             }
@@ -379,6 +403,10 @@ fun CheckInScreen(
                     stored = true,
                     baselineUpdatedAt = savedDraft.baselineUpdatedAt,
                     baselineExists = savedDraft.baselineExists,
+                    baselineId = savedDraft.baselineId,
+                    baselineRevision = savedDraft.baselineRevision,
+                    pendingSaveRequestId = savedDraft.pendingSaveRequestId,
+                    pendingAiReflection = savedDraft.pendingAiReflection,
                     editingOverride = false,
                 )
             } else {
@@ -412,6 +440,10 @@ fun CheckInScreen(
                 queuedOffline = queued != null,
                 baselineUpdatedAt = local?.baselineUpdatedAt,
                 baselineExists = local?.baselineExists,
+                baselineId = local?.baselineId,
+                baselineRevision = local?.baselineRevision,
+                pendingSaveRequestId = local?.pendingSaveRequestId,
+                pendingAiReflection = local?.pendingAiReflection,
             )
             return@LaunchedEffect
         }
@@ -429,7 +461,12 @@ fun CheckInScreen(
                 )
             }
         val conflictingDraft = effectiveDraft?.takeIf {
-            it.conflictsWith(remoteExists = remote != null, remoteUpdatedAt = remote?.updatedAt)
+            it.pendingSaveRequestId == null && it.conflictsWith(
+                remoteExists = remote != null,
+                remoteUpdatedAt = remote?.updatedAt,
+                remoteId = remote?.id,
+                remoteRevision = remote?.revision,
+            )
         }
         draftRecovery = conflictingDraft?.let { DraftRecoveryView(it, remote, null) }
         draftRecoveryChoice = if (conflictingDraft != null) {
@@ -464,12 +501,27 @@ fun CheckInScreen(
             queued != null -> queued.baselineExists
             else -> remote != null
         }
+        val baselineId = when {
+            unresolved -> remote?.id
+            effectiveDraft != null -> effectiveDraft.baselineId
+            else -> remote?.id
+        }
+        val baselineRevision = when {
+            unresolved -> remote?.revision
+            effectiveDraft != null -> effectiveDraft.baselineRevision
+            else -> remote?.revision
+        }
+        val pendingRequestId = if (unresolved) null else effectiveDraft?.pendingSaveRequestId
         val localNeedsEditing = localEntry != null && !unresolved
         holder.load(
             displayed,
             stored = stored,
             baselineUpdatedAt = baselineUpdatedAt,
             baselineExists = baselineExists,
+            baselineId = baselineId,
+            baselineRevision = baselineRevision,
+            pendingSaveRequestId = pendingRequestId,
+            pendingAiReflection = if (unresolved) null else effectiveDraft?.pendingAiReflection,
             queuedOffline = queued != null,
             editingOverride = if (unresolved) false else localNeedsEditing,
         )
@@ -489,14 +541,23 @@ fun CheckInScreen(
     }
 
     // Debounced draft autosave (the web's localStorage `diarium_draft_{date}`).
-    LaunchedEffect(ownerId, drafts, state.date, state.entry, state.saved, state.saving, state.draftDirty, state.baselineUpdatedAt, state.baselineExists, draftRecovery, pendingRecovery) {
+    LaunchedEffect(ownerId, drafts, state.date, state.entry, state.saved, state.saving, state.draftDirty, state.baselineUpdatedAt, state.baselineExists, state.baselineId, state.baselineRevision, state.pendingSaveRequestId, state.pendingAiReflection, draftRecovery, pendingRecovery) {
         if (drafts == null) return@LaunchedEffect
         if (state.saved || state.saving || !state.draftDirty || !state.entry.hasContent()) return@LaunchedEffect
         if (draftRecovery != null || pendingRecovery != null) return@LaunchedEffect
         if (state.draftStoreError != null) return@LaunchedEffect
         delay(1200)
         try {
-            drafts.save(state.date, state.entry, state.baselineUpdatedAt, state.baselineExists)
+            drafts.save(
+                state.date,
+                state.entry,
+                state.baselineUpdatedAt,
+                state.baselineExists,
+                state.baselineId,
+                state.baselineRevision,
+                state.pendingSaveRequestId,
+                state.pendingAiReflection,
+            )
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -523,41 +584,84 @@ fun CheckInScreen(
      * already switched away from.
      */
     suspend fun persistEntry(
-        date: String,
-        entry: DiaryEntry,
+        request: ConditionalEntrySaveRequest,
         baselineUpdatedAt: String?,
-        baselineExists: Boolean?,
         stagedDraft: Deferred<Unit>? = null,
-    ): Result<Unit> {
+    ): Result<ConditionalSaveReceipt> {
         val repo = entriesRepo
             ?: return Result.failure(IllegalStateException("Ukládání vyžaduje přihlášení."))
+        val draftStore = drafts?.takeIf { it.ownerId == request.ownerId }
+            ?: return Result.failure(
+                IllegalStateException("Místní návrh nelze bezpečně uložit pro tento účet. Server nebyl změněn."),
+            )
         try {
-            (stagedDraft ?: drafts?.takeIf { it.ownerId == ownerId }?.stage(
-                date,
-                entry,
+            (stagedDraft ?: draftStore.stage(
+                request.date,
+                request.entry,
                 baselineUpdatedAt,
-                baselineExists,
-            ))?.await()
+                request.baseline.exists,
+                request.baseline.id,
+                request.baseline.revision,
+                request.requestId,
+                request.entry.aiReflection.takeIf { request.writeAiReflection },
+            )).await()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
             return Result.failure(failure)
         }
-        val saved = repo.save(
-            entry,
-            date,
-            baselineUpdatedAt = baselineUpdatedAt,
-            baselineExists = baselineExists,
-        )
+        val saved = repo.save(request)
         if (saved.isSuccess) {
             try {
-                drafts?.clearIfUnchanged(date, entry)
+                draftStore.clearIfUnchanged(request.date, request.entry, request.requestId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: IOException) {
-                // The remote write succeeded; keep the local copy for recovery and
-                // log only the exception type, never the journal or user data.
                 Log.w("CheckInDraft", "Local cleanup failed after server save (${failure.javaClass.simpleName})")
+            }
+        } else {
+            val conflict = saved.exceptionOrNull() as? ConditionalSaveConflictException
+            if (conflict != null) {
+                try {
+                    if (!draftStore.clearRequestForConflict(request.date, request.entry, request.requestId)) {
+                        Log.w("CheckInDraft", "Conflict request marker no longer matched the stored draft")
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    Log.w("CheckInDraft", "Conflict marker cleanup failed (${failure.javaClass.simpleName})")
+                    if (holder.date == request.date && ownerId == request.ownerId) {
+                        holder.markDraftStoreFailed(DRAFT_STORE_WRITE_FAILED_MESSAGE)
+                    }
+                }
+                if (holder.date == request.date && ownerId == request.ownerId) {
+                    val record = DraftRecord(
+                        ownerId = request.ownerId,
+                        date = request.date,
+                        entry = request.entry,
+                        baselineUpdatedAt = baselineUpdatedAt,
+                        baselineExists = request.baseline.exists,
+                        baselineId = request.baseline.id,
+                        baselineRevision = request.baseline.revision,
+                        pendingSaveRequestId = null,
+                        pendingAiReflection = request.entry.aiReflection.takeIf { request.writeAiReflection },
+                    )
+                    draftRecovery = DraftRecoveryView(record, conflict.currentSnapshot, conflict.currentReadError)
+                    draftRecoveryChoice = DraftRecoveryChoice.UNRESOLVED
+                    pendingRecovery = null
+                    if (conflict.currentReadError != null) {
+                        holder.markLoadFailed(
+                            message = conflict.currentReadError,
+                            draft = request.entry,
+                            baselineUpdatedAt = baselineUpdatedAt,
+                            baselineExists = request.baseline.exists,
+                            baselineId = request.baseline.id,
+                            baselineRevision = request.baseline.revision,
+                            pendingSaveRequestId = null,
+                            pendingAiReflection = request.entry.aiReflection.takeIf { request.writeAiReflection },
+                        )
+                    }
+                }
             }
         }
         return saved
@@ -572,8 +676,7 @@ fun CheckInScreen(
 
     fun save() {
         if (dateNavigationGuard.get()) return
-        val repo = entriesRepo
-        if (repo == null) {
+        if (entriesRepo == null) {
             holder.markError("Ukládání vyžaduje přihlášení.")
             return
         }
@@ -581,46 +684,35 @@ fun CheckInScreen(
             holder.markError(DRAFT_CONFLICT_BLOCKED_MESSAGE)
             return
         }
-        // A failed read means we do not know what is stored: writing now would
-        // replace it with an empty/draft payload. The retry is the only way forward.
-        val loadError = holder.state.loadError
-        if (loadError != null) {
+        if (holder.state.loadError != null) {
             holder.markError(LOAD_BLOCKED_MESSAGE)
             return
         }
-        // The load is still in flight: its answer would replace whatever is on screen,
-        // so a save now would write a form the user has not actually seen.
-        if (holder.state.loading) return
-        // The snapshot the whole save works from — date and entry together.
-        val date = holder.date
-        val entry = holder.entry
+        if (holder.state.loading || holder.state.saving) return
         val baselineUpdatedAt = holder.state.baselineUpdatedAt
-        val baselineExists = holder.state.baselineExists
-        // beginSave() is the double-tap guard: the second tap sees saving=true.
-        if (!holder.beginSave()) return
-        // Start an app-scope local write before launching the cancellable RPC job.
-        // The debounce effect is cancelled by saving=true, so it cannot be the
-        // durability guarantee for this snapshot.
-        val stagedDraft = drafts?.takeIf { it.ownerId == ownerId }?.stage(
-            date,
-            entry,
+        val request = ownerId?.let(holder::beginSaveRequest)
+        if (request == null) {
+            holder.markError(CONDITIONAL_BASELINE_REQUIRED_MESSAGE)
+            return
+        }
+        val stagedDraft = drafts?.takeIf { it.ownerId == request.ownerId }?.stage(
+            request.date,
+            request.entry,
             baselineUpdatedAt,
-            baselineExists,
+            request.baseline.exists,
+            request.baseline.id,
+            request.baseline.revision,
+            request.requestId,
+            request.entry.aiReflection.takeIf { request.writeAiReflection },
         )
         scope.launch {
-            val result = persistEntry(date, entry, baselineUpdatedAt, baselineExists, stagedDraft)
+            val result = persistEntry(request, baselineUpdatedAt, stagedDraft)
             if (result.isSuccess) {
-                // Pinned to the date the save started for: a switch during the RPC
-                // leaves the new day untouched.
-                holder.markSaved(date)
-                // The diary just changed under the goals: recompute the read-only
-                // progress so the section reflects the save without a reload.
+                val receipt = result.getOrThrow()
+                holder.markSaved(request.date, receipt)
                 val progressBefore = goalProgress
                 val progressAfter = goalsRepo?.loadProgress()
                 goalProgress = progressAfter
-                // A goal that crossed its target earns the celebration overlay. The
-                // AI request below starts immediately either way — the overlay only
-                // hides the dialog, it never delays the call.
                 val newlyMet = newlyMetGoals(progressBefore, progressAfter)
                 if (newlyMet.isNotEmpty()) {
                     celebrationSeen = 0
@@ -629,13 +721,10 @@ fun CheckInScreen(
             } else {
                 val error = result.exceptionOrNull()
                 if (error is QueuedOfflineException) {
-                    // The outbox is local-only: automatic replay cannot be made safe
-                    // without an atomic server compare-and-swap. The recovery panel
-                    // keeps the unsynced copy visible; never claim it was sent.
-                    holder.markQueuedOffline(date)
-                    refreshPendingRecovery(date)
+                    holder.markQueuedOffline(request.date)
+                    refreshPendingRecovery(request.date)
                 } else {
-                    holder.markError(error?.message ?: "Uložení se nezdařilo.", date)
+                    holder.markError(error?.message ?: "Uložení se nezdařilo.", request.date)
                 }
             }
         }
@@ -679,8 +768,6 @@ fun CheckInScreen(
         if (holder.state.reflectionLoading || holder.state.saving || holder.state.loading) return
         val date = holder.date
         val entry = holder.entry
-        val baselineUpdatedAt = holder.state.baselineUpdatedAt
-        val baselineExists = holder.state.baselineExists
         scope.launch {
             // The master switch is read once, before anything is saved or sent:
             // with AI off the whole flow is skipped.
@@ -691,56 +778,59 @@ fun CheckInScreen(
             }
 
             if (entry.hasContent() && !holder.state.saved) {
-                if (!holder.beginSave()) return@launch
-                val stagedDraft = drafts?.takeIf { it.ownerId == ownerId }?.stage(
-                    date,
-                    entry,
-                    baselineUpdatedAt,
-                    baselineExists,
-                )
-                val stored = persistEntry(date, entry, baselineUpdatedAt, baselineExists, stagedDraft)
-                if (stored.isFailure) {
-                    if (stored.exceptionOrNull() is QueuedOfflineException) {
-                        // Offline: the entry is in the outbox. The reflection is a
-                        // server call, so it waits for the flush — say so instead of
-                        // an error the user cannot act on.
-                        holder.markQueuedOffline(date)
-                        refreshPendingRecovery(date)
-                        holder.markReflectionError("Zápis je uložený jen v tomto telefonu; reflexe teď není dostupná.")
-                    } else {
-                        holder.markError(stored.exceptionOrNull()?.message ?: "Uložení se nezdařilo.", date)
-                        holder.markReflectionError("Nejdřív je potřeba uložit dnešní zápis.")
-                    }
+                val request = ownerId?.let(holder::beginSaveRequest)
+                if (request == null) {
+                    holder.markReflectionError(CONDITIONAL_BASELINE_REQUIRED_MESSAGE)
                     return@launch
                 }
-                // The day switched while the pre-save ran: do not touch the new day.
+                val stagedDraft = drafts?.takeIf { it.ownerId == request.ownerId }?.stage(
+                    request.date,
+                    request.entry,
+                    holder.state.baselineUpdatedAt,
+                    request.baseline.exists,
+                    request.baseline.id,
+                    request.baseline.revision,
+                    request.requestId,
+                    request.entry.aiReflection.takeIf { request.writeAiReflection },
+                )
+                val stored = persistEntry(request, holder.state.baselineUpdatedAt, stagedDraft)
+                if (stored.isFailure) {
+                    holder.markError(stored.exceptionOrNull()?.message ?: "Uložení se nezdařilo.", date)
+                    holder.markReflectionError("Nejdřív je potřeba bezpečně uložit dnešní zápis.")
+                    return@launch
+                }
                 if (holder.date != date) return@launch
-                // Not markSaved(): the manual flow must not pop the window open by
-                // itself, only the save button does.
-                holder.markReflectionStored(date)
+                holder.markReflectionStored(date, stored.getOrThrow())
             }
 
             holder.markReflectionLoading()
-            // The owner's own name (and birth year) make the reflection personal; the
-            // session's name stays the fallback for a profile that has none.
             val profileName = profile?.name?.takeIf { it.isNotBlank() } ?: repo.userName()
             repo.generate(date, entry, profileName, profile?.birthYear)
                 .onSuccess { text ->
-                    // The request is for the captured day; applying it to another
-                    // day would both mislabel the text and save it under the wrong date.
                     if (holder.date != date) return@onSuccess
                     holder.setReflection(text)
                     val reflectedEntry = holder.entry
-                    val stagedReflection = drafts?.takeIf { it.ownerId == ownerId }?.stage(
-                        date,
+                    val reflectedBaselineUpdatedAt = holder.state.baselineUpdatedAt
+                    val request = ownerId?.let(holder::beginSaveRequest)
+                    if (request == null) {
+                        holder.markReflectionError(CONDITIONAL_BASELINE_REQUIRED_MESSAGE)
+                        return@onSuccess
+                    }
+                    val stagedReflection = drafts?.takeIf { it.ownerId == request.ownerId }?.stage(
+                        request.date,
                         reflectedEntry,
-                        baselineUpdatedAt,
-                        baselineExists,
+                        reflectedBaselineUpdatedAt,
+                        request.baseline.exists,
+                        request.baseline.id,
+                        request.baseline.revision,
+                        request.requestId,
+                        request.entry.aiReflection.takeIf { request.writeAiReflection },
                     )
-                    persistEntry(date, reflectedEntry, baselineUpdatedAt, baselineExists, stagedReflection)
-                        .onSuccess { holder.markReflectionStored(date) }
+                    persistEntry(request, reflectedBaselineUpdatedAt, stagedReflection)
+                        .onSuccess { receipt -> holder.markReflectionStored(date, receipt) }
                         .onFailure {
-                            holder.markReflectionError("Reflexi se nepodařilo uložit k zápisu.")
+                            holder.markError(it.message ?: "Reflexi se nepodařilo uložit k zápisu.", date)
+                            holder.markReflectionError("Reflexi se nepodařilo bezpečně uložit k zápisu.")
                         }
                 }
                 .onFailure {
@@ -891,6 +981,10 @@ fun CheckInScreen(
                             stored = recovery.remote != null && isRecordedDay(recovery.remote.entry.mood),
                             baselineUpdatedAt = recovery.record.baselineUpdatedAt,
                             baselineExists = recovery.record.baselineExists,
+                            baselineId = recovery.record.baselineId,
+                            baselineRevision = recovery.record.baselineRevision,
+                            pendingSaveRequestId = null,
+                            pendingAiReflection = recovery.record.pendingAiReflection,
                             editingOverride = true,
                         )
                     }
@@ -904,6 +998,8 @@ fun CheckInScreen(
                             stored = snapshot != null && isRecordedDay(snapshot.entry.mood),
                             baselineUpdatedAt = snapshot?.updatedAt,
                             baselineExists = snapshot != null,
+                            baselineId = snapshot?.id,
+                            baselineRevision = snapshot?.revision,
                             editingOverride = false,
                         )
                     }
@@ -939,6 +1035,8 @@ fun CheckInScreen(
                             stored = snapshot != null && isRecordedDay(snapshot.entry.mood),
                             baselineUpdatedAt = snapshot?.updatedAt,
                             baselineExists = snapshot != null,
+                            baselineId = snapshot?.id,
+                            baselineRevision = snapshot?.revision,
                             editingOverride = false,
                         )
                     }
@@ -1390,7 +1488,7 @@ private fun DraftRecoveryPanel(
                 text = if (recovery.remoteError != null) {
                     "Serverovou kopii se nepodařilo načíst"
                 } else {
-                    "Místní návrh se liší od uloženého dne"
+                    "Serverová verze se od zahájení úpravy změnila"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
@@ -1401,7 +1499,7 @@ private fun DraftRecoveryPanel(
                 text = if (recovery.remoteError != null) {
                     "Místní návrh zůstává uložený. Nejdřív zkus znovu načíst serverovou kopii."
                 } else {
-                    "Na tento den jsou dvě verze. Vyber, kterou chceš prohlédnout. Obě kopie zůstanou zachované."
+                    "Na tento den jsou dvě verze. Místní návrh i kopie na serveru zůstávají zachované; prohlédni si obě."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
@@ -1438,7 +1536,7 @@ private fun DraftRecoveryPanel(
                 text = if (recovery.remoteError != null) {
                     "Ukládání je zablokované, dokud se nepodaří načíst serverovou kopii."
                 } else {
-                    "Ukládání je zablokované, protože server neumí bezpečně porovnat verze."
+                    "Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
@@ -1537,7 +1635,7 @@ private fun PendingRecoveryPanel(
                 text = if (recovery.remoteError != null) {
                     "Ukládání je zablokované, dokud se nepodaří načíst serverovou kopii."
                 } else {
-                    "Ukládání je zablokované, protože server neumí bezpečně porovnat verze."
+                    "Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
@@ -1661,9 +1759,12 @@ private const val DRAFT_STORE_WRITE_FAILED_MESSAGE = "Uložení se nezdařilo."
 /** A server read is required before the server copy can be reviewed. */
 private const val SERVER_UNAVAILABLE_MESSAGE = "Serverovou kopii se nepodařilo načíst."
 
-/** Review does not reconcile versions; writes stay blocked without an atomic server compare-and-swap. */
+/** A conflict never overwrites either copy; review is explicit and non-writing. */
 private const val DRAFT_CONFLICT_BLOCKED_MESSAGE =
-    "Ukládání je zablokované, protože server neumí bezpečně porovnat verze."
+    "Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše."
+
+private const val CONDITIONAL_BASELINE_REQUIRED_MESSAGE =
+    "Verzi serveru se nepodařilo bezpečně ověřit. Návrh zůstává v telefonu; zkus den znovu načíst."
 
 /** Fallback sentence for a read that failed without a message of its own. */
 private const val LOAD_FAILED_MESSAGE = "Zápis se nepodařilo načíst."

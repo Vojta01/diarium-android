@@ -101,7 +101,15 @@ class EnglishUiTest {
     }
 
     @Test
-    fun `recovery error asks to review both copies without promising a write`() {
+    fun `recovery copy review asks the user to review without promising a write`() {
+        assertEquals(
+            "The server version has changed since you started editing.",
+            translate("Serverová verze se od zahájení úpravy změnila"),
+        )
+        assertEquals(
+            "There are two versions of this day. The local draft and server copy are both preserved; review both.",
+            translate("Na tento den jsou dvě verze. Místní návrh i kopie na serveru zůstávají zachované; prohlédni si obě."),
+        )
         assertEquals(
             "The local draft is still saved. Retry loading the server copy to review it too.",
             translate("Místní návrh zůstává uložený. Nejdřív zkus znovu načíst serverovou kopii."),
@@ -111,8 +119,8 @@ class EnglishUiTest {
             translate("Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle."),
         )
         assertEquals(
-            "Saving is blocked because the server can't safely compare versions.",
-            translate("Ukládání je zablokované, protože server neumí bezpečně porovnat verze."),
+            "Saving remains blocked. Review both copies; choosing either won't overwrite anything.",
+            translate("Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše."),
         )
     }
 

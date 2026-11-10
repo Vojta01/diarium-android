@@ -29,11 +29,25 @@ data class DraftRecord(
     val baselineUpdatedAt: String?,
     /** null means this draft predates revision tracking and needs recovery on an existing day. */
     val baselineExists: Boolean? = null,
+    val baselineId: String? = null,
+    val baselineRevision: Long? = null,
+    /** Exact unresolved v2 write; retries must keep its payload and baseline unchanged. */
+    val pendingSaveRequestId: String? = null,
+    /** AI text explicitly included in that request; ordinary server text is not persisted. */
+    val pendingAiReflection: String? = null,
 ) {
-    fun conflictsWith(remoteExists: Boolean, remoteUpdatedAt: String?): Boolean {
+    fun conflictsWith(
+        remoteExists: Boolean,
+        remoteUpdatedAt: String?,
+        remoteId: String? = null,
+        remoteRevision: Long? = null,
+    ): Boolean {
         val hadRemoteEntry = baselineExists ?: return true
         if (hadRemoteEntry != remoteExists) return true
         if (!hadRemoteEntry) return false
+        if (baselineId != null && baselineRevision != null) {
+            return baselineId != remoteId || baselineRevision != remoteRevision
+        }
         val baseline = baselineUpdatedAt ?: return true
         val current = remoteUpdatedAt ?: return true
         return baseline != current
@@ -75,8 +89,21 @@ class DraftStore(
         entry: DiaryEntry,
         baselineUpdatedAt: String? = null,
         baselineExists: Boolean? = null,
+        baselineId: String? = null,
+        baselineRevision: Long? = null,
+        pendingSaveRequestId: String? = null,
+        pendingAiReflection: String? = null,
     ) {
-        stage(date, entry, baselineUpdatedAt, baselineExists).await()
+        stage(
+            date,
+            entry,
+            baselineUpdatedAt,
+            baselineExists,
+            baselineId,
+            baselineRevision,
+            pendingSaveRequestId,
+            pendingAiReflection,
+        ).await()
     }
 
     /**
@@ -90,6 +117,10 @@ class DraftStore(
         entry: DiaryEntry,
         baselineUpdatedAt: String? = null,
         baselineExists: Boolean? = null,
+        baselineId: String? = null,
+        baselineRevision: Long? = null,
+        pendingSaveRequestId: String? = null,
+        pendingAiReflection: String? = null,
     ): Deferred<Unit> {
         val owner = ownerId?.takeIf { it.isNotBlank() } ?: return CompletableDeferred(Unit)
         val mutation = mutationState(owner, date)
@@ -97,7 +128,17 @@ class DraftStore(
         // requested later must not overtake a newer stage that is already queued.
         return appScope.async(start = CoroutineStart.UNDISPATCHED) {
             mutation.mutex.withLock {
-                writeDraft(owner, date, entry, baselineUpdatedAt, baselineExists)
+                writeDraft(
+                    owner,
+                    date,
+                    entry,
+                    baselineUpdatedAt,
+                    baselineExists,
+                    baselineId,
+                    baselineRevision,
+                    pendingSaveRequestId,
+                    pendingAiReflection,
+                )
             }
         }
     }
@@ -108,7 +149,20 @@ class DraftStore(
         entry: DiaryEntry,
         baselineUpdatedAt: String? = null,
         baselineExists: Boolean? = null,
-    ): Deferred<Unit> = stage(date, entry, baselineUpdatedAt, baselineExists)
+        baselineId: String? = null,
+        baselineRevision: Long? = null,
+        pendingSaveRequestId: String? = null,
+        pendingAiReflection: String? = null,
+    ): Deferred<Unit> = stage(
+        date,
+        entry,
+        baselineUpdatedAt,
+        baselineExists,
+        baselineId,
+        baselineRevision,
+        pendingSaveRequestId,
+        pendingAiReflection,
+    )
 
     suspend fun loadRecord(date: String): DraftRecord? {
         val owner = ownerId?.takeIf { it.isNotBlank() } ?: return null
@@ -143,8 +197,12 @@ class DraftStore(
         }
     }
 
-    /** Clear only the draft snapshot a completed save actually persisted. */
-    suspend fun clearIfUnchanged(date: String, completed: DiaryEntry): Boolean {
+    /** A terminal CAS conflict is not retryable: keep its draft/token, release only its request id. */
+    suspend fun clearRequestForConflict(
+        date: String,
+        conflictedEntry: DiaryEntry,
+        conflictedRequestId: String,
+    ): Boolean {
         val owner = ownerId?.takeIf { it.isNotBlank() } ?: return false
         val mutation = mutationState(owner, date)
         return mutation.mutex.withLock {
@@ -152,7 +210,42 @@ class DraftStore(
             var cleared = false
             dataStore.edit { prefs ->
                 val current = prefs[key]?.let { decode(owner, date, it) }
-                if (current?.entry == completed) {
+                if (current != null && sameUserEntry(current.entry, conflictedEntry) &&
+                    current.pendingSaveRequestId == conflictedRequestId
+                ) {
+                    prefs[key] = encode(
+                        owner,
+                        current.entry,
+                        current.baselineUpdatedAt,
+                        current.baselineExists,
+                        current.baselineId,
+                        current.baselineRevision,
+                        null,
+                        current.pendingAiReflection,
+                    )
+                    cleared = true
+                }
+            }
+            cleared
+        }
+    }
+
+    /** Clear only the draft snapshot a completed save actually persisted. */
+    suspend fun clearIfUnchanged(
+        date: String,
+        completed: DiaryEntry,
+        completedRequestId: String? = null,
+    ): Boolean {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return false
+        val mutation = mutationState(owner, date)
+        return mutation.mutex.withLock {
+            val key = stringPreferencesKey(key(owner, date))
+            var cleared = false
+            dataStore.edit { prefs ->
+                val current = prefs[key]?.let { decode(owner, date, it) }
+                if (current != null && sameUserEntry(current.entry, completed) &&
+                    (completedRequestId == null || current.pendingSaveRequestId == completedRequestId)
+                ) {
                     prefs.remove(key)
                     cleared = true
                 }
@@ -167,6 +260,10 @@ class DraftStore(
         entry: DiaryEntry,
         baselineUpdatedAt: String?,
         baselineExists: Boolean?,
+        baselineId: String?,
+        baselineRevision: Long?,
+        pendingSaveRequestId: String?,
+        pendingAiReflection: String?,
     ) {
         val key = stringPreferencesKey(key(owner, date))
         dataStore.edit { prefs ->
@@ -175,21 +272,51 @@ class DraftStore(
             // Null is meaningful: it says the previous server revision was unknown.
             val baseline = if (prior != null) prior.baselineUpdatedAt else baselineUpdatedAt
             val existed = if (prior != null) prior.baselineExists else baselineExists
-            prefs[key] = encode(owner, entry, baseline, existed)
+            val baselineRowId = if (prior != null) prior.baselineId else baselineId
+            val baselineRowRevision = if (prior != null) prior.baselineRevision else baselineRevision
+            val sameEntry = prior != null && sameUserEntry(prior.entry, entry)
+            val requestId = when {
+                pendingSaveRequestId != null -> pendingSaveRequestId
+                sameEntry -> prior?.pendingSaveRequestId
+                else -> null
+            }
+            val reflection = pendingAiReflection ?: prior?.pendingAiReflection?.takeIf { sameEntry }
+            prefs[key] = encode(
+                owner,
+                entry,
+                baseline,
+                existed,
+                baselineRowId,
+                baselineRowRevision,
+                requestId,
+                reflection,
+            )
         }
     }
+
+    /** AI reflections are server-owned except while explicitly awaiting a CAS write. */
+    private fun sameUserEntry(left: DiaryEntry, right: DiaryEntry): Boolean =
+        left.copy(aiReflection = null) == right.copy(aiReflection = null)
 
     private fun encode(
         owner: String,
         entry: DiaryEntry,
         baselineUpdatedAt: String?,
         baselineExists: Boolean?,
+        baselineId: String?,
+        baselineRevision: Long?,
+        pendingSaveRequestId: String?,
+        pendingAiReflection: String?,
     ): String = JSONObject()
         .put("ownerId", owner)
         .put("entry", entry.toJson())
         .apply {
             baselineUpdatedAt?.let { put("baselineUpdatedAt", it) }
             baselineExists?.let { put("baselineExists", it) }
+            baselineId?.let { put("baselineId", it) }
+            baselineRevision?.let { put("baselineRevision", it) }
+            pendingSaveRequestId?.let { put("pendingSaveRequestId", it) }
+            pendingAiReflection?.let { put("pendingAiReflection", it) }
         }
         .toString()
 
@@ -201,12 +328,25 @@ class DraftStore(
             }
             val entry = json.optJSONObject("entry")?.let { DiaryEntry.fromJson(it.toString()) }
                 ?: throw IllegalArgumentException("Draft entry is missing.")
+            val pendingAiReflection = if (json.has("pendingAiReflection") && !json.isNull("pendingAiReflection")) {
+                json.optString("pendingAiReflection")
+            } else {
+                null
+            }
             DraftRecord(
                 ownerId = owner,
                 date = date,
-                entry = entry,
+                entry = pendingAiReflection?.let { entry.copy(aiReflection = it) } ?: entry,
                 baselineUpdatedAt = json.optString("baselineUpdatedAt").takeIf { it.isNotBlank() },
                 baselineExists = if (json.isNull("baselineExists")) null else json.optBoolean("baselineExists"),
+                baselineId = json.optString("baselineId").takeIf { it.isNotBlank() },
+                baselineRevision = if (json.has("baselineRevision") && !json.isNull("baselineRevision")) {
+                    json.optLong("baselineRevision")
+                } else {
+                    null
+                },
+                pendingSaveRequestId = json.optString("pendingSaveRequestId").takeIf { it.isNotBlank() },
+                pendingAiReflection = pendingAiReflection,
             )
         } catch (failure: DraftStoreReadException) {
             throw failure

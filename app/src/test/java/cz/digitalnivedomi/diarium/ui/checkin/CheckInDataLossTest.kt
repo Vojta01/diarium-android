@@ -125,6 +125,55 @@ class CheckInDataLossTest {
     // ── B: save/date race ──────────────────────────────────────────────────
 
     @Test
+    fun `foreground retry reuses its immutable request id until the user edits`() {
+        val holder = holder()
+        holder.load(
+            DiaryEntry(mood = 4, note = "retry this exact save"),
+            stored = true,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+        )
+
+        val first = holder.beginSaveRequest(OWNER_ID)!!
+        holder.markError("reply lost", DATE)
+        val retry = holder.beginSaveRequest(OWNER_ID)!!
+
+        assertEquals(first, retry)
+        holder.markError("reply lost again", DATE)
+        holder.setNote("changed after unknown outcome")
+        val edited = holder.beginSaveRequest(OWNER_ID)!!
+
+        assertTrue(first.requestId != edited.requestId)
+        assertEquals("changed after unknown outcome", edited.entry.note)
+        assertEquals(7L, edited.baseline.revision)
+    }
+
+    @Test
+    fun `restored pending reflection remains part of the same conditional retry`() {
+        val holder = holder()
+        val reflection = "Generated reflection awaiting confirmation"
+        holder.load(
+            DiaryEntry(mood = 4, note = "retry the reflected entry"),
+            stored = true,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+            pendingSaveRequestId = REQUEST_ID,
+            pendingAiReflection = reflection,
+        )
+
+        val first = holder.beginSaveRequest(OWNER_ID)!!
+        assertTrue(first.writeAiReflection)
+        assertEquals(reflection, first.entry.aiReflection)
+        holder.markError("reply lost", DATE)
+
+        val retry = holder.beginSaveRequest(OWNER_ID)!!
+        assertEquals(first, retry)
+        assertEquals(REQUEST_ID, retry.requestId)
+    }
+
+    @Test
     fun `markSaved is a no-op when the day changed during the save`() {
         val holder = holder()
         holder.selectMood(4, "🙂")
@@ -351,5 +400,8 @@ class CheckInDataLossTest {
 
     private companion object {
         const val DATE = "2026-09-10"
+        const val OWNER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
+        const val ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a36"
+        const val REQUEST_ID = "10000000-0000-4000-8000-000000000006"
     }
 }

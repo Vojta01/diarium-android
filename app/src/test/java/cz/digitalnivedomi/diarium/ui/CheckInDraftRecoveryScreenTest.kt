@@ -90,6 +90,71 @@ class CheckInDraftRecoveryScreenTest {
     }
 
     @Test
+    fun `foreground edit sends the loaded row token and a stable request id to v2`() = runBlocking {
+        val file = File.createTempFile("diarium_foreground_cas", ".preferences_pb").also { it.delete() }
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val dataStore = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        val drafts = DraftStore(dataStore, OWNER_ID)
+        val requests = CopyOnWriteArrayList<HttpRequest>()
+        val transport = HttpTransport { request ->
+            requests += request
+            when {
+                request.method == "GET" && request.url.contains("/entries?") -> HttpResponse(
+                    200,
+                    """[{"user_id":"$OWNER_ID","id":"$ROW_ID","date":"$DATE","revision":7,"mood":2,"mood_emoji":"😐","note":"server-side edit","updated_at":"$NEW_REVISION"}]""",
+                )
+                request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("status", "saved")
+                        .put("entry_id", ROW_ID)
+                        .put("revision", 8)
+                        .put("replayed", false)
+                        .toString(),
+                )
+                else -> HttpResponse(200, "{}")
+            }
+        }
+
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    CheckInScreen(
+                        deps = CheckInDeps(entries = repository(transportOverride = transport), drafts = drafts),
+                        today = LocalDate.parse(DATE),
+                        lateNight = false,
+                    )
+                }
+            }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithTag("checkin_edit").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("checkin_edit").performScrollTo().performClick()
+            compose.onNodeWithTag("note").performScrollTo().performTextInput("foreground update")
+            compose.onNodeWithTag("save_button").performScrollTo().performClick()
+            compose.waitUntil(TIMEOUT) {
+                requests.any { it.url.endsWith("/rpc/save_daily_entry_v2") }
+            }
+
+            val rpc = requests.single { it.url.endsWith("/rpc/save_daily_entry_v2") }
+            val body = JSONObject(rpc.body!!)
+            assertEquals(true, body.getBoolean("p_expected_exists"))
+            assertEquals(ROW_ID, body.getString("p_expected_id"))
+            assertEquals(7L, body.getLong("p_expected_revision"))
+            assertTrue(body.getString("p_request_id").matches(Regex("[0-9a-fA-F-]{36}")))
+            val payload = body.getJSONObject("p_payload")
+            assertEquals(OWNER_ID, payload.getString("user_id"))
+            assertEquals(DATE, payload.getString("date"))
+            assertTrue(payload.getString("note").contains("foreground update"))
+            assertTrue(requests.none { it.url.endsWith("/rpc/save_daily_entry") })
+            compose.waitUntil(TIMEOUT) { runBlocking { drafts.loadRecord(DATE) == null } }
+        } finally {
+            scope.coroutineContext[Job]?.cancelAndJoin()
+            file.delete()
+        }
+    }
+
+    @Test
     fun `server choice keeps the hidden local draft and blocks saves`() = runBlocking {
         val file = File.createTempFile("diarium_draft_recovery", ".preferences_pb").also { it.delete() }
         val scope = CoroutineScope(Dispatchers.IO + Job())
@@ -255,7 +320,7 @@ class CheckInDraftRecoveryScreenTest {
                 compose.onAllNodesWithContentDescription("Review the local draft")
                     .fetchSemanticsNodes().isNotEmpty()
             }
-            compose.onNodeWithText("The local draft differs from the saved day").assertExists()
+            compose.onNodeWithText("The server version has changed since you started editing.").assertExists()
             compose.onNodeWithContentDescription("Review the local draft").assertHasClickAction()
             compose.onNodeWithContentDescription("Review the saved day").assertHasClickAction()
             compose.onNodeWithText("Unsynced entry on this phone").assertExists()
@@ -267,7 +332,7 @@ class CheckInDraftRecoveryScreenTest {
             assertEquals(
                 2,
                 compose.onAllNodesWithText(
-                    "Saving is blocked because the server can't safely compare versions.",
+                    "Saving remains blocked. Review both copies; choosing either won't overwrite anything.",
                 ).fetchSemanticsNodes().size,
             )
             assertTrue(compose.onAllNodesWithTag("save_button").fetchSemanticsNodes().isEmpty())
@@ -348,12 +413,11 @@ class CheckInDraftRecoveryScreenTest {
             assertNull(drafts.loadRecord(DATE))
 
             compose.onNodeWithTag("date_prev").performScrollTo().performClick()
-            // DateNav's literal date is present in its child semantics, even when a merged-tree
-            // text matcher does not surface that descendant.
-            compose.onNodeWithText("2026-09-09", useUnmergedTree = true).assertExists()
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithTag("checkin_edit").fetchSemanticsNodes().isNotEmpty()
             }
+            // DateNav is intentionally hidden while the selected day's server row loads.
+            compose.onNodeWithText("2026-09-09", useUnmergedTree = true).assertExists()
             compose.onNodeWithTag("date_next").performScrollTo().performClick()
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithTag("checkin_edit").fetchSemanticsNodes().isNotEmpty()
@@ -778,11 +842,20 @@ class CheckInDraftRecoveryScreenTest {
             if (request.method == "GET" && request.url.contains("/entries?")) {
                 return HttpResponse(200, "[]")
             }
-            if (request.method != "GET") {
+            if (request.method == "POST" && request.url.endsWith("/rpc/save_daily_entry_v2")) {
                 writeStarted.countDown()
                 check(releaseWrite.await(10_000L, TimeUnit.MILLISECONDS)) {
                     "test did not release the gated save"
                 }
+                return HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("status", "saved")
+                        .put("entry_id", ROW_ID)
+                        .put("revision", 1)
+                        .put("replayed", false)
+                        .toString(),
+                )
             }
             return HttpResponse(200, "{}")
         }
@@ -936,12 +1009,13 @@ class CheckInDraftRecoveryScreenTest {
         const val DATE = "2026-09-10"
         const val OWNER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
         const val OTHER_OWNER_ID = "7f3d2c8a-1e4b-5a6f-9c20-3d5e7f9a1b24"
+        const val ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a36"
         const val BASE_URL = "https://example.supabase.co/rest/v1"
         const val OLD_REVISION = "2026-09-10T10:00:00Z"
         const val NEW_REVISION = "2026-09-10T11:00:00Z"
-        const val CONFLICT_TITLE = "Místní návrh se liší od uloženého dne"
+        const val CONFLICT_TITLE = "Serverová verze se od zahájení úpravy změnila"
         const val SAVING_BLOCKED =
-            "Ukládání je zablokované, protože server neumí bezpečně porovnat verze."
+            "Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše."
         const val PENDING_TITLE = "Nesynchronizovaný zápis v tomto telefonu"
         const val UNSYNCED_STATUS =
             "Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle."

@@ -198,17 +198,87 @@ class DraftStoreTest {
     }
 
     @Test
-    fun `draft server baseline metadata survives persistence`() = runBlocking {
+    fun `draft server baseline and unresolved request metadata survive persistence`() = runBlocking {
         val handle = newStore(tempFile())
         val date = "2026-09-13"
         val entry = DiaryEntry(mood = 4, note = "draft")
         val baseline = "2026-09-12T18:00:00Z"
 
-        handle.store.save(date, entry, baselineUpdatedAt = baseline, baselineExists = true)
+        handle.store.save(
+            date,
+            entry,
+            baselineUpdatedAt = baseline,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+            pendingSaveRequestId = REQUEST_ID,
+        )
 
         val restored = handle.store.loadRecord(date)
         assertEquals(baseline, restored?.baselineUpdatedAt)
         assertEquals(true, restored?.baselineExists)
+        assertEquals(ROW_ID, restored?.baselineId)
+        assertEquals(7L, restored?.baselineRevision)
+        assertEquals(REQUEST_ID, restored?.pendingSaveRequestId)
+        handle.close()
+    }
+
+    @Test
+    fun `server-owned fields omitted from drafts do not block completed-request cleanup`() = runBlocking {
+        val handle = newStore(tempFile())
+        val completed = DiaryEntry(mood = 4, note = "stored", aiReflection = "server-generated")
+        handle.store.save(
+            "2026-09-17",
+            completed,
+            pendingSaveRequestId = REQUEST_ID,
+            pendingAiReflection = "server-generated",
+        )
+        val restored = handle.store.loadRecord("2026-09-17")
+        assertEquals("server-generated", restored?.pendingAiReflection)
+        assertEquals("server-generated", restored?.entry?.aiReflection)
+
+        assertTrue(handle.store.clearIfUnchanged("2026-09-17", completed, REQUEST_ID))
+        assertNull(handle.store.loadRecord("2026-09-17"))
+        handle.close()
+    }
+
+    @Test
+    fun `a terminal conflict releases only the matching request id and retains the draft token`() = runBlocking {
+        val handle = newStore(tempFile())
+        val date = "2026-09-16"
+        val entry = DiaryEntry(mood = 4, note = "unsent conflict copy", aiReflection = "reflection awaiting CAS")
+        handle.store.save(
+            date,
+            entry,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+            pendingSaveRequestId = REQUEST_ID,
+            pendingAiReflection = "reflection awaiting CAS",
+        )
+
+        assertFalse(handle.store.clearRequestForConflict(date, entry, OTHER_REQUEST_ID))
+        assertEquals(REQUEST_ID, handle.store.loadRecord(date)?.pendingSaveRequestId)
+        assertTrue(handle.store.clearRequestForConflict(date, entry, REQUEST_ID))
+        val retained = handle.store.loadRecord(date)
+        assertEquals(entry, retained?.entry)
+        assertEquals(true, retained?.baselineExists)
+        assertEquals(ROW_ID, retained?.baselineId)
+        assertEquals(7L, retained?.baselineRevision)
+        assertEquals("reflection awaiting CAS", retained?.pendingAiReflection)
+        assertNull(retained?.pendingSaveRequestId)
+        handle.close()
+    }
+
+    @Test
+    fun `request id is part of conditional draft cleanup identity`() = runBlocking {
+        val handle = newStore(tempFile())
+        val entry = DiaryEntry(mood = 4, note = "retry safely")
+        handle.store.save("2026-09-15", entry, pendingSaveRequestId = REQUEST_ID)
+
+        assertFalse(handle.store.clearIfUnchanged("2026-09-15", entry, OTHER_REQUEST_ID))
+        assertEquals(REQUEST_ID, handle.store.loadRecord("2026-09-15")?.pendingSaveRequestId)
+        assertTrue(handle.store.clearIfUnchanged("2026-09-15", entry, REQUEST_ID))
         handle.close()
     }
 
@@ -248,6 +318,44 @@ class DraftStoreTest {
         assertNull("the original unknown baseline stays unknown", recovered?.baselineUpdatedAt)
         assertNull(recovered?.baselineExists)
         handle.close()
+    }
+
+    @Test
+    fun `draft CAS baseline compares both row id and server revision`() {
+        val base = DraftRecord(
+            ownerId = OWNER_A,
+            date = "2026-09-10",
+            entry = DiaryEntry(mood = 4, note = "unfinished edit"),
+            baselineUpdatedAt = "2026-09-10T10:00:00Z",
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+        )
+
+        assertFalse(
+            base.conflictsWith(
+                remoteExists = true,
+                remoteUpdatedAt = null,
+                remoteId = ROW_ID,
+                remoteRevision = 7,
+            ),
+        )
+        assertTrue(
+            base.conflictsWith(
+                remoteExists = true,
+                remoteUpdatedAt = null,
+                remoteId = ROW_ID,
+                remoteRevision = 8,
+            ),
+        )
+        assertTrue(
+            base.conflictsWith(
+                remoteExists = true,
+                remoteUpdatedAt = null,
+                remoteId = OTHER_ROW_ID,
+                remoteRevision = 7,
+            ),
+        )
     }
 
     @Test
@@ -453,6 +561,10 @@ class DraftStoreTest {
     private companion object {
         const val OWNER_A = "account-a"
         const val OWNER_B = "account-b"
+        const val ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a36"
+        const val OTHER_ROW_ID = "c9754ac3-cf12-40db-8615-04642f4590a4"
+        const val REQUEST_ID = "10000000-0000-4000-8000-000000000001"
+        const val OTHER_REQUEST_ID = "10000000-0000-4000-8000-000000000002"
     }
 
     private class GatedPreferencesDataStore(

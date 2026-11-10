@@ -739,6 +739,260 @@ class EntriesRepositoryWriteTest {
     }
 
     @Test
+    fun `foreground save includes the immutable baseline and request id`() = runTest {
+        val result = repository().save(
+            DiaryEntry(mood = 4, note = "synthetic"),
+            DATE,
+            baselineExists = false,
+            baselineId = null,
+            baselineRevision = null,
+            requestId = REQUEST_CREATE,
+        )
+
+        assertTrue(result.isSuccess)
+        val request = sent.single { it.url.endsWith("/rpc/save_daily_entry_v2") }
+        val body = JSONObject(request.body!!)
+        assertEquals(5, body.length())
+        assertEquals(false, body.getBoolean("p_expected_exists"))
+        assertTrue(body.has("p_expected_id") && body.isNull("p_expected_id"))
+        assertTrue(body.has("p_expected_revision") && body.isNull("p_expected_revision"))
+        assertEquals(REQUEST_CREATE, body.getString("p_request_id"))
+        assertTrue(body.getJSONObject("p_payload").has("note"))
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") })
+    }
+
+    @Test
+    fun `stale revision conflict returns server state and preserves the unsent payload`() = runTest {
+        val serverRow = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 8)
+            .put("mood", 2)
+            .put("note", "server copy")
+        respond = { request ->
+            when {
+                request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("status", "conflict")
+                        .put("reason", "stale_revision")
+                        .put("date", DATE)
+                        .put("current_id", ROW_ID)
+                        .put("current_revision", 8)
+                        .put("replayed", false)
+                        .toString(),
+                )
+                request.method == "GET" && request.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(serverRow).toString())
+                else -> null
+            }
+        }
+        val local = DiaryEntry(mood = 5, note = "unsent local edit")
+
+        val result = repository().save(
+            local,
+            DATE,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 7,
+            requestId = REQUEST_STALE,
+        )
+
+        val conflict = result.exceptionOrNull() as ConditionalSaveConflictException
+        assertEquals("stale_revision", conflict.reason)
+        assertEquals("server copy", conflict.currentSnapshot?.entry?.note)
+        assertEquals(ROW_ID, conflict.currentSnapshot?.id)
+        assertEquals(8L, conflict.currentSnapshot?.revision)
+        val sentPayload = JSONObject(sent.single { it.url.endsWith("/rpc/save_daily_entry_v2") }.body!!)
+            .getJSONObject("p_payload")
+        assertEquals("unsent local edit", sentPayload.getString("note"))
+        assertTrue("conflicts must not trigger a destructive fallback", sent.none {
+            it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" ||
+                (it.method == "DELETE" && it.url.contains("/scale_entries"))
+        })
+    }
+
+    @Test
+    fun `two absent-baseline foreground creates leave the first row untouched`() = runTest {
+        var created = false
+        val winner = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 1)
+            .put("mood", 3)
+            .put("note", "first create")
+        respond = { request ->
+            when {
+                request.url.endsWith("/rpc/save_daily_entry_v2") && !created -> {
+                    created = true
+                    HttpResponse(200, savedResponse(ROW_ID, 1).toString())
+                }
+                request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("status", "conflict")
+                        .put("reason", "row_exists")
+                        .put("date", DATE)
+                        .put("current_id", ROW_ID)
+                        .put("current_revision", 1)
+                        .put("replayed", false)
+                        .toString(),
+                )
+                request.method == "GET" && request.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(winner).toString())
+                else -> null
+            }
+        }
+
+        val first = repository().save(
+            DiaryEntry(mood = 3, note = "first create"), DATE,
+            baselineExists = false, requestId = REQUEST_CREATE,
+        )
+        val second = repository().save(
+            DiaryEntry(mood = 5, note = "racing create"), DATE,
+            baselineExists = false, requestId = REQUEST_RACE,
+        )
+
+        assertTrue(first.isSuccess)
+        assertEquals("first create", (second.exceptionOrNull() as ConditionalSaveConflictException)
+            .currentSnapshot?.entry?.note)
+        assertEquals(2, sent.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") })
+    }
+
+    @Test
+    fun `an unknown network outcome retries the identical request id and body`() = runTest {
+        var firstAttempt = true
+        respond = { request ->
+            when {
+                request.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt -> {
+                    firstAttempt = false // Synthetic server committed before the reply was lost.
+                    throw IOException("reply lost after commit")
+                }
+                request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                    200,
+                    savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString(),
+                )
+                else -> null
+            }
+        }
+
+        val first = repository().save(
+            DiaryEntry(mood = 4, note = "retry-safe"), DATE,
+            baselineExists = false, requestId = REQUEST_RETRY,
+        )
+        val second = repository().save(
+            DiaryEntry(mood = 4, note = "retry-safe"), DATE,
+            baselineExists = false, requestId = REQUEST_RETRY,
+        )
+
+        assertTrue(first.exceptionOrNull() is ConditionalSaveUnknownException)
+        assertTrue(second.isSuccess)
+        assertTrue(second.getOrThrow().replayed)
+        val requests = sent.filter { it.url.endsWith("/rpc/save_daily_entry_v2") }
+        assertEquals(2, requests.size)
+        assertEquals(requests[0].body, requests[1].body)
+        assertEquals(REQUEST_RETRY, JSONObject(requests[0].body!!).getString("p_request_id"))
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") })
+    }
+
+    @Test
+    fun `an unknown reflection-save outcome replays the identical reflection payload`() = runTest {
+        var firstAttempt = true
+        respond = { request ->
+            when {
+                request.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt -> {
+                    firstAttempt = false
+                    throw IOException("reply lost after commit")
+                }
+                request.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                else -> null
+            }
+        }
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "reflection owner", aiReflection = "Generated reflection"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_REFLECTION,
+            writeAiReflection = true,
+        )
+
+        val first = repository().save(request)
+        val second = repository().save(request)
+
+        assertTrue(first.exceptionOrNull() is ConditionalSaveUnknownException)
+        assertTrue(second.isSuccess)
+        val requests = sent.filter { it.url.endsWith("/rpc/save_daily_entry_v2") }
+        assertEquals(2, requests.size)
+        assertEquals(requests[0].body, requests[1].body)
+        assertEquals(
+            "Generated reflection",
+            JSONObject(requests[0].body!!).getJSONObject("p_payload").getString("ai_reflection"),
+        )
+    }
+
+    @Test
+    fun `a server without the v2 rpc fails closed without a legacy write`() = runTest {
+        respond = { request ->
+            if (request.url.endsWith("/rpc/save_daily_entry_v2")) {
+                HttpResponse(404, """{"message":"Could not find the function"}""")
+            } else null
+        }
+
+        val result = repository().save(
+            DiaryEntry(mood = 4, note = "kept as draft"), DATE,
+            baselineExists = false, requestId = REQUEST_OLD_SERVER,
+        )
+
+        assertTrue(result.isFailure)
+        assertEquals(1, sent.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") })
+        assertTrue(sent.none { it.method == "PATCH" || it.method == "DELETE" })
+    }
+
+    @Test
+    fun `an incomplete stored-row token is rejected before dispatch`() = runTest {
+        val result = repository().save(
+            ConditionalEntrySaveRequest(
+                ownerId = USER_ID,
+                date = DATE,
+                entry = DiaryEntry(mood = 4, note = "kept locally"),
+                baseline = EntryBaseline(exists = true, id = ROW_ID, revision = null),
+                requestId = REQUEST_STALE,
+            ),
+        )
+
+        assertTrue(result.exceptionOrNull() is ConditionalSaveUnavailableException)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun `a request pinned to account A sends nothing after switching to B`() = runTest {
+        sessionStore.save(
+            JSONObject().apply {
+                put("access_token", "jwt-account-b")
+                put("refresh_token", "refresh-b")
+                put("expires_at", System.currentTimeMillis() / 1000 + 3600)
+                put("user", JSONObject().put("id", OTHER_USER_ID))
+            },
+        )
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "A's private draft"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_CREATE,
+        )
+
+        val result = repository().save(request)
+
+        assertTrue(result.isFailure)
+        assertTrue("account A's pinned request must not be sent as B", sent.isEmpty())
+    }
+
+    @Test
     fun `photo and scale clears travel inside the atomic foreground rpc`() = runTest {
         val result = repository().save(
             DiaryEntry(
@@ -764,9 +1018,38 @@ class EntriesRepositoryWriteTest {
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
+    private fun savedResponse(
+        entryId: String,
+        revision: Long,
+        replayed: Boolean = false,
+        includeEntry: Boolean = true,
+    ): JSONObject = JSONObject()
+        .put("status", "saved")
+        .put("entry_id", entryId)
+        .put("revision", revision)
+        .put("replayed", replayed)
+        .apply {
+            if (includeEntry) {
+                put(
+                    "entry",
+                    JSONObject()
+                        .put("id", entryId)
+                        .put("date", DATE)
+                        .put("revision", revision),
+                )
+            }
+        }
+
     private fun savePayload(): JSONObject {
-        val post = sent.single { it.url.contains("/rpc/save_daily_entry") }
-        return JSONObject(post.body!!).getJSONObject("p_payload")
+        val post = sent.single {
+            it.url.endsWith("/rpc/save_daily_entry_v2") || it.url.endsWith("/rpc/save_daily_entry")
+        }
+        val body = JSONObject(post.body!!)
+        return if (post.url.endsWith("/rpc/save_daily_entry_v2")) {
+            body.getJSONObject("p_payload")
+        } else {
+            body
+        }
     }
 
     private fun decoded(request: HttpRequest): String =
@@ -789,7 +1072,12 @@ class EntriesRepositoryWriteTest {
     )
 
     private fun defaultResponse(request: HttpRequest): HttpResponse = when {
-        request.url.contains("/rpc/save_daily_entry") -> HttpResponse(200, "{}")
+        request.url.endsWith("/rpc/save_daily_entry_v2") -> {
+            val body = JSONObject(request.body!!)
+            val expectedRevision = if (body.isNull("p_expected_revision")) 0L else body.optLong("p_expected_revision")
+            HttpResponse(200, savedResponse(ROW_ID, expectedRevision + 1, includeEntry = false).toString())
+        }
+        request.url.endsWith("/rpc/save_daily_entry") -> HttpResponse(200, "{}")
         request.url.contains("/rpc/check_achievements") -> HttpResponse(200, "{}")
         request.method == "PATCH" && request.url.contains("/entries?") -> HttpResponse(204, "")
         request.method == "DELETE" && request.url.contains("/scale_entries") -> HttpResponse(204, "")
@@ -802,6 +1090,14 @@ class EntriesRepositoryWriteTest {
         const val DATE = "2026-09-10"
         const val TARGET_DATE = "2026-09-11"
         const val USER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
+        const val OTHER_USER_ID = "9e0a6e91-36c0-4e84-a6ed-f05d92e0d521"
+        const val ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a36"
+        const val REQUEST_CREATE = "10000000-0000-4000-8000-000000000001"
+        const val REQUEST_RACE = "10000000-0000-4000-8000-000000000002"
+        const val REQUEST_STALE = "10000000-0000-4000-8000-000000000003"
+        const val REQUEST_RETRY = "10000000-0000-4000-8000-000000000004"
+        const val REQUEST_OLD_SERVER = "10000000-0000-4000-8000-000000000005"
+        const val REQUEST_REFLECTION = "10000000-0000-4000-8000-000000000006"
         const val BASE_URL = "https://example.supabase.co/rest/v1"
     }
 }

@@ -82,6 +82,43 @@ class EntriesRepositoryLoadTest {
     }
 
     @Test
+    fun `a successful day snapshot carries the id and revision token`() = runTest {
+        respond = {
+            HttpResponse(
+                200,
+                JSONArray().put(
+                    JSONObject()
+                        .put("id", ROW_ID)
+                        .put("revision", 12)
+                        .put("updated_at", "2026-09-10T10:00:00Z")
+                        .put("date", DATE)
+                        .put("mood", 4)
+                        .put("note", "den"),
+                ).toString(),
+            )
+        }
+
+        val snapshot = repository().loadRemoteEntrySnapshot(DATE).getOrThrow()
+
+        assertEquals(ROW_ID, snapshot?.id)
+        assertEquals(12L, snapshot?.revision)
+        assertEquals("den", snapshot?.entry?.note)
+    }
+
+    @Test
+    fun `an absent successful snapshot is distinct from a failed read`() = runTest {
+        respond = { HttpResponse(200, "[]") }
+
+        val absent = repository().loadRemoteEntrySnapshot(DATE)
+
+        assertTrue(absent.isSuccess)
+        assertNull(absent.getOrNull())
+        respond = { throw IOException("offline") }
+        val failure = repository().loadRemoteEntrySnapshot(DATE)
+        assertTrue(failure.isFailure)
+    }
+
+    @Test
     fun `an HTTP error is a failure, not an empty day`() = runTest {
         respond = { HttpResponse(500, """{"message":"boom"}""") }
 
@@ -216,6 +253,7 @@ class EntriesRepositoryLoadTest {
     private companion object {
         const val DATE = "2026-09-10"
         const val USER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
+        const val ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a36"
         const val OTHER_USER_ID = "9e0a6e91-36c0-4e84-a6ed-f05d92e0d521"
         const val BASE_URL = "https://example.supabase.co/rest/v1"
     }

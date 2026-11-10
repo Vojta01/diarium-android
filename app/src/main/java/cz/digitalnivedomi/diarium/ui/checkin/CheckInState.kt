@@ -3,8 +3,12 @@ package cz.digitalnivedomi.diarium.ui.checkin
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import cz.digitalnivedomi.diarium.core.data.ConditionalEntrySaveRequest
+import cz.digitalnivedomi.diarium.core.data.ConditionalSaveReceipt
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
+import cz.digitalnivedomi.diarium.core.data.EntryBaseline
 import java.time.LocalDate
+import java.util.UUID
 
 /**
  * Everything the check-in form renders from.
@@ -34,6 +38,12 @@ data class CheckInUiState(
     val baselineUpdatedAt: String? = null,
     /** Whether a server row existed when this edit began; null means unverified. */
     val baselineExists: Boolean? = null,
+    val baselineId: String? = null,
+    val baselineRevision: Long? = null,
+    /** Reused only while the exact draft request remains unchanged after an unknown result. */
+    val pendingSaveRequestId: String? = null,
+    /** New generated AI text is part of the immutable pending request until confirmed. */
+    val pendingAiReflection: String? = null,
     val errorMessage: String? = null,
     /** A local draft read/write failed; retry before treating this day as editable. */
     val draftStoreError: String? = null,
@@ -175,6 +185,10 @@ class CheckInStateHolder(
             queuedOffline = false,
             baselineUpdatedAt = null,
             baselineExists = null,
+            baselineId = null,
+            baselineRevision = null,
+            pendingSaveRequestId = null,
+            pendingAiReflection = null,
             errorMessage = null,
             loadError = null,
             draftStoreError = null,
@@ -222,18 +236,27 @@ class CheckInStateHolder(
         stored: Boolean = false,
         baselineUpdatedAt: String? = null,
         baselineExists: Boolean? = stored,
+        baselineId: String? = null,
+        baselineRevision: Long? = null,
+        pendingSaveRequestId: String? = null,
+        pendingAiReflection: String? = null,
         queuedOffline: Boolean = false,
         editingOverride: Boolean? = null,
     ) {
         invalidatePhotoUploads()
+        val restoredEntry = pendingAiReflection?.let { entry.copy(aiReflection = it) } ?: entry
         state = state.copy(
-            entry = entry,
+            entry = restoredEntry,
             loading = false,
             saved = false,
             draftDirty = false,
             queuedOffline = queuedOffline,
             baselineUpdatedAt = baselineUpdatedAt,
             baselineExists = baselineExists,
+            baselineId = baselineId,
+            baselineRevision = baselineRevision,
+            pendingSaveRequestId = pendingSaveRequestId,
+            pendingAiReflection = pendingAiReflection,
             loadError = null,
             draftStoreError = null,
             storedEntry = stored,
@@ -242,7 +265,7 @@ class CheckInStateHolder(
             editing = editingOverride ?: pendingEdit,
             // The day already has a reflection when the row carried one — showing
             // it straight away is what the web does on load.
-            reflection = entry.aiReflection,
+            reflection = restoredEntry.aiReflection,
             reflectionLoading = false,
             reflectionError = null,
             // A freshly loaded (or restored) row is not a save, so it must not
@@ -269,22 +292,31 @@ class CheckInStateHolder(
         queuedOffline: Boolean = false,
         baselineUpdatedAt: String? = null,
         baselineExists: Boolean? = null,
+        baselineId: String? = null,
+        baselineRevision: Long? = null,
+        pendingSaveRequestId: String? = null,
+        pendingAiReflection: String? = null,
     ) {
         invalidatePhotoUploads()
+        val restoredDraft = pendingAiReflection?.let { draft?.copy(aiReflection = it) } ?: draft
         state = state.copy(
-            entry = draft ?: DiaryEntry.EMPTY,
+            entry = restoredDraft ?: DiaryEntry.EMPTY,
             loading = false,
             saving = false,
             saved = false,
             queuedOffline = queuedOffline,
             baselineUpdatedAt = baselineUpdatedAt,
             baselineExists = baselineExists,
+            baselineId = baselineId,
+            baselineRevision = baselineRevision,
+            pendingSaveRequestId = pendingSaveRequestId,
+            pendingAiReflection = pendingAiReflection,
             errorMessage = null,
             loadError = message,
             draftStoreError = null,
             storedEntry = false,
             editing = true,
-            reflection = draft?.aiReflection,
+            reflection = restoredDraft?.aiReflection,
             reflectionLoading = false,
             reflectionError = null,
             showReflectionDialog = false,
@@ -434,6 +466,32 @@ class CheckInStateHolder(
         return true
     }
 
+    /** Start a foreground v2 save with one stable id for the current immutable snapshot. */
+    fun beginSaveRequest(
+        ownerId: String,
+        writeAiReflection: Boolean = false,
+    ): ConditionalEntrySaveRequest? {
+        if (state.saving || state.loading || state.loadError != null || dateNavigationLocked) return null
+        val baseline = EntryBaseline(state.baselineExists, state.baselineId, state.baselineRevision)
+        if (!baseline.isValid) return null
+        val requestId = state.pendingSaveRequestId ?: UUID.randomUUID().toString()
+        invalidatePhotoUploads()
+        state = state.copy(
+            saving = true,
+            queuedOffline = false,
+            errorMessage = null,
+            pendingSaveRequestId = requestId,
+        )
+        return ConditionalEntrySaveRequest(
+            ownerId = ownerId,
+            date = state.date,
+            entry = state.entry,
+            baseline = baseline,
+            requestId = requestId,
+            writeAiReflection = writeAiReflection || state.pendingAiReflection != null,
+        )
+    }
+
     /** Kept for callers that only need the flag; [beginSave] is the guarded form. */
     fun markSaving() {
         beginSave()
@@ -450,7 +508,7 @@ class CheckInStateHolder(
      * that finishes after the user switched days must not mark the new day saved,
      * open its reflection window or clear its "Upravit" state.
      */
-    fun markSaved(expectedDate: String? = null) {
+    fun markSaved(expectedDate: String? = null, receipt: ConditionalSaveReceipt? = null) {
         if (expectedDate != null && expectedDate != state.date) return
         state = state.copy(
             entry = state.entry.copy(clearPhoto = false, photoPathToDelete = null),
@@ -460,6 +518,10 @@ class CheckInStateHolder(
             queuedOffline = false,
             baselineUpdatedAt = null,
             baselineExists = true,
+            baselineId = receipt?.entryId ?: state.baselineId,
+            baselineRevision = receipt?.revision ?: state.baselineRevision,
+            pendingSaveRequestId = null,
+            pendingAiReflection = null,
             errorMessage = null,
             showReflectionDialog = true,
         )
@@ -487,7 +549,7 @@ class CheckInStateHolder(
      * regenerate from inside the dialog must not resurrect a window the user
      * already dismissed, and a manual "Napsat reflexi" should not pop it open.
      */
-    fun markReflectionStored(expectedDate: String? = null) {
+    fun markReflectionStored(expectedDate: String? = null, receipt: ConditionalSaveReceipt? = null) {
         if (expectedDate != null && expectedDate != state.date) return
         state = state.copy(
             entry = state.entry.copy(clearPhoto = false, photoPathToDelete = null),
@@ -496,6 +558,10 @@ class CheckInStateHolder(
             draftDirty = false,
             baselineUpdatedAt = null,
             baselineExists = true,
+            baselineId = receipt?.entryId ?: state.baselineId,
+            baselineRevision = receipt?.revision ?: state.baselineRevision,
+            pendingSaveRequestId = null,
+            pendingAiReflection = null,
             errorMessage = null,
         )
     }
@@ -517,11 +583,14 @@ class CheckInStateHolder(
      */
     fun setReflection(text: String) {
         state = state.copy(
+            entry = state.entry.copy(aiReflection = text),
             reflection = text,
             reflectionLoading = false,
             reflectionError = null,
             saved = false,
             draftDirty = true,
+            pendingSaveRequestId = null,
+            pendingAiReflection = text,
         )
     }
 
@@ -537,6 +606,12 @@ class CheckInStateHolder(
         // The save snapshot is taken before the RPC goes out; letting a control edit
         // the model mid-flight would make the payload and the visible form disagree.
         if (state.saving || state.loading || dateNavigationLocked) return
-        state = state.copy(entry = entry, saved = false, draftDirty = true, queuedOffline = false)
+        state = state.copy(
+            entry = entry,
+            saved = false,
+            draftDirty = true,
+            queuedOffline = false,
+            pendingSaveRequestId = null,
+        )
     }
 }
