@@ -44,6 +44,19 @@ internal object EnStrings {
         "Nesynchronizovaný zápis v tomto telefonu" to "Unsynced entry on this phone",
         "Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle." to
             "Not synced — saved only on this phone. It will not be sent automatically.",
+        "Automatické opakování bylo zastaveno. Místní kopie i serverová verze zůstávají zachované; je nutná kontrola uživatele." to
+            "Automatic replay stopped. Both the local and server copies are preserved; user review is required.",
+        "Bezpečné automatické opakování používá stejný požadavek, původní revizi a účet. Zápis není potvrzený jako synchronizovaný, dokud server nepotvrdí výsledek." to
+            "Safe automatic replay uses the same request, original revision, and account. The entry is not marked synced until the server confirms the result.",
+        "Tento starší záznam nemá ověřenou původní revizi a identitu CAS. Zůstává nedotčený a nebude automaticky odeslán; je nutná kontrola uživatele." to
+            "This older entry has no verified original revision and CAS identity. It remains untouched and will not be sent automatically; user review is required.",
+        "Místní zápis vyžaduje ruční obnovu" to "Local entry requires manual recovery",
+        "Starší zápis nemá přiřazený účet. Nebyl přiřazen k tomuto přihlášení ani odeslán; zůstává v telefonu." to
+            "This older entry has no assigned account. It has not been attributed to this sign-in or sent; it remains on this phone.",
+        "Místní záznam nelze bezpečně ověřit. Zůstal nedotčený a automatické odeslání je zakázané." to
+            "The local record cannot be verified safely. It remains untouched; automatic sending is disabled.",
+        "Ukládání je zablokované, dokud kopii nezkontroluješ." to
+            "Saving is blocked until you review the copy.",
         "Serverovou kopii se nepodařilo načíst. Místní kopie zůstává uložená." to
             "Couldn't load the server copy. The local copy remains saved.",
         "Na serveru pro tento den není žádný záznam. Výběr nic neodešle ani nesmaže." to

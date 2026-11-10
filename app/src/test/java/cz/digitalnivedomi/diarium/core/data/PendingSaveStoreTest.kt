@@ -243,7 +243,7 @@ class PendingSaveStoreTest {
     }
 
     @Test
-    fun `legacy ownerless outbox records stay quarantined and are never replayed`() {
+    fun `legacy ownerless outbox records stay quarantined and are never replayed`() = runBlocking {
         val date = "2026-09-10"
         val legacy = JSONObject()
             .put("queuedAt", 12L)
@@ -256,8 +256,94 @@ class PendingSaveStoreTest {
         assertNull(accountB.peek(date))
         assertTrue(store.peekAll().isEmpty())
         assertTrue(accountB.peekAll().isEmpty())
+        assertEquals(
+            PendingSaveRecoveryIssueKind.OWNERLESS,
+            accountB.recoveryIssueForDate(date)?.kind,
+        )
+        var dispatchCount = 0
+        val flush = accountB.flushRecord(
+            date = date,
+            expectedOwnerId = OWNER_B,
+            currentOwnerId = { OWNER_B },
+            dispatch = {
+                dispatchCount++
+                Result.success(Unit)
+            },
+        )
+        assertEquals(PendingSaveFlush.Changed, flush)
+        assertEquals(0, dispatchCount)
         assertEquals("owner unknown", JSONObject(prefs.getString(date, null)!!)
             .getJSONObject("entry").getString("note"))
+    }
+
+    @Test
+    fun `conditional request round trips exactly after store recreation`() {
+        val request = casRequest()
+        assertFalse(store.enqueueConditional(request.copy(date = "2026-99-99")))
+        assertTrue(store.enqueueConditional(request, queuedAt = 41L))
+
+        val restartedStore = PendingSaveStore.from(context, OWNER_A)
+        val restored = restartedStore.peekRecord(request.date)
+
+        assertEquals(request, restored?.conditionalRequest)
+        assertEquals(request.entry, restored?.entry)
+        assertEquals(request.baseline.id, restored?.baselineId)
+        assertEquals(request.baseline.revision, restored?.baselineRevision)
+        assertTrue(restored?.isReplayable == true)
+    }
+
+    @Test
+    fun `unknown outcome retries the same CAS request after process restart`() = runBlocking {
+        val request = casRequest()
+        assertTrue(store.enqueueConditional(request))
+        val firstRecord = store.peekRecord(request.date)!!
+
+        val first = store.flushRecord(
+            date = request.date,
+            expectedOwnerId = OWNER_A,
+            currentOwnerId = { OWNER_A },
+            dispatch = { snapshot ->
+                assertEquals(request, snapshot.conditionalRequest)
+                Result.failure(ConditionalSaveUnknownException(request.requestId))
+            },
+        )
+        val restartedStore = PendingSaveStore.from(context, OWNER_A)
+        val second = restartedStore.flushRecord(
+            date = request.date,
+            expectedOwnerId = OWNER_A,
+            currentOwnerId = { OWNER_A },
+            dispatch = { snapshot ->
+                assertEquals(request, snapshot.conditionalRequest)
+                assertEquals(firstRecord.transactionId, snapshot.transactionId)
+                Result.success(Unit)
+            },
+        )
+
+        assertEquals(PendingSaveFlush.Retry, first)
+        assertTrue(second is PendingSaveFlush.Saved)
+        assertNull(restartedStore.peekRecord(request.date))
+    }
+
+    @Test
+    fun `CAS conflict is retained and marked for user recovery`() = runBlocking {
+        val request = casRequest()
+        store.enqueueConditional(request)
+
+        val result = store.flushRecord(
+            date = request.date,
+            expectedOwnerId = OWNER_A,
+            currentOwnerId = { OWNER_A },
+            dispatch = {
+                Result.failure(ConditionalSaveConflictException("stale_revision", null))
+            },
+        )
+        val retained = store.peekRecord(request.date)
+
+        assertTrue(result is PendingSaveFlush.RecoveryRequired)
+        assertEquals(request, retained?.conditionalRequest)
+        assertEquals(request.entry, retained?.entry)
+        assertTrue(retained?.recoveryReason?.contains("stale_revision") == true)
+        assertFalse(retained?.isReplayable == true)
     }
 
     @Test
@@ -290,7 +376,7 @@ class PendingSaveStoreTest {
     }
 
     @Test
-    fun `malformed values decode to null and are skipped by peekAll`() {
+    fun `malformed values decode to null and are skipped by peekAll`() = runBlocking {
         prefs.edit()
             // Not JSON at all.
             .putString(PendingSaveStore.key(OWNER_A, "2026-09-08"), "not json at all")
@@ -298,6 +384,17 @@ class PendingSaveStoreTest {
             .putString(
                 PendingSaveStore.key(OWNER_A, "2026-09-09"),
                 JSONObject().put("ownerId", OWNER_A).put("queuedAt", 42L).toString(),
+            )
+            // A purported versioned request with an incomplete payload must be quarantined.
+            .putString(
+                PendingSaveStore.key(OWNER_A, "2026-09-10"),
+                JSONObject()
+                    .put("ownerId", OWNER_A)
+                    .put("queuedAt", 43L)
+                    .put("transactionId", "legacy-transaction")
+                    .put("entry", JSONObject().put("mood", 4))
+                    .put("conditionalRequest", JSONObject().put("version", 1))
+                    .toString(),
             )
             .commit()
         store.enqueue("2026-09-11", DiaryEntry(mood = 4, note = "sends later"))
@@ -308,6 +405,36 @@ class PendingSaveStoreTest {
         val all = store.peekAll()
         assertEquals(listOf("2026-09-11"), all.map { it.date })
         assertEquals(1, all.size)
+        assertEquals(
+            PendingSaveRecoveryIssueKind.MALFORMED,
+            store.recoveryIssueForDate("2026-09-08")?.kind,
+        )
+        var dispatchCount = 0
+        val malformedFlush = store.flushRecord(
+            date = "2026-09-08",
+            expectedOwnerId = OWNER_A,
+            currentOwnerId = { OWNER_A },
+            dispatch = {
+                dispatchCount++
+                Result.success(Unit)
+            },
+        )
+        val conditionalMalformedFlush = store.flushRecord(
+            date = "2026-09-10",
+            expectedOwnerId = OWNER_A,
+            currentOwnerId = { OWNER_A },
+            dispatch = {
+                dispatchCount++
+                Result.success(Unit)
+            },
+        )
+        assertEquals(PendingSaveFlush.Changed, malformedFlush)
+        assertEquals(PendingSaveFlush.Changed, conditionalMalformedFlush)
+        assertEquals(0, dispatchCount)
+        assertEquals(
+            PendingSaveRecoveryIssueKind.MALFORMED,
+            store.recoveryIssueForDate("2026-09-10")?.kind,
+        )
         // Corrupt values are not flushable saves, so they are not counted as work.
         assertEquals(1, store.size())
     }
@@ -339,4 +466,13 @@ class PendingSaveStoreTest {
         const val OWNER_A = "account-a"
         const val OWNER_B = "account-b"
     }
+
+    private fun casRequest(): ConditionalEntrySaveRequest = ConditionalEntrySaveRequest(
+        ownerId = OWNER_A,
+        date = "2026-09-10",
+        entry = DiaryEntry(mood = 4, note = "queued CAS copy", aiReflection = "preserved reflection"),
+        baseline = EntryBaseline(true, "ecaf917a-7c84-4ad5-b657-cc5d9af10a36", 7L),
+        requestId = "10000000-0000-4000-8000-000000000007",
+        writeAiReflection = true,
+    )
 }

@@ -46,6 +46,7 @@ import cz.digitalnivedomi.diarium.core.data.AiReflectionRepository
 import cz.digitalnivedomi.diarium.core.data.ConditionalEntrySaveRequest
 import cz.digitalnivedomi.diarium.core.data.ConditionalSaveConflictException
 import cz.digitalnivedomi.diarium.core.data.ConditionalSaveReceipt
+import cz.digitalnivedomi.diarium.core.data.ConditionalSaveUnknownException
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.DraftRecord
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
@@ -53,6 +54,8 @@ import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.HabitDef
 import cz.digitalnivedomi.diarium.core.data.NoteTemplate
 import cz.digitalnivedomi.diarium.core.data.PendingSave
+import cz.digitalnivedomi.diarium.core.data.PendingSaveRecoveryIssue
+import cz.digitalnivedomi.diarium.core.data.PendingSaveRecoveryIssueKind
 import cz.digitalnivedomi.diarium.core.data.PickerDefaults
 import cz.digitalnivedomi.diarium.core.data.QueuedOfflineException
 import cz.digitalnivedomi.diarium.core.data.Scale
@@ -88,6 +91,7 @@ import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
+import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -146,6 +150,7 @@ fun CheckInScreen(
     var draftRecovery by remember(ownerId, state.date) { mutableStateOf<DraftRecoveryView?>(null) }
     var draftRecoveryChoice by remember(ownerId, state.date) { mutableStateOf(DraftRecoveryChoice.UNRESOLVED) }
     var pendingRecovery by remember(ownerId, state.date) { mutableStateOf<PendingRecoveryView?>(null) }
+    var pendingRecoveryIssue by remember(ownerId, state.date) { mutableStateOf<PendingSaveRecoveryIssue?>(null) }
     var pendingRecoveryChoice by remember(ownerId, state.date) { mutableStateOf(PendingRecoveryChoice.LOCAL) }
     var dateNavigationInProgress by remember(ownerId) { mutableStateOf(false) }
     val dateNavigationGuard = remember(ownerId) { AtomicBoolean(false) }
@@ -164,7 +169,7 @@ fun CheckInScreen(
         val s = holder.state
         if (d.ownerId != ownerId) return
         if (!s.draftDirty || s.saved || s.saving || s.draftStoreError != null || !s.entry.hasContent()) return
-        if (draftRecovery != null || pendingRecovery != null) return
+        if (draftRecovery != null || pendingRecovery != null || pendingRecoveryIssue != null) return
         val flush = d.flush(
             s.date,
             s.entry,
@@ -193,7 +198,7 @@ fun CheckInScreen(
     suspend fun persistDraftBeforeNavigation(snapshot: CheckInUiState): Result<Unit> {
         val d = drafts ?: return Result.success(Unit)
         if (d.ownerId != ownerId || !snapshot.draftDirty || snapshot.saved ||
-            !snapshot.entry.hasContent() || draftRecovery != null || pendingRecovery != null
+            !snapshot.entry.hasContent() || draftRecovery != null || pendingRecovery != null || pendingRecoveryIssue != null
         ) {
             return Result.success(Unit)
         }
@@ -228,6 +233,7 @@ fun CheckInScreen(
     suspend fun refreshPendingRecovery(date: String) {
         val repo = entriesRepo ?: return
         val record = repo.pendingSaveRecord(date)
+        pendingRecoveryIssue = repo.pendingSaveRecoveryIssue(date)
         if (record == null) {
             pendingRecovery = null
             return
@@ -388,6 +394,7 @@ fun CheckInScreen(
             return@LaunchedEffect
         }
         val queued = repo?.pendingSaveRecord(state.date)
+        pendingRecoveryIssue = repo?.pendingSaveRecoveryIssue(state.date)
         pendingRecoveryChoice = PendingRecoveryChoice.LOCAL
         if (repo == null) {
             pendingRecovery = null
@@ -498,20 +505,24 @@ fun CheckInScreen(
         val baselineExists = when {
             unresolved -> remote != null
             effectiveDraft != null -> effectiveDraft.baselineExists
-            queued != null -> queued.baselineExists
+            queued != null -> queued.conditionalRequest?.baseline?.exists ?: queued.baselineExists
             else -> remote != null
         }
         val baselineId = when {
             unresolved -> remote?.id
             effectiveDraft != null -> effectiveDraft.baselineId
+            queued != null -> queued.conditionalRequest?.baseline?.id ?: queued.baselineId
             else -> remote?.id
         }
         val baselineRevision = when {
             unresolved -> remote?.revision
             effectiveDraft != null -> effectiveDraft.baselineRevision
+            queued != null -> queued.conditionalRequest?.baseline?.revision ?: queued.baselineRevision
             else -> remote?.revision
         }
-        val pendingRequestId = if (unresolved) null else effectiveDraft?.pendingSaveRequestId
+        val pendingRequestId = if (unresolved) null else {
+            effectiveDraft?.pendingSaveRequestId ?: queued?.conditionalRequest?.requestId
+        }
         val localNeedsEditing = localEntry != null && !unresolved
         holder.load(
             displayed,
@@ -544,7 +555,7 @@ fun CheckInScreen(
     LaunchedEffect(ownerId, drafts, state.date, state.entry, state.saved, state.saving, state.draftDirty, state.baselineUpdatedAt, state.baselineExists, state.baselineId, state.baselineRevision, state.pendingSaveRequestId, state.pendingAiReflection, draftRecovery, pendingRecovery) {
         if (drafts == null) return@LaunchedEffect
         if (state.saved || state.saving || !state.draftDirty || !state.entry.hasContent()) return@LaunchedEffect
-        if (draftRecovery != null || pendingRecovery != null) return@LaunchedEffect
+        if (draftRecovery != null || pendingRecovery != null || pendingRecoveryIssue != null) return@LaunchedEffect
         if (state.draftStoreError != null) return@LaunchedEffect
         delay(1200)
         try {
@@ -611,6 +622,14 @@ fun CheckInScreen(
             return Result.failure(failure)
         }
         val saved = repo.save(request)
+        if (saved.exceptionOrNull() is ConditionalSaveUnknownException) {
+            val queued = repo.pendingSaveRecord(request.date)
+            if (queued?.ownerId == request.ownerId &&
+                queued.conditionalRequest?.requestId == request.requestId && queued.isReplayable
+            ) {
+                PendingSaveWorker.enqueue(context, request.ownerId)
+            }
+        }
         if (saved.isSuccess) {
             try {
                 draftStore.clearIfUnchanged(request.date, request.entry, request.requestId)
@@ -680,7 +699,7 @@ fun CheckInScreen(
             holder.markError("Ukládání vyžaduje přihlášení.")
             return
         }
-        if (draftRecovery != null || pendingRecovery != null) {
+        if (draftRecovery != null || pendingRecovery != null || pendingRecoveryIssue != null) {
             holder.markError(DRAFT_CONFLICT_BLOCKED_MESSAGE)
             return
         }
@@ -723,6 +742,11 @@ fun CheckInScreen(
                 if (error is QueuedOfflineException) {
                     holder.markQueuedOffline(request.date)
                     refreshPendingRecovery(request.date)
+                } else if (error is ConditionalSaveUnknownException &&
+                    entriesRepo.pendingSaveRecord(request.date)?.conditionalRequest?.requestId == request.requestId
+                ) {
+                    holder.markQueuedOffline(request.date)
+                    refreshPendingRecovery(request.date)
                 } else {
                     holder.markError(error?.message ?: "Uložení se nezdařilo.", request.date)
                 }
@@ -759,7 +783,7 @@ fun CheckInScreen(
             holder.markReflectionError(LOAD_BLOCKED_MESSAGE)
             return
         }
-        if (draftRecovery != null || pendingRecovery != null) {
+        if (draftRecovery != null || pendingRecovery != null || pendingRecoveryIssue != null) {
             holder.markReflectionError(DRAFT_CONFLICT_BLOCKED_MESSAGE)
             return
         }
@@ -1017,10 +1041,15 @@ fun CheckInScreen(
                 onShowLocal = {
                     if (canChooseCopy) {
                         pendingRecoveryChoice = PendingRecoveryChoice.LOCAL
+                        val request = recovery.record.conditionalRequest
                         holder.load(
                             entry = recovery.record.entry,
                             baselineUpdatedAt = recovery.record.baselineUpdatedAt,
-                            baselineExists = recovery.record.baselineExists,
+                            baselineExists = request?.baseline?.exists ?: recovery.record.baselineExists,
+                            baselineId = request?.baseline?.id ?: recovery.record.baselineId,
+                            baselineRevision = request?.baseline?.revision ?: recovery.record.baselineRevision,
+                            pendingSaveRequestId = request?.requestId,
+                            pendingAiReflection = request?.entry?.aiReflection.takeIf { request?.writeAiReflection == true },
                             queuedOffline = true,
                             editingOverride = true,
                         )
@@ -1047,6 +1076,11 @@ fun CheckInScreen(
                     null
                 },
             )
+            Spacer(Modifier.height(12.dp))
+        }
+
+        pendingRecoveryIssue?.let { issue ->
+            PendingSaveRecoveryIssuePanel(issue)
             Spacer(Modifier.height(12.dp))
         }
 
@@ -1104,7 +1138,7 @@ fun CheckInScreen(
         }
         Spacer(Modifier.height(16.dp))
 
-        if (draftRecovery != null || pendingRecovery != null) {
+        if (draftRecovery != null || pendingRecovery != null || pendingRecoveryIssue != null) {
             // Recovery copies are review-only. A form here would invite edits that
             // cannot be safely saved and could obscure which persisted copy is being
             // inspected. Both source records remain untouched.
@@ -1599,7 +1633,14 @@ private fun PendingRecoveryPanel(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle.",
+                text = when {
+                    recovery.record.recoveryReason != null ->
+                        "Automatické opakování bylo zastaveno. Místní kopie i serverová verze zůstávají zachované; je nutná kontrola uživatele."
+                    recovery.record.isReplayable ->
+                        "Bezpečné automatické opakování používá stejný požadavek, původní revizi a účet. Zápis není potvrzený jako synchronizovaný, dokud server nepotvrdí výsledek."
+                    else ->
+                        "Tento starší záznam nemá ověřenou původní revizi a identitu CAS. Zůstává nedotčený a nebude automaticky odeslán; je nutná kontrola uživatele."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextPrimary,
             )
@@ -1680,6 +1721,35 @@ private fun PendingRecoveryPanel(
         } else if (recovery.remoteError == null) {
             RecoveryCopyPreview("Uložený den na serveru", DiaryEntry.EMPTY)
         }
+    }
+}
+
+@Composable
+private fun PendingSaveRecoveryIssuePanel(issue: PendingSaveRecoveryIssue) {
+    GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
+        Text(
+            text = "Místní zápis vyžaduje ruční obnovu",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = TextPrimary,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = when (issue.kind) {
+                PendingSaveRecoveryIssueKind.OWNERLESS ->
+                    "Starší zápis nemá přiřazený účet. Nebyl přiřazen k tomuto přihlášení ani odeslán; zůstává v telefonu."
+                PendingSaveRecoveryIssueKind.MALFORMED ->
+                    "Místní záznam nelze bezpečně ověřit. Zůstal nedotčený a automatické odeslání je zakázané."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextPrimary,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Den: ${issue.date}. Ukládání je zablokované, dokud kopii nezkontroluješ.",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+        )
     }
 }
 

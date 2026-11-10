@@ -2,6 +2,7 @@ package cz.digitalnivedomi.diarium.sync
 
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -22,6 +23,15 @@ class PendingSaveWorkerTest {
     @Test
     fun `enqueuing during an exiting work chain appends rather than drops the request`() {
         assertEquals(ExistingWorkPolicy.APPEND_OR_REPLACE, PendingSaveWorker.uniqueWorkPolicy)
+    }
+
+    @Test
+    fun `worker is owner pinned and waits for a connected network`() {
+        val request = PendingSaveWorker.workRequest("account-a")
+
+        assertEquals("account-a", request.inputData.getString("owner_id"))
+        assertEquals(NetworkType.CONNECTED, PendingSaveWorker.networkConstraints().requiredNetworkType)
+        assertTrue(request.tags.contains(PendingSaveWorker.TAG_PENDING_SAVE))
     }
 
     @Test

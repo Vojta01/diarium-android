@@ -7,6 +7,7 @@ import cz.digitalnivedomi.diarium.core.data.HttpTransport
 import cz.digitalnivedomi.diarium.core.data.OkHttpTransport
 import cz.digitalnivedomi.diarium.fcm.FcmTokenRegistrar
 import cz.digitalnivedomi.diarium.notifications.NotificationScheduler
+import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import cz.digitalnivedomi.diarium.sync.SyncScheduler
 import org.json.JSONObject
 import java.util.Base64
@@ -52,6 +53,7 @@ class AuthManager(
         // Rebind account-scoped alarms and usage work only after the verified session is committed.
         NotificationScheduler.rescheduleAll(activity.applicationContext)
         SyncScheduler.onSessionChanged(activity.applicationContext, outcome.ownerId)
+        PendingSaveWorker.onSessionChanged(activity.applicationContext, outcome.ownerId)
         FcmTokenRegistrar.register(activity.applicationContext)
         return outcome
     }

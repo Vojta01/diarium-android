@@ -1,9 +1,9 @@
-name: Android foreground conditional-save tests
+name: Android pending-save CAS replay tests
 
 on:
   push:
     branches:
-      - ci/android-cas-foreground-v2-20261110
+      - ci/android-cas-offline-replay-20261110
 
 permissions:
   contents: read
@@ -46,7 +46,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-foreground-cas-test-reports
+          name: android-pending-save-cas-replay-test-reports
           path: |
             app/build/test-results/testDebugUnitTest/TEST-*.xml
             app/build/reports/tests/testDebugUnitTest/**

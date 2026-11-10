@@ -22,6 +22,7 @@ import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
 import cz.digitalnivedomi.diarium.notifications.EXTRA_OPEN_REPORT_TYPE
 import cz.digitalnivedomi.diarium.notifications.EXTRA_OPEN_ROUTE
 import cz.digitalnivedomi.diarium.notifications.NotificationScheduler
+import cz.digitalnivedomi.diarium.sync.PendingSaveWorker
 import cz.digitalnivedomi.diarium.sync.SyncScheduler
 import cz.digitalnivedomi.diarium.ui.DiariumApp
 import cz.digitalnivedomi.diarium.ui.theme.DiariumTheme
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity() {
         authState = AuthStateHolder(sessionStore) {
             NotificationScheduler.rescheduleAll(applicationContext)
             SyncScheduler.cancelUsageWork(applicationContext)
+            PendingSaveWorker.cancelAll(applicationContext)
         }
         // onSessionSaved flips the Compose gate; a cold start with a stored
         // session is already AUTHENTICATED from the SessionStore.
@@ -78,6 +80,7 @@ class MainActivity : ComponentActivity() {
 
         // --- Recycled background plumbing (unchanged behaviour) --------------
         SyncScheduler.ensureScheduled(this)
+        PendingSaveWorker.ensureScheduled(this)
         NotificationScheduler.rescheduleAll(this)
         // The device token belongs to an account, so it is registered only once
         // there is a session: on a fresh install this is skipped and AuthManager

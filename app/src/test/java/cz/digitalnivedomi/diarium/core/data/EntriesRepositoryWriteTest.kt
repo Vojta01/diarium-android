@@ -899,6 +899,195 @@ class EntriesRepositoryWriteTest {
     }
 
     @Test
+    fun `worker replays a previous-row update with the original CAS baseline`() = runTest {
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 5, note = "queued update"),
+            baseline = EntryBaseline(exists = true, id = ROW_ID, revision = 7L),
+            requestId = REQUEST_RETRY,
+        )
+        val store = PendingSaveStore.from(context, USER_ID)
+        assertTrue(store.enqueueConditional(request))
+
+        val result = flushThroughRepository(store, repository(store))
+
+        assertTrue(result is PendingSaveFlush.Saved)
+        val body = JSONObject(sent.single { it.url.endsWith("/rpc/save_daily_entry_v2") }.body!!)
+        assertEquals(true, body.getBoolean("p_expected_exists"))
+        assertEquals(ROW_ID, body.getString("p_expected_id"))
+        assertEquals(7L, body.getLong("p_expected_revision"))
+        assertEquals(request.requestId, body.getString("p_request_id"))
+        assertEquals("queued update", body.getJSONObject("p_payload").getString("note"))
+        assertNull(store.peekRecord(DATE))
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") })
+    }
+
+    @Test
+    fun `missing-day creation race keeps queued copy and the other client's row`() = runTest {
+        val serverRow = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 1)
+            .put("mood", 2)
+            .put("note", "other client's first row")
+        respond = { request ->
+            when {
+                request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("status", "conflict")
+                        .put("reason", "row_exists")
+                        .put("date", DATE)
+                        .put("current_id", ROW_ID)
+                        .put("current_revision", 1)
+                        .put("replayed", false)
+                        .toString(),
+                )
+                request.method == "GET" && request.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(serverRow).toString())
+                else -> null
+            }
+        }
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "queued create"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_CREATE,
+        )
+        val store = PendingSaveStore.from(context, USER_ID)
+        store.enqueueConditional(request)
+
+        val result = flushThroughRepository(store, repository(store))
+        val retained = store.peekRecord(DATE)
+
+        assertTrue(result is PendingSaveFlush.RecoveryRequired)
+        assertEquals(request, retained?.conditionalRequest)
+        assertEquals("queued create", retained?.entry?.note)
+        assertTrue(retained?.recoveryReason?.contains("row_exists") == true)
+        assertEquals("other client's first row", serverRow.getString("note"))
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" })
+    }
+
+    @Test
+    fun `older queued revision cannot overwrite newer foreground save from another client`() = runTest {
+        val newerForegroundRow = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 9)
+            .put("mood", 5)
+            .put("note", "newer foreground save")
+        respond = { request ->
+            when {
+                request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("status", "conflict")
+                        .put("reason", "stale_revision")
+                        .put("date", DATE)
+                        .put("current_id", ROW_ID)
+                        .put("current_revision", 9)
+                        .put("replayed", false)
+                        .toString(),
+                )
+                request.method == "GET" && request.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(newerForegroundRow).toString())
+                else -> null
+            }
+        }
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 1, note = "older offline copy"),
+            baseline = EntryBaseline(exists = true, id = ROW_ID, revision = 8L),
+            requestId = REQUEST_STALE,
+        )
+        val store = PendingSaveStore.from(context, USER_ID)
+        store.enqueueConditional(request)
+
+        val result = flushThroughRepository(store, repository(store))
+        val retained = store.peekRecord(DATE)
+
+        assertTrue(result is PendingSaveFlush.RecoveryRequired)
+        assertEquals(request, retained?.conditionalRequest)
+        assertEquals("older offline copy", retained?.entry?.note)
+        assertEquals("newer foreground save", newerForegroundRow.getString("note"))
+        assertTrue(retained?.recoveryReason?.contains("stale_revision") == true)
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" })
+    }
+
+    @Test
+    fun `unknown worker response retries exact request after process restart`() = runTest {
+        var firstAttempt = true
+        respond = { request ->
+            if (request.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt) {
+                firstAttempt = false // Commit happened but the response was lost.
+                throw IOException("response timeout")
+            }
+            if (request.url.endsWith("/rpc/save_daily_entry_v2")) {
+                HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+            } else null
+        }
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "unknown response survives", aiReflection = "generated before timeout"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_RETRY,
+            writeAiReflection = true,
+        )
+        val initialStore = PendingSaveStore.from(context, USER_ID)
+        val initialRepository = repository(initialStore)
+        val initial = initialRepository.save(request)
+        val afterRestartStore = PendingSaveStore.from(context, USER_ID)
+        val afterRestartRepository = repository(afterRestartStore)
+
+        assertTrue(initial.exceptionOrNull() is ConditionalSaveUnknownException)
+        assertEquals(request, afterRestartStore.peekRecord(DATE)?.conditionalRequest)
+        val replay = flushThroughRepository(afterRestartStore, afterRestartRepository)
+        val writes = sent.filter { it.url.endsWith("/rpc/save_daily_entry_v2") }
+
+        assertTrue(replay is PendingSaveFlush.Saved)
+        assertEquals(2, writes.size)
+        assertEquals(writes[0].body, writes[1].body)
+        assertEquals(REQUEST_RETRY, JSONObject(writes[0].body!!).getString("p_request_id"))
+        assertEquals(
+            "generated before timeout",
+            JSONObject(writes[1].body!!).getJSONObject("p_payload").getString("ai_reflection"),
+        )
+        assertNull(afterRestartStore.peekRecord(DATE))
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") })
+    }
+
+    @Test
+    fun `worker stops without sending when the account changes`() = runTest {
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = DiaryEntry(mood = 4, note = "private A copy"),
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_CREATE,
+        )
+        val store = PendingSaveStore.from(context, USER_ID)
+        store.enqueueConditional(request)
+        sessionStore.save(
+            JSONObject().apply {
+                put("access_token", "jwt-account-b")
+                put("refresh_token", "refresh-b")
+                put("expires_at", System.currentTimeMillis() / 1000 + 3600)
+                put("user", JSONObject().put("id", OTHER_USER_ID))
+            },
+        )
+
+        val result = flushThroughRepository(store, repository(store))
+
+        assertEquals(PendingSaveFlush.SessionChanged, result)
+        assertEquals(request, store.peekRecord(DATE)?.conditionalRequest)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
     fun `an unknown reflection-save outcome replays the identical reflection payload`() = runTest {
         var firstAttempt = true
         respond = { request ->
@@ -955,8 +1144,9 @@ class EntriesRepositoryWriteTest {
     }
 
     @Test
-    fun `an incomplete stored-row token is rejected before dispatch`() = runTest {
-        val result = repository().save(
+    fun `an incomplete or malformed stored-row token is rejected before dispatch`() = runTest {
+        val repo = repository()
+        val incomplete = repo.save(
             ConditionalEntrySaveRequest(
                 ownerId = USER_ID,
                 date = DATE,
@@ -965,8 +1155,18 @@ class EntriesRepositoryWriteTest {
                 requestId = REQUEST_STALE,
             ),
         )
+        val malformedId = repo.save(
+            ConditionalEntrySaveRequest(
+                ownerId = USER_ID,
+                date = DATE,
+                entry = DiaryEntry(mood = 4, note = "also kept locally"),
+                baseline = EntryBaseline(exists = true, id = "not-a-uuid", revision = 2L),
+                requestId = REQUEST_CREATE,
+            ),
+        )
 
-        assertTrue(result.exceptionOrNull() is ConditionalSaveUnavailableException)
+        assertTrue(incomplete.exceptionOrNull() is ConditionalSaveUnavailableException)
+        assertTrue(malformedId.exceptionOrNull() is ConditionalSaveUnavailableException)
         assertTrue(sent.isEmpty())
     }
 
@@ -1019,6 +1219,18 @@ class EntriesRepositoryWriteTest {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
+
+    private suspend fun flushThroughRepository(
+        store: PendingSaveStore,
+        repository: EntriesRepository,
+    ): PendingSaveFlush = store.flushRecord(
+        date = DATE,
+        expectedOwnerId = USER_ID,
+        currentOwnerId = { sessionStore.userSubject() },
+        dispatch = { snapshot ->
+            repository.replayPendingSave(requireNotNull(snapshot.conditionalRequest)).map { Unit }
+        },
+    )
 
     private fun savedResponse(
         entryId: String,

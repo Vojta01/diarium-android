@@ -33,6 +33,7 @@ import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.HttpRequest
 import cz.digitalnivedomi.diarium.core.data.HttpResponse
 import cz.digitalnivedomi.diarium.core.data.HttpTransport
+import cz.digitalnivedomi.diarium.core.data.PendingSaveRecoveryIssueKind
 import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
@@ -325,7 +326,7 @@ class CheckInDraftRecoveryScreenTest {
             compose.onNodeWithContentDescription("Review the saved day").assertHasClickAction()
             compose.onNodeWithText("Unsynced entry on this phone").assertExists()
             compose.onNodeWithText(
-                "Not synced — saved only on this phone. It will not be sent automatically.",
+                "This older entry has no verified original revision and CAS identity. It remains untouched and will not be sent automatically; user review is required.",
             ).assertExists()
             compose.onNodeWithContentDescription("Review the local entry").assertHasClickAction()
             compose.onNodeWithContentDescription("Review the server copy").assertHasClickAction()
@@ -383,6 +384,46 @@ class CheckInDraftRecoveryScreenTest {
             assertEquals(listOf("GET"), requests.map { it.method }.distinct())
         } finally {
             pending.remove(DATE)
+        }
+    }
+
+    @Test
+    fun `ownerless legacy entry is visibly quarantined and never sent`() = runBlocking {
+        val preferences = context.getSharedPreferences(PendingSaveStore.PREFS_NAME, Context.MODE_PRIVATE)
+        val legacy = JSONObject()
+            .put("queuedAt", 12L)
+            .put("entry", DiaryEntry(mood = 5, note = "ownerless private copy").toJson())
+            .toString()
+        preferences.edit().putString(DATE, legacy).commit()
+        val pending = PendingSaveStore.from(context, OWNER_ID)
+        val requests = CopyOnWriteArrayList<HttpRequest>()
+
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    CheckInScreen(
+                        deps = CheckInDeps(
+                            entries = repository(requests = requests, pending = pending),
+                        ),
+                        today = LocalDate.parse(DATE),
+                        lateNight = false,
+                    )
+                }
+            }
+
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithText("Místní zápis vyžaduje ruční obnovu")
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText(
+                "Starší zápis nemá přiřazený účet. Nebyl přiřazen k tomuto přihlášení ani odeslán; zůstává v telefonu.",
+            ).assertExists()
+            assertTrue(compose.onAllNodesWithTag("save_button").fetchSemanticsNodes().isEmpty())
+            assertEquals(PendingSaveRecoveryIssueKind.OWNERLESS, pending.recoveryIssueForDate(DATE)?.kind)
+            assertEquals(legacy, preferences.getString(DATE, null))
+            assertEquals(listOf("GET"), requests.map { it.method }.distinct())
+        } finally {
+            preferences.edit().remove(DATE).commit()
         }
     }
 
@@ -1018,7 +1059,7 @@ class CheckInDraftRecoveryScreenTest {
             "Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše."
         const val PENDING_TITLE = "Nesynchronizovaný zápis v tomto telefonu"
         const val UNSYNCED_STATUS =
-            "Nesynchronizováno — uloženo jen v tomto telefonu. Automaticky se neodešle."
+            "Tento starší záznam nemá ověřenou původní revizi a identitu CAS. Zůstává nedotčený a nebude automaticky odeslán; je nutná kontrola uživatele."
         const val TIMEOUT = 10_000L
     }
 }

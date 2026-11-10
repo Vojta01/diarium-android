@@ -103,8 +103,8 @@ class SyncScheduler {
                 ownerId = ownerId,
             )
 
-            // Diary outbox records are review-only until the server offers an atomic
-            // compare-and-swap write. Do not schedule a no-op worker as fake sync.
+            // Explicit diary saves use a separate owner-pinned CAS worker; this
+            // scheduler is exclusively for account-consented phone-usage sync.
 
             when (backfillReason) {
                 BackfillReason.NONE -> Unit

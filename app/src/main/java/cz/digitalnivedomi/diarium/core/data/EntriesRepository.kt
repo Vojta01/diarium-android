@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.io.IOException
 import java.net.URI
 import java.net.URLDecoder
+import java.time.LocalDate
 import java.util.UUID
 
 /**
@@ -28,7 +29,9 @@ data class EntryBaseline(
     val isValid: Boolean
         get() = when (exists) {
             false -> id == null && revision == null
-            true -> !id.isNullOrBlank() && revision != null && revision >= 1
+            true -> !id.isNullOrBlank() &&
+                runCatching { UUID.fromString(id) }.isSuccess &&
+                revision != null && revision >= 1
             null -> false
         }
 }
@@ -208,6 +211,12 @@ class EntriesRepository(
     fun pendingSaveRecord(date: String): PendingSave? {
         val userId = authorizedUserId() ?: return null
         return pendingFor(userId)?.peekRecord(date)?.takeIf { it.ownerId == userId }
+    }
+
+    /** Text-free marker for malformed or ownerless outbox data; never migrates it. */
+    fun pendingSaveRecoveryIssue(date: String): PendingSaveRecoveryIssue? {
+        val userId = authorizedUserId() ?: return null
+        return pendingFor(userId)?.recoveryIssueForDate(date)
     }
 
     /**
@@ -416,6 +425,9 @@ class EntriesRepository(
         val userId = authorizedUserId()
             ?: return Result.failure(IllegalStateException(SIGNED_OUT))
         if (userId != request.ownerId) return Result.failure(SessionOwnerMismatchException())
+        if (runCatching { LocalDate.parse(request.date) }.isFailure) {
+            return Result.failure(IllegalArgumentException("The conditional save date is invalid."))
+        }
         if (!request.baseline.isValid) {
             return Result.failure(
                 ConditionalSaveUnavailableException(
@@ -426,14 +438,55 @@ class EntriesRepository(
         if (runCatching { UUID.fromString(request.requestId) }.isFailure) {
             return Result.failure(IllegalArgumentException("The conditional save request ID is invalid."))
         }
-        if (pendingFor(userId)?.peekRecord(request.date) != null) {
-            return Result.failure(IllegalStateException(MOVE_OFFLINE_BLOCKED))
+        val outbox = pendingFor(userId)
+        if (pending != null && outbox == null) {
+            return Result.failure(IllegalStateException(SIGNED_OUT))
+        }
+        return withContext(Dispatchers.IO) {
+            suspend fun saveAndQueueUnknown(): Result<ConditionalSaveReceipt> {
+                if (authorizedUserId() != userId) {
+                    return Result.failure(SessionOwnerMismatchException())
+                }
+                if (outbox?.peekRecord(request.date) != null ||
+                    outbox?.recoveryIssueForDate(request.date) != null
+                ) {
+                    return Result.failure(IllegalStateException(MOVE_OFFLINE_BLOCKED))
+                }
+                val result = saveConditionalAuthorized(request, userId, cleanupPhotoAfterPersistence)
+                if (result.exceptionOrNull() is ConditionalSaveUnknownException && outbox != null) {
+                    if (!outbox.enqueueConditional(request)) {
+                        Log.w(LOG_TAG, "conditional offline request could not be durably queued")
+                    }
+                }
+                return result
+            }
+            if (outbox != null) {
+                outbox.withDateLock(request.date) { saveAndQueueUnknown() }
+            } else {
+                saveAndQueueUnknown()
+            }
+        }
+    }
+
+    /** Worker entrypoint; the caller already holds the outbox owner/date lock. */
+    internal suspend fun replayPendingSave(request: ConditionalEntrySaveRequest): Result<ConditionalSaveReceipt> {
+        val userId = authorizedUserId()
+            ?: return Result.failure(IllegalStateException(SIGNED_OUT))
+        if (userId != request.ownerId) return Result.failure(SessionOwnerMismatchException())
+        if (runCatching { LocalDate.parse(request.date) }.isFailure) {
+            return Result.failure(ConditionalSaveUnavailableException("The queued CAS date is invalid."))
+        }
+        if (!request.baseline.isValid || runCatching { UUID.fromString(request.requestId) }.isFailure) {
+            return Result.failure(
+                ConditionalSaveUnavailableException("The queued CAS request is not fully verified."),
+            )
         }
         return withContext(Dispatchers.IO) {
             if (authorizedUserId() != userId) {
-                return@withContext Result.failure(SessionOwnerMismatchException())
+                Result.failure(SessionOwnerMismatchException())
+            } else {
+                saveConditionalAuthorized(request, userId, cleanupPhotoAfterPersistence = true)
             }
-            saveConditionalAuthorized(request, userId, cleanupPhotoAfterPersistence)
         }
     }
 
