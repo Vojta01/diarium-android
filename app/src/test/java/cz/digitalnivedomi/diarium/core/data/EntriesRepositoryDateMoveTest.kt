@@ -161,6 +161,64 @@ class EntriesRepositoryDateMoveTest {
     }
 
     @Test
+    fun `invalid move replay markers leave request and local state untouched`() = runTest {
+        val missingMarker = Any()
+        val malformedBodyMarker = Any()
+        val cases: List<Pair<String, Any?>> = listOf(
+            "missing" to missingMarker,
+            "null" to JSONObject.NULL,
+            "string false" to "false",
+            "string true" to "true",
+            "object" to JSONObject().put("value", true),
+            "malformed JSON" to malformedBodyMarker,
+        )
+
+        cases.forEachIndexed { index, (label, replayedValue) ->
+            moveFile.delete()
+            moveFile.parentFile?.mkdirs()
+            sent.clear()
+            serverRows.clear()
+            serverRows[SOURCE_DATE] = JSONObject(sourceRow.toString())
+            receiptBodies.clear()
+            receipts.clear()
+            moveResponseOverride = { body ->
+                if (replayedValue === malformedBodyMarker) {
+                    HttpResponse(200, "{broken synthetic response")
+                } else {
+                    val moved = JSONObject(sourceRow.toString())
+                        .put("date", body.getString("p_target_date"))
+                        .put("revision", 8)
+                        .put("updated_at", "2026-09-10T12:30:00Z")
+                    val envelope = JSONObject()
+                        .put("status", "moved")
+                        .put("source_date", body.getString("p_source_date"))
+                        .put("target_date", body.getString("p_target_date"))
+                        .put("entry_id", SOURCE_ID)
+                        .put("revision", 8)
+                        .put("entry", moved)
+                        .put("scale_rows_moved", 2)
+                        .put("overwrote", false)
+                    if (replayedValue !== missingMarker) envelope.put("replayed", replayedValue)
+                    HttpResponse(200, envelope.toString())
+                }
+            }
+            val cache = cacheStore("invalid-replay-$index")
+            cache.upsertRows(listOf(sourceRow))
+            val repo = repository(cache = cache)
+            val candidate = repo.prepareMove(SOURCE_DATE, TARGET_DATE, SOURCE_ID, 7L).getOrThrow()
+
+            val result = repo.move(candidate, confirmOverwrite = false)
+
+            assertTrue("$label replay marker must be unknown", result.exceptionOrNull() is EntryMoveUnknownException)
+            assertNotNull(EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE))
+            assertEquals(SOURCE_ID, serverRows[SOURCE_DATE]?.getString("id"))
+            assertNull(serverRows[TARGET_DATE])
+            assertEquals(listOf(SOURCE_DATE), cache.readRange(SOURCE_DATE, SOURCE_DATE)?.map { it.date })
+            assertNoBlindWriteOrStorageDelete()
+        }
+    }
+
+    @Test
     fun `same date is a token checked no-op`() = runTest {
         val result = repository(withMoveOutbox = true).move(
             EntriesRepository.fromRow(sourceRow), SOURCE_DATE, SOURCE_DATE,

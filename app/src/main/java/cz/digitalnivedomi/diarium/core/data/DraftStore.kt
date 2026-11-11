@@ -36,7 +36,7 @@ data class DraftRecord(
     val pendingSaveRequestId: String? = null,
     /** AI text explicitly included in that request; ordinary server text is not persisted. */
     val pendingAiReflection: String? = null,
-    /** Local recovery origin, used only to make retries idempotent and cleanup verifiable. */
+    /** Local recovery origin, retained to make imports/rebases idempotent and traceable. */
     val legacyRecoveryOrigin: LegacyRecoveryRecordId? = null,
     /** Hash of the exact ownerless source; never persist a second copy of its diary JSON. */
     val legacyRecoverySourceHash: String? = null,
@@ -329,158 +329,6 @@ class DraftStore(
         return rebased
     }
 
-    /**
-     * Record proof of a verified v2 response before the ordinary account draft is
-     * cleared. This metadata contains only hashes and CAS tokens, never diary text.
-     */
-    internal suspend fun recordVerifiedLegacyRecoverySave(
-        request: ConditionalEntrySaveRequest,
-        receipt: ConditionalSaveReceipt,
-    ): Boolean {
-        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return false
-        if (request.ownerId != owner || !request.baseline.isValid ||
-            receipt.entryId.isBlank() || receipt.revision < 1
-        ) return false
-        val mutation = mutationState(owner, request.date)
-        var recorded = false
-        mutation.mutex.withLock {
-            val targetKey = stringPreferencesKey(key(owner, request.date))
-            val proofKey = stringPreferencesKey(legacyRecoverySaveProofKey(owner, request.date))
-            dataStore.edit { prefs ->
-                val current = prefs[targetKey]?.let { decode(owner, request.date, it) } ?: return@edit
-                val origin = current.legacyRecoveryOrigin ?: return@edit
-                val sourceHash = current.legacyRecoverySourceHash?.takeIf { it.isNotBlank() } ?: return@edit
-                if (current.pendingSaveRequestId != request.requestId ||
-                    !sameUserEntry(current.entry, request.entry)
-                ) return@edit
-                prefs[proofKey] = JSONObject()
-                    .put("ownerId", owner)
-                    .put("date", request.date)
-                    .put("sourceType", origin.type.name)
-                    .put("sourceHash", sourceHash)
-                    .put("requestId", request.requestId)
-                    .put("baselineExists", request.baseline.exists)
-                    .put("baselineId", request.baseline.id)
-                    .put("baselineRevision", request.baseline.revision)
-                    .put("savedEntryId", receipt.entryId)
-                    .put("savedRevision", receipt.revision)
-                    .toString()
-                recorded = true
-            }
-        }
-        return recorded
-    }
-
-    /**
-     * Remove a draft-origin source in the same DataStore transaction that verifies
-     * the copied target and a successful owner-scoped v2 save.
-     */
-    internal suspend fun confirmAndRemoveLegacyDraftSource(
-        date: String,
-        origin: LegacyRecoveryRecordId,
-        sourceRaw: String,
-        expectedEntry: DiaryEntry,
-    ): LegacyRecoveryFinalizeResult {
-        val owner = ownerId?.takeIf { it.isNotBlank() }
-            ?: return LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE
-        if (origin.type != LegacyRecoveryType.DRAFT || origin.date != date) {
-            return LegacyRecoveryFinalizeResult.RECORD_NOT_RECOVERABLE
-        }
-        val mutation = mutationState(owner, date)
-        var outcome = LegacyRecoveryFinalizeResult.FAILED
-        mutation.mutex.withLock {
-            val targetKey = stringPreferencesKey(key(owner, date))
-            val sourceKey = stringPreferencesKey(legacyKey(date))
-            dataStore.edit { prefs ->
-                val sourceValue = prefs.asMap().entries
-                    .firstOrNull { it.key.name == sourceKey.name }
-                    ?.value
-                if (sourceValue != sourceRaw) {
-                    outcome = LegacyRecoveryFinalizeResult.SOURCE_CHANGED
-                    return@edit
-                }
-                val currentRaw = prefs[targetKey]
-                val current = currentRaw?.let { runCatching { decode(owner, date, it) }.getOrNull() }
-                if (currentRaw != null && current == null) {
-                    outcome = LegacyRecoveryFinalizeResult.TARGET_CHANGED
-                    return@edit
-                }
-                val sourceHash = sha256(sourceRaw)
-                if (!hasVerifiedSaveProof(
-                        prefs[stringPreferencesKey(legacyRecoverySaveProofKey(owner, date))] as? String,
-                        owner,
-                        date,
-                        origin,
-                        sourceHash,
-                    )
-                ) {
-                    outcome = LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED
-                    return@edit
-                }
-                if (current != null &&
-                    (current.legacyRecoveryOrigin != origin ||
-                        current.legacyRecoverySourceHash != sourceHash ||
-                        !sameUserEntry(current.entry, expectedEntry) ||
-                        current.pendingSaveRequestId != null)
-                ) {
-                    outcome = LegacyRecoveryFinalizeResult.TARGET_CHANGED
-                    return@edit
-                }
-                prefs.remove(sourceKey)
-                prefs.remove(stringPreferencesKey(legacyRecoverySaveProofKey(owner, date)))
-                outcome = LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED
-            }
-        }
-        return outcome
-    }
-
-    /**
-     * For a pending-save origin, serialize source cleanup with normal draft writes
-     * and remove the outbox record only after the target still matches this copy.
-     */
-    internal suspend fun confirmAndRemoveLegacyPendingSource(
-        date: String,
-        origin: LegacyRecoveryRecordId,
-        sourceRaw: String,
-        expectedEntry: DiaryEntry,
-        removeSourceIfUnchanged: () -> Boolean,
-    ): LegacyRecoveryFinalizeResult {
-        val owner = ownerId?.takeIf { it.isNotBlank() }
-            ?: return LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE
-        if (origin.type != LegacyRecoveryType.PENDING_SAVE || origin.date != date) {
-            return LegacyRecoveryFinalizeResult.RECORD_NOT_RECOVERABLE
-        }
-        val mutation = mutationState(owner, date)
-        return mutation.mutex.withLock {
-            val preferences = try {
-                dataStore.data.first()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                return@withLock LegacyRecoveryFinalizeResult.FAILED
-            }
-            val raw = preferences[stringPreferencesKey(key(owner, date))]
-            val current = raw?.let { runCatching { decode(owner, date, it) }.getOrNull() }
-            if (raw != null && current == null) return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
-            if (current != null &&
-                (current.legacyRecoveryOrigin != origin ||
-                    current.legacyRecoverySourceHash != sha256(sourceRaw) ||
-                    !sameUserEntry(current.entry, expectedEntry) ||
-                    current.pendingSaveRequestId != null)
-            ) return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
-            val sourceHash = sha256(sourceRaw)
-            val proof = preferences[stringPreferencesKey(legacyRecoverySaveProofKey(owner, date))] as? String
-            if (!hasVerifiedSaveProof(proof, owner, date, origin, sourceHash)) {
-                return@withLock LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED
-            }
-            if (!runCatching(removeSourceIfUnchanged).getOrDefault(false)) {
-                return@withLock LegacyRecoveryFinalizeResult.SOURCE_CHANGED
-            }
-            dataStore.edit { it.remove(stringPreferencesKey(legacyRecoverySaveProofKey(owner, date))) }
-            LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED
-        }
-    }
-
     /** Convenience for callers that do not need conflict metadata. */
     suspend fun load(date: String): DiaryEntry? = loadRecord(date)?.entry
 
@@ -676,9 +524,6 @@ class DraftStore(
         /** Key used by builds before account scoping; retained only for quarantine diagnostics. */
         fun legacyKey(date: String): String = "diarium_draft_$date"
 
-        internal fun legacyRecoverySaveProofKey(ownerId: String, date: String): String =
-            "diarium_legacy_recovery_saved_v1_${ownerId}_$date"
-
         fun from(context: Context, ownerId: String?): DraftStore =
             DraftStore(context.draftDataStore, ownerId?.takeIf { it.isNotBlank() })
     }
@@ -687,42 +532,6 @@ class DraftStore(
 private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
     .digest(value.toByteArray(Charsets.UTF_8))
     .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-
-private fun hasVerifiedSaveProof(
-    raw: String?,
-    owner: String,
-    date: String,
-    origin: LegacyRecoveryRecordId,
-    sourceHash: String,
-): Boolean {
-    if (raw.isNullOrBlank()) return false
-    return runCatching {
-        val json = JSONObject(raw)
-        val exists = if (!json.has("baselineExists") || json.isNull("baselineExists")) {
-            null
-        } else {
-            json.optBoolean("baselineExists")
-        }
-        val baselineId = if (!json.has("baselineId") || json.isNull("baselineId")) {
-            null
-        } else {
-            json.optString("baselineId").takeIf { it.isNotBlank() }
-        }
-        val baselineRevision = if (json.has("baselineRevision") && !json.isNull("baselineRevision")) {
-            json.optLong("baselineRevision")
-        } else {
-            null
-        }
-        json.optString("ownerId") == owner &&
-            json.optString("date") == date &&
-            json.optString("sourceType") == origin.type.name &&
-            json.optString("sourceHash") == sourceHash &&
-            json.optString("requestId").isNotBlank() &&
-            json.optString("savedEntryId").isNotBlank() &&
-            json.optLong("savedRevision", 0) >= 1 &&
-            EntryBaseline(exists, baselineId, baselineRevision).isValid
-    }.getOrDefault(false)
-}
 
 private fun isCanonicalDate(value: String): Boolean =
     runCatching { java.time.LocalDate.parse(value).toString() == value }.getOrDefault(false)

@@ -681,7 +681,8 @@ class EntriesRepository(
                 if (authorizedUserId() != userId) {
                     return Result.failure(SessionOwnerMismatchException())
                 }
-                val replayed = envelope.optBoolean("replayed", false)
+                val replayed = envelope.opt("replayed") as? Boolean
+                    ?: return Result.failure(ConditionalSaveUnknownException(request.requestId))
                 val receipt = ConditionalSaveReceipt(
                     entryId = entryId,
                     revision = revision,
@@ -1423,6 +1424,8 @@ class EntriesRepository(
             "moved", "unchanged" -> Unit
             else -> return Result.failure(EntryMoveUnknownException(request.requestId))
         }
+        val replayed = envelope.opt("replayed") as? Boolean
+            ?: return Result.failure(EntryMoveUnknownException(request.requestId))
         val status = envelope.plainString("status")
         val row = envelope.optJSONObject("entry")
             ?: return Result.failure(EntryMoveUnknownException(request.requestId))
@@ -1458,7 +1461,7 @@ class EntriesRepository(
                     revision = revision,
                     rawRowJson = row.toString(),
                 ),
-                replayed = envelope.optBoolean("replayed", false),
+                replayed = replayed,
                 scaleRowsMoved = envelope.optLong("scale_rows_moved", 0L),
             ),
         )

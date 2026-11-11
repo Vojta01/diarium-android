@@ -14,6 +14,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import cz.digitalnivedomi.diarium.auth.SessionStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -264,26 +265,13 @@ class LegacyRecoveryStorageIntegrationTest {
             ) as LegacyRecoveryAuthorizationResult.Granted).attestation
             assertTrue(restarted.preview(restartedAttestation) is LegacyRecoveryPreviewResult.Ready)
             assertEquals(LegacyRecoveryCopyResult.ALREADY_COPIED, restarted.copy(restartedAttestation))
-            assertEquals(
-                LegacyRecoveryFinalizeResult.CONFIRMATION_REQUIRED,
-                restarted.confirmNoConflictAndRemoveOriginal(restartedAttestation, confirmedNoConflict = false),
-            )
-            assertEquals(
-                LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED,
-                restarted.confirmNoConflictAndRemoveOriginal(restartedAttestation, confirmedNoConflict = true),
-            )
             assertEquals(draftRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
             val recovered = targetA.loadRecord(date)!!
             val rebased = targetA.rebaseLegacyRecovery(date, recovered, remote = null)!!
             assertEquals(false, rebased.baselineExists)
-            recordVerifiedRecoverySave(targetA, date, rebased.entry)
-            assertEquals(draftRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
-            assertEquals(
-                LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED,
-                restarted.confirmNoConflictAndRemoveOriginal(restartedAttestation, confirmedNoConflict = true),
-            )
+            saveRecoveredDraftViaCas(context, targetA, date, rebased.entry)
             assertNull(targetA.loadRecord(date))
-            assertNull(recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
+            assertEquals(draftRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
 
             val conflictAttestation = (restarted.authorize(
                 conflictId,
@@ -300,7 +288,7 @@ class LegacyRecoveryStorageIntegrationTest {
     }
 
     @Test
-    fun `real queued-save recovery stays local until a verified v2 save and explicit source confirmation`() = runBlocking {
+    fun `real queued-save recovery copies and saves via CAS while retaining ownerless source`() = runBlocking {
         val baseContext = ApplicationProvider.getApplicationContext<Context>()
         val root = File.createTempFile("manual-pending-recovery-test", ".tmp").apply {
             delete()
@@ -333,25 +321,21 @@ class LegacyRecoveryStorageIntegrationTest {
             assertNull(DraftStore(dataStore, OWNER_B).loadRecord(date))
             assertEquals(pendingRaw, pendingPrefs.getString(date, null))
             assertTrue(PendingSaveStore.from(context, OWNER_A).peekAll().isEmpty())
-            assertEquals(
-                LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED,
-                coordinator.confirmNoConflictAndRemoveOriginal(attestation, confirmedNoConflict = true),
-            )
             assertEquals(pendingRaw, pendingPrefs.getString(date, null))
             val recovered = targetA.loadRecord(date)!!
             val rebased = targetA.rebaseLegacyRecovery(date, recovered, remote = null)!!
-            recordVerifiedRecoverySave(targetA, date, rebased.entry)
-            assertEquals(pendingRaw, pendingPrefs.getString(date, null))
-            assertEquals(
-                LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED,
-                coordinator.confirmNoConflictAndRemoveOriginal(attestation, confirmedNoConflict = true),
-            )
-            assertNull(pendingPrefs.getString(date, null))
+            saveRecoveredDraftViaCas(context, targetA, date, rebased.entry)
             assertNull(targetA.loadRecord(date))
+            assertEquals(pendingRaw, pendingPrefs.getString(date, null))
         }
     }
 
-    private suspend fun recordVerifiedRecoverySave(store: DraftStore, date: String, entry: DiaryEntry) {
+    private suspend fun saveRecoveredDraftViaCas(
+        context: Context,
+        store: DraftStore,
+        date: String,
+        entry: DiaryEntry,
+    ) {
         val requestId = "30000000-0000-4000-8000-${date.replace("-", "")}0000"
         val baseline = EntryBaseline(exists = false, id = null, revision = null)
         store.save(
@@ -364,12 +348,41 @@ class LegacyRecoveryStorageIntegrationTest {
             pendingSaveRequestId = requestId,
         )
         val request = ConditionalEntrySaveRequest(OWNER_A, date, entry, baseline, requestId)
-        assertTrue(
-            store.recordVerifiedLegacyRecoverySave(
-                request,
-                ConditionalSaveReceipt("10000000-0000-4000-8000-000000000001", revision = 1, replayed = false),
+        val sessionStore = SessionStore(context).apply {
+            save(
+                JSONObject().apply {
+                    put("access_token", "synthetic-owner-a-jwt")
+                    put("refresh_token", "synthetic-refresh")
+                    put("expires_at", System.currentTimeMillis() / 1000 + 3600)
+                    put("user", JSONObject().put("id", OWNER_A))
+                },
+            )
+        }
+        val repository = EntriesRepository(
+            client = SupabaseClient(
+                sessionStore = sessionStore,
+                transport = HttpTransport { httpRequest ->
+                    when {
+                        httpRequest.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(
+                            200,
+                            JSONObject()
+                                .put("status", "saved")
+                                .put("entry_id", "10000000-0000-4000-8000-000000000001")
+                                .put("revision", 1)
+                                .put("replayed", false)
+                                .toString(),
+                        )
+                        httpRequest.url.endsWith("/rpc/check_achievements") -> HttpResponse(200, "{}")
+                        else -> HttpResponse(200, "[]")
+                    }
+                },
+                baseUrl = "https://example.supabase.co/rest/v1",
+                anonKey = "synthetic-anon-key",
             ),
+            session = SessionContext(sessionStore),
+            expectedOwnerId = OWNER_A,
         )
+        assertTrue(repository.save(request).isSuccess)
         assertTrue(store.clearIfUnchanged(date, entry, requestId))
     }
 

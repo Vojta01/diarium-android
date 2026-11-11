@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 /**
  * The only write-side port used by manual legacy recovery. It intentionally has no
  * network, repository, queue, or server-save dependency: imports create local drafts.
+ * There is intentionally no source-deletion operation; legacy originals stay on device.
  */
 interface LegacyRecoveryWriter {
     suspend fun copyToAccountDraft(
@@ -12,12 +13,6 @@ interface LegacyRecoveryWriter {
         id: LegacyRecoveryRecordId,
         payload: LegacyRecoveryPayload,
     ): LegacyRecoveryCopyResult
-
-    suspend fun confirmNoConflictAndRemoveOriginal(
-        ownerId: String,
-        id: LegacyRecoveryRecordId,
-        payload: LegacyRecoveryPayload,
-    ): LegacyRecoveryFinalizeResult
 }
 
 class LegacyRecoveryAttestation internal constructor(
@@ -25,7 +20,6 @@ class LegacyRecoveryAttestation internal constructor(
     val ownerId: String,
 ) {
     internal var contentsPreviewed: Boolean = false
-    internal var copyCompleted: Boolean = false
 }
 
 sealed interface LegacyRecoveryScanResult {
@@ -62,19 +56,6 @@ enum class LegacyRecoveryCopyResult {
     OWNER_CHANGED,
     COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT,
     PREVIEW_REQUIRED,
-    RECORD_NOT_RECOVERABLE,
-    FAILED,
-}
-
-enum class LegacyRecoveryFinalizeResult {
-    ORIGINAL_REMOVED,
-    CONFIRMATION_REQUIRED,
-    TARGET_CHANGED,
-    SOURCE_CHANGED,
-    OWNER_UNAVAILABLE,
-    OWNER_CHANGED,
-    COPY_REQUIRED,
-    SERVER_SAVE_REQUIRED,
     RECORD_NOT_RECOVERABLE,
     FAILED,
 }
@@ -177,35 +158,6 @@ class LegacyRecoveryCoordinator(
                 else -> LegacyRecoveryCopyResult.OWNER_CHANGED
             }
         }
-        if (outcome == LegacyRecoveryCopyResult.COPIED || outcome == LegacyRecoveryCopyResult.ALREADY_COPIED) {
-            attestation.copyCompleted = true
-        }
-        return outcome
-    }
-
-    suspend fun confirmNoConflictAndRemoveOriginal(
-        attestation: LegacyRecoveryAttestation,
-        confirmedNoConflict: Boolean,
-    ): LegacyRecoveryFinalizeResult {
-        if (!confirmedNoConflict) return LegacyRecoveryFinalizeResult.CONFIRMATION_REQUIRED
-        if (!attestation.copyCompleted) return LegacyRecoveryFinalizeResult.COPY_REQUIRED
-        val owner = verifiedOwnerId()?.takeIf { it.isNotBlank() }
-            ?: return LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE
-        if (owner != attestation.ownerId) return LegacyRecoveryFinalizeResult.OWNER_CHANGED
-        val payload = readAuthorizedPayload(attestation.recordId)
-            ?: return if (verifiedOwnerId() == owner) {
-                LegacyRecoveryFinalizeResult.RECORD_NOT_RECOVERABLE
-            } else {
-                LegacyRecoveryFinalizeResult.OWNER_CHANGED
-            }
-        val outcome = try {
-            writer.confirmNoConflictAndRemoveOriginal(owner, attestation.recordId, payload)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            LegacyRecoveryFinalizeResult.FAILED
-        }
-        if (verifiedOwnerId() != owner) return LegacyRecoveryFinalizeResult.OWNER_CHANGED
         return outcome
     }
 

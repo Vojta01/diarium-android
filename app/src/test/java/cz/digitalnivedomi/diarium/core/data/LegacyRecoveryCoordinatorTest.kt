@@ -77,11 +77,13 @@ class LegacyRecoveryCoordinatorTest {
         assertEquals(LegacyRecoveryCopyResult.COPIED, fixture.coordinator.copy(ownerBAttestation))
         assertEquals(ownerAEntry, fixture.writer.target(OWNER_A, fixture.draftId.date))
         assertEquals(ownerAEntry, fixture.writer.target(OWNER_B, fixture.draftId.date))
+        assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
         assertEquals(0, fixture.writer.serverWriteCount)
     }
 
+    // Source finalization is disabled; exercise the former async delete boundary as a copy race.
     @Test
-    fun `owner switch after old owner persistence reports ambiguous old-account copy`() = runBlocking {
+    fun `account switch during persisted copy retains source and never writes for new owner`() = runBlocking {
         val fixture = Fixture()
         fixture.currentOwner = OWNER_A
         val copyPersisted = CompletableDeferred<Unit>()
@@ -97,13 +99,6 @@ class LegacyRecoveryCoordinatorTest {
                 releaseWriter.await()
                 return outcome
             }
-
-            override suspend fun confirmNoConflictAndRemoveOriginal(
-                ownerId: String,
-                id: LegacyRecoveryRecordId,
-                payload: LegacyRecoveryPayload,
-            ): LegacyRecoveryFinalizeResult =
-                fixture.writer.confirmNoConflictAndRemoveOriginal(ownerId, id, payload)
         }
         val coordinator = LegacyRecoveryCoordinator(
             scanner = LegacyRecoveryScanner(fixture.storage),
@@ -122,11 +117,6 @@ class LegacyRecoveryCoordinatorTest {
             assertEquals(LegacyRecoveryCopyResult.COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT, outcome)
             assertEquals("synthetic local note", fixture.writer.target(OWNER_A, fixture.draftId.date)?.note)
             assertNull(fixture.writer.target(OWNER_B, fixture.draftId.date))
-            assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
-            assertEquals(
-                LegacyRecoveryFinalizeResult.COPY_REQUIRED,
-                coordinator.confirmNoConflictAndRemoveOriginal(attestation, confirmedNoConflict = true),
-            )
             assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
             assertEquals(0, fixture.writer.serverWriteCount)
         } finally {
@@ -194,7 +184,7 @@ class LegacyRecoveryCoordinatorTest {
     }
 
     @Test
-    fun `interrupted recovery survives restart but source removal waits for a verified save`() = runBlocking {
+    fun `interrupted recovery survives restart and repeated copy while retaining original`() = runBlocking {
         val fixture = Fixture()
         fixture.currentOwner = OWNER_A
         fixture.writer.interruptAfterNextCopy = true
@@ -207,36 +197,19 @@ class LegacyRecoveryCoordinatorTest {
         val restarted = fixture.newCoordinator()
         val attestationAfterRestart = fixture.attest(fixture.draftId, restarted)
         assertEquals(LegacyRecoveryCopyResult.ALREADY_COPIED, restarted.copy(attestationAfterRestart))
-        assertEquals(
-            LegacyRecoveryFinalizeResult.CONFIRMATION_REQUIRED,
-            restarted.confirmNoConflictAndRemoveOriginal(attestationAfterRestart, confirmedNoConflict = false),
-        )
-        assertEquals(
-            LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED,
-            restarted.confirmNoConflictAndRemoveOriginal(attestationAfterRestart, confirmedNoConflict = true),
-        )
         assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
-        fixture.writer.markVerifiedSave(OWNER_A, fixture.draftId)
-        assertEquals(
-            LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED,
-            restarted.confirmNoConflictAndRemoveOriginal(attestationAfterRestart, confirmedNoConflict = true),
-        )
-        assertNull(fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
         assertEquals(0, fixture.writer.serverWriteCount)
     }
 
     @Test
-    fun `edited recovered target retains source when final confirmation detects conflict`() = runBlocking {
+    fun `edited recovered target and original both remain after a local edit`() = runBlocking {
         val fixture = Fixture()
         fixture.currentOwner = OWNER_A
         val attestation = fixture.attest(fixture.draftId)
         assertEquals(LegacyRecoveryCopyResult.COPIED, fixture.coordinator.copy(attestation))
         fixture.writer.editTarget(OWNER_A, fixture.draftId.date, DiaryEntry(mood = 1, note = "changed locally"))
 
-        assertEquals(
-            LegacyRecoveryFinalizeResult.TARGET_CHANGED,
-            fixture.coordinator.confirmNoConflictAndRemoveOriginal(attestation, confirmedNoConflict = true),
-        )
+        assertEquals(DiaryEntry(mood = 1, note = "changed locally"), fixture.writer.target(OWNER_A, fixture.draftId.date))
         assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
         assertEquals(0, fixture.writer.serverWriteCount)
     }
@@ -295,7 +268,6 @@ class LegacyRecoveryCoordinatorTest {
     private class MemoryRecoveryWriter(private val storage: MemoryRecoveryStorage) : LegacyRecoveryWriter {
         private data class Target(val origin: LegacyRecoveryRecordId?, var entry: DiaryEntry)
         private val targets = mutableMapOf<Pair<String, String>, Target>()
-        private val verifiedSavedTargets = mutableSetOf<Pair<String, String>>()
         var interruptAfterNextCopy = false
         var serverWriteCount = 0
             private set
@@ -306,10 +278,6 @@ class LegacyRecoveryCoordinatorTest {
 
         fun editTarget(owner: String, date: String, entry: DiaryEntry) {
             targets.getValue(owner to date).entry = entry
-        }
-
-        fun markVerifiedSave(owner: String, id: LegacyRecoveryRecordId) {
-            verifiedSavedTargets += owner to id.date
         }
 
         fun target(owner: String, date: String): DiaryEntry? = targets[owner to date]?.entry
@@ -338,29 +306,9 @@ class LegacyRecoveryCoordinatorTest {
             return LegacyRecoveryCopyResult.COPIED
         }
 
-        override suspend fun confirmNoConflictAndRemoveOriginal(
-            ownerId: String,
-            id: LegacyRecoveryRecordId,
-            payload: LegacyRecoveryPayload,
-        ): LegacyRecoveryFinalizeResult {
-            if (sourceValue(id) != payload.sourceRaw) return LegacyRecoveryFinalizeResult.SOURCE_CHANGED
-            val target = targets[ownerId to id.date] ?: return LegacyRecoveryFinalizeResult.TARGET_CHANGED
-            if (target.origin != id || target.entry != payload.entry) return LegacyRecoveryFinalizeResult.TARGET_CHANGED
-            if (ownerId to id.date !in verifiedSavedTargets) return LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED
-            removeSource(id)
-            return LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED
-        }
-
         private fun sourceValue(id: LegacyRecoveryRecordId): Any? = when (id.type) {
             LegacyRecoveryType.DRAFT -> storage.drafts["diarium_draft_${id.date}"]
             LegacyRecoveryType.PENDING_SAVE -> storage.pendingSaves[id.date]
-        }
-
-        private fun removeSource(id: LegacyRecoveryRecordId) {
-            when (id.type) {
-                LegacyRecoveryType.DRAFT -> storage.drafts.remove("diarium_draft_${id.date}")
-                LegacyRecoveryType.PENDING_SAVE -> storage.pendingSaves.remove(id.date)
-            }
         }
     }
 

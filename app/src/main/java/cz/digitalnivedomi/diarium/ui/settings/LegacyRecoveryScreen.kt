@@ -9,13 +9,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text as MaterialText
-import androidx.compose.material3.TextButton
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,7 +30,6 @@ import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryAttestation
 import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryAuthorizationResult
 import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryContents
 import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryCopyResult
-import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryFinalizeResult
 import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryInventory
 import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryRecord
 import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryRecordId
@@ -66,7 +63,6 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
     var privacyConfirmed by remember { mutableStateOf(false) }
     var operationMessage by remember { mutableStateOf<String?>(null) }
     var copied by remember { mutableStateOf(false) }
-    var showRemoveOriginalDialog by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
 
     fun clearSelection() {
@@ -77,7 +73,6 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
         privacyConfirmed = false
         operationMessage = null
         copied = false
-        showRemoveOriginalDialog = false
     }
 
     fun refresh() {
@@ -108,7 +103,7 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
         verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
         ScreenSubtitle(
-            text = "Staré místní koncepty a čekající uložení lze obnovit jen ručně. Nic se nepřiřadí ani neodešle automaticky.",
+            text = "Staré místní koncepty a čekající uložení lze obnovit jen ručně. Původní data zůstávají v tomto telefonu; kopii lze samostatně uložit přes bezpečné v2 porovnání (CAS). Tato obrazovka původní data nemaže.",
         )
 
         when (val result = scanResult) {
@@ -276,14 +271,10 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
                         if (copied) {
                             VSpace(Spacing.tight)
                             Text(
-                                "Původní ownerless záznam je zatím zachován. Nejdřív zkontroluj místní kopii. Její další uložení do cloudu vyžaduje samostatnou akci v deníku.",
+                                "Původní ownerless záznam zůstává zachován v tomto telefonu. Nejdřív zkontroluj místní kopii. Kopii můžeš samostatně uložit přes bezpečné v2 porovnání (CAS) v deníku; původní záznam se nikdy automaticky nemaže.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary,
                             )
-                            VSpace(Spacing.tight)
-                            OutlinedButton(onClick = { showRemoveOriginalDialog = true }, enabled = !busy) {
-                                Text("Potvrdit úspěšnou obnovu a odstranit původní kopii")
-                            }
                         }
                     }
                 }
@@ -296,44 +287,6 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
         }
     }
 
-    if (showRemoveOriginalDialog) {
-        AlertDialog(
-            onDismissRequest = { showRemoveOriginalDialog = false },
-            title = { Text("Odstranit původní ownerless záznam?") },
-            text = {
-                Text(
-                    "Tím potvrzuješ, že jsi zkontroloval(a) místní koncept tohoto účtu, výslovné uložení přes serverové v2 porovnání skončilo úspěšně a není známý nevyřešený konflikt. Původní záznam se odstraní jen pokud se od kopie nezměnil; jinak zůstane zachován. Žádný další serverový požadavek se neodešle.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showRemoveOriginalDialog = false
-                    val authorization = attestation
-                    if (authorization != null) {
-                        scope.launch {
-                            busy = true
-                            val outcome = deps.coordinator.confirmNoConflictAndRemoveOriginal(
-                                authorization,
-                                confirmedNoConflict = true,
-                            )
-                            if (outcome == LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED ||
-                                outcome == LegacyRecoveryFinalizeResult.OWNER_CHANGED ||
-                                outcome == LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE
-                            ) {
-                                clearSelection()
-                                scanResult = deps.coordinator.scan()
-                            }
-                            operationMessage = finalizeMessage(outcome)
-                            busy = false
-                        }
-                    }
-                }) { Text("Potvrzuji — odstranit původní záznam") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRemoveOriginalDialog = false }) { Text("Ponechat původní záznam") }
-            },
-        )
-    }
 }
 
 @Composable
@@ -461,25 +414,11 @@ private fun copyMessage(result: LegacyRecoveryCopyResult): String = when (result
     LegacyRecoveryCopyResult.TARGET_CONFLICT -> "Cílový koncept tohoto účtu už existuje. Nebyl přepsán a původní záznam zůstává zachován."
     LegacyRecoveryCopyResult.SOURCE_CHANGED -> "Původní záznam se změnil. Kopie nebyla provedena; zdroj zůstal zachován."
     LegacyRecoveryCopyResult.OWNER_UNAVAILABLE,
-    LegacyRecoveryCopyResult.OWNER_CHANGED -> "Ověřený účet se změnil nebo není dostupný. Kopie nebyla provedena."
+    LegacyRecoveryCopyResult.OWNER_CHANGED -> "Ověřený účet se změnil nebo není dostupný. Kopie nebyla provedena a původní záznam zůstal zachován."
     LegacyRecoveryCopyResult.COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT ->
         "Účet se změnil během kopírování. Kopie mohla být uložena jako místní koncept původního účtu. " +
             "Přihlas se znovu k tomuto účtu a ověř ji; původní záznam zůstává zachován. Nic nebylo odesláno."
     LegacyRecoveryCopyResult.PREVIEW_REQUIRED -> "Nejdřív potvrď vlastnictví a zobraz místní náhled."
     LegacyRecoveryCopyResult.RECORD_NOT_RECOVERABLE -> "Tento záznam už nelze bezpečně obnovit. Původní data zůstala zachována."
     LegacyRecoveryCopyResult.FAILED -> "Kopii se nepodařilo dokončit. Původní záznam zůstává zachován; můžeš bezpečně zkusit znovu."
-}
-
-private fun finalizeMessage(result: LegacyRecoveryFinalizeResult): String = when (result) {
-    LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED -> "Původní záznam byl po potvrzení odstraněn; serverový záznam po ověřeném v2 uložení zůstal zachován."
-    LegacyRecoveryFinalizeResult.CONFIRMATION_REQUIRED -> "Pro odstranění zdroje je nutné výslovné potvrzení."
-    LegacyRecoveryFinalizeResult.TARGET_CHANGED -> "Cílový koncept už neodpovídá kopii. Původní záznam zůstal zachován."
-    LegacyRecoveryFinalizeResult.SOURCE_CHANGED -> "Původní záznam se změnil nebo jej nelze ověřit. Zůstal zachován."
-    LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE,
-    LegacyRecoveryFinalizeResult.OWNER_CHANGED -> "Ověřený účet se změnil nebo není dostupný. Původní záznam zůstal zachován."
-    LegacyRecoveryFinalizeResult.COPY_REQUIRED -> "Nejdřív vytvoř místní kopii."
-    LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED ->
-        "Původní záznam zůstává zachován. Nejdřív po prohlédnutí nastav nový porovnávací základ, ulož přes ověřené v2 porovnání a potom znovu potvrď odstranění zdroje."
-    LegacyRecoveryFinalizeResult.RECORD_NOT_RECOVERABLE -> "Tento záznam už nelze bezpečně potvrdit. Původní data zůstala zachována."
-    LegacyRecoveryFinalizeResult.FAILED -> "Původní záznam se nepodařilo bezpečně odstranit; zůstal zachován."
 }

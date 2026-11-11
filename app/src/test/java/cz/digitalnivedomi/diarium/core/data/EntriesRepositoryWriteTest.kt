@@ -863,6 +863,162 @@ class EntriesRepositoryWriteTest {
     }
 
     @Test
+    fun `saved response requires a strict boolean replay marker and preserves draft and outbox`() = runTest {
+        val drafts = DraftStore.from(context, USER_ID)
+        val pending = PendingSaveStore.from(context, USER_ID)
+        val cases = listOf(
+            "missing" to JSONObject()
+                .put("status", "saved")
+                .put("entry_id", ROW_ID)
+                .put("revision", 1)
+                .toString(),
+            "null" to JSONObject()
+                .put("status", "saved")
+                .put("entry_id", ROW_ID)
+                .put("revision", 1)
+                .put("replayed", JSONObject.NULL)
+                .toString(),
+            "string false" to JSONObject()
+                .put("status", "saved")
+                .put("entry_id", ROW_ID)
+                .put("revision", 1)
+                .put("replayed", "false")
+                .toString(),
+            "string true" to JSONObject()
+                .put("status", "saved")
+                .put("entry_id", ROW_ID)
+                .put("revision", 1)
+                .put("replayed", "true")
+                .toString(),
+            "number" to JSONObject()
+                .put("status", "saved")
+                .put("entry_id", ROW_ID)
+                .put("revision", 1)
+                .put("replayed", 1)
+                .toString(),
+            "malformed JSON" to "{broken synthetic response",
+        )
+
+        cases.forEachIndexed { index, (label, responseBody) ->
+            val date = "2026-09-${(10 + index).toString().padStart(2, '0')}"
+            val entry = DiaryEntry(mood = 4, note = "synthetic $label marker draft")
+            val requestId = "20000000-0000-4000-8000-${index.toString().padStart(12, '0')}"
+            val request = ConditionalEntrySaveRequest(
+                ownerId = USER_ID,
+                date = date,
+                entry = entry,
+                baseline = EntryBaseline(exists = false, id = null, revision = null),
+                requestId = requestId,
+            )
+            drafts.save(
+                date = date,
+                entry = entry,
+                baselineExists = false,
+                pendingSaveRequestId = requestId,
+            )
+            val matchingLiveRow = JSONObject()
+                .put("id", ROW_ID)
+                .put("date", date)
+                .put("revision", 1)
+                .put("mood", 4)
+                .put("note", entry.note)
+            sent.clear()
+            respond = { httpRequest ->
+                when {
+                    httpRequest.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(200, responseBody)
+                    httpRequest.method == "GET" && httpRequest.url.contains("/entries?") ->
+                        HttpResponse(200, JSONArray().put(matchingLiveRow).toString())
+                    else -> null
+                }
+            }
+
+            val result = repository(pending).save(request)
+            val storedDraft = drafts.loadRecord(date)
+
+            assertTrue("$label marker must be unknown", result.exceptionOrNull() is ConditionalSaveUnknownException)
+            assertEquals(request, pending.peekRecord(date)?.conditionalRequest)
+            assertEquals(entry, storedDraft?.entry)
+            assertEquals(requestId, storedDraft?.pendingSaveRequestId)
+            assertEquals(1, sent.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
+            assertTrue("an invalid marker is not permission to accept a historical receipt", sent.none {
+                it.method == "GET" && it.url.contains("/entries?")
+            })
+            assertTrue("unknown saves must not use a legacy write or destructive fallback", sent.none {
+                it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" || it.method == "DELETE"
+            })
+
+            pending.remove(date)
+            drafts.clear(date)
+        }
+    }
+
+    @Test
+    fun `unknown replay marker retries the exact request and verifies the live row`() = runTest {
+        val drafts = DraftStore.from(context, USER_ID)
+        val pending = PendingSaveStore.from(context, USER_ID)
+        val entry = DiaryEntry(mood = 4, note = "synthetic recovery retry")
+        val request = ConditionalEntrySaveRequest(
+            ownerId = USER_ID,
+            date = DATE,
+            entry = entry,
+            baseline = EntryBaseline(exists = false, id = null, revision = null),
+            requestId = REQUEST_RETRY,
+        )
+        drafts.save(
+            date = DATE,
+            entry = entry,
+            baselineExists = false,
+            pendingSaveRequestId = request.requestId,
+        )
+        val accepted = JSONObject()
+            .put("id", ROW_ID)
+            .put("date", DATE)
+            .put("revision", 1)
+            .put("mood", 4)
+            .put("note", entry.note)
+        var firstAttempt = true
+        respond = { httpRequest ->
+            when {
+                httpRequest.url.endsWith("/rpc/save_daily_entry_v2") && firstAttempt -> {
+                    firstAttempt = false
+                    HttpResponse(
+                        200,
+                        JSONObject()
+                            .put("status", "saved")
+                            .put("entry_id", ROW_ID)
+                            .put("revision", 1)
+                            .toString(),
+                    )
+                }
+                httpRequest.url.endsWith("/rpc/save_daily_entry_v2") ->
+                    HttpResponse(200, savedResponse(ROW_ID, 1, replayed = true, includeEntry = false).toString())
+                httpRequest.method == "GET" && httpRequest.url.contains("/entries?") ->
+                    HttpResponse(200, JSONArray().put(accepted).toString())
+                else -> null
+            }
+        }
+
+        val repo = repository(pending)
+        val first = repo.save(request)
+        val storedDraft = drafts.loadRecord(DATE)
+        assertTrue(first.exceptionOrNull() is ConditionalSaveUnknownException)
+        assertEquals(request, pending.peekRecord(DATE)?.conditionalRequest)
+        assertEquals(entry, storedDraft?.entry)
+        assertEquals(request.requestId, storedDraft?.pendingSaveRequestId)
+        val firstBody = sent.single { it.url.endsWith("/rpc/save_daily_entry_v2") }.body
+
+        val retry = flushThroughRepository(pending, repo)
+
+        assertTrue(retry is PendingSaveFlush.Saved)
+        val writes = sent.filter { it.url.endsWith("/rpc/save_daily_entry_v2") }
+        assertEquals(2, writes.size)
+        assertEquals(firstBody, writes[1].body)
+        assertNull(pending.peekRecord(DATE))
+        assertTrue(sent.any { it.method == "GET" && it.url.contains("/entries?") })
+        assertTrue(sent.none { it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" })
+    }
+
+    @Test
     fun `an unknown network outcome retries the identical request id and body`() = runTest {
         var firstAttempt = true
         val accepted = JSONObject()

@@ -36,30 +36,4 @@ class PreferenceLegacyRecoveryWriter(
             sourceStillUnchanged = sourceUnchanged,
         )
     }
-
-    override suspend fun confirmNoConflictAndRemoveOriginal(
-        ownerId: String,
-        id: LegacyRecoveryRecordId,
-        payload: LegacyRecoveryPayload,
-    ): LegacyRecoveryFinalizeResult {
-        if (ownerId.isBlank()) return LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE
-        val target = draftStoreForOwner(ownerId)
-        return when (id.type) {
-            LegacyRecoveryType.DRAFT -> target.confirmAndRemoveLegacyDraftSource(
-                date = id.date,
-                origin = id,
-                sourceRaw = payload.sourceRaw,
-                expectedEntry = payload.entry,
-            )
-            LegacyRecoveryType.PENDING_SAVE -> target.confirmAndRemoveLegacyPendingSource(
-                date = id.date,
-                origin = id,
-                sourceRaw = payload.sourceRaw,
-                expectedEntry = payload.entry,
-                removeSourceIfUnchanged = {
-                    ownerlessPendingSaves.removeLegacyRecoveryValueIfUnchanged(id.date, payload.sourceRaw)
-                },
-            )
-        }
-    }
 }

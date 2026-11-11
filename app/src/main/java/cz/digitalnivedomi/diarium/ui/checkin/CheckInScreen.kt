@@ -863,14 +863,6 @@ fun CheckInScreen(
             }
         }
         if (saved.isSuccess) {
-            val receipt = saved.getOrThrow()
-            try {
-                draftStore.recordVerifiedLegacyRecoverySave(request, receipt)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                Log.w("CheckInDraft", "Verified recovery-save marker failed (${failure.javaClass.simpleName})")
-            }
             try {
                 draftStore.clearIfUnchanged(request.date, request.entry, request.requestId)
             } catch (cancelled: CancellationException) {
