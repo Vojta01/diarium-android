@@ -51,6 +51,7 @@ import cz.digitalnivedomi.diarium.core.data.ConditionalSaveReceipt
 import cz.digitalnivedomi.diarium.core.data.ConditionalSaveUnknownException
 import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.DraftRecord
+import cz.digitalnivedomi.diarium.core.data.DraftStore
 import cz.digitalnivedomi.diarium.core.data.EntryBaseline
 import cz.digitalnivedomi.diarium.core.data.EntryMoveCandidate
 import cz.digitalnivedomi.diarium.core.data.EntryMoveCapability
