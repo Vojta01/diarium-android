@@ -54,6 +54,7 @@ import cz.digitalnivedomi.diarium.core.data.EntryMoveCandidate
 import cz.digitalnivedomi.diarium.core.data.EntryMoveCapability
 import cz.digitalnivedomi.diarium.core.data.EntryMoveConflictException
 import cz.digitalnivedomi.diarium.core.data.EntryMoveRequest
+import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.EntryMoveUnavailableException
 import cz.digitalnivedomi.diarium.core.data.GeneratedReflectionDraftException
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
