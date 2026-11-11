@@ -160,8 +160,18 @@ class ProductionCandidateSafetyContractTests(unittest.TestCase):
         self.assertIn("beta5_compatibility.sql", cas_runner)
         self.assertIn("f|f|f|f|f", cas_runner)
         self.assertIn("Failure rollback left unexpected candidate state", cas_runner)
-        self.assertEqual(1, runner.count("conditional_save_move_candidate_atomic_2026-11-11.sql"))
+        self.assertEqual(2, runner.count("conditional_save_move_candidate_atomic_2026-11-11.sql"))
         self.assertIn("for apply_pass in 1 2", runner)
+
+    def test_fresh_integrated_wrapper_apply_precedes_component_migration_tests(self):
+        runner = (ROOT / "tests" / "run_postgres_tests.sh").read_text(encoding="utf-8")
+        fresh_marker = runner.index("# Fresh integrated apply on the untouched fixture.")
+        component_marker = runner.index("# Apply the candidate bytes, inspect the existing-row fast default")
+        self.assertLess(fresh_marker, component_marker)
+        fresh_section = runner[fresh_marker:component_marker]
+        self.assertIn("conditional_save_move_candidate_atomic_2026-11-11.sql", fresh_section)
+        self.assertIn("fresh_integrated_state", fresh_section)
+        self.assertIn("Failure rollback left unexpected candidate state", runner)
 
     def test_operator_plan_requires_preflight_then_automated_apply_and_postflight(self):
         plan = (ROOT / "CONDITIONAL_SAVE_MOVE_CANDIDATE_2026-11-11.md").read_text(encoding="utf-8").lower()

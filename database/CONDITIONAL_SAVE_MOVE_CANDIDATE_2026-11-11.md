@@ -10,7 +10,7 @@
 
 Use only `database/apply_conditional_save_move_candidate.sh` as the apply entry point. It runs the psql-only atomic wrapper, which opens one explicit transaction, creates the temporary opt-in record inside that transaction, includes all three migration sections in order, and commits automatically only after all succeed. The wrapper is designed for plain `psql -f`; it does not depend on caller-supplied `psql -1`.
 
-The three numbered SQL files below are migration fragments retained for review and disposable test harnesses, not production entry points. Their individual guards do not make standalone `psql -f` atomic: direct fragment execution can commit earlier DDL before a later guard fails. Never invoke the fragments individually or paste them into a SQL editor. A privileged operator can always bypass a wrapper, so this workflow does not claim to make arbitrary fragment execution safe.
+The three numbered SQL files below are migration fragments retained for review and disposable test harnesses; none is a safe or atomic standalone entry point. Their individual guards do not make standalone `psql -f` atomic: direct fragment execution can commit earlier DDL before a later guard fails. Only the all-in-one wrapper invocation provides the documented single-transaction apply/rollback guarantee. Never invoke the fragments individually or paste them into a SQL editor. A privileged operator can always bypass a wrapper, so this workflow does not claim to make arbitrary fragment execution safe.
 
 For a non-test database, the wrapper creates `pg_temp.diarium_production_migration_approval` with `ON COMMIT DROP` in the same transaction as all migrations. Each migration checks exactly one row, exact `current_database()` equality, non-placeholder backup reference, non-placeholder approved window, and the literal confirmation `I_HAVE_VERIFIED_BACKUP_AND_APPROVE_THIS_DATABASE`. Disposable `diarium_test_*` databases retain their existing test path.
 
@@ -18,7 +18,7 @@ The SQL checks that the operator supplied a backup reference; it cannot establis
 
 ## Required preflight — operator-owned; not performed here
 
-1. Identify the exact Supabase project and database from the authorized dashboard/connection, and independently compare the project ref, environment and `SELECT current_database()` with the approved allow-list. Do not infer the target from a URL alone.
+1. Identify the exact Supabase project and database from the authorized dashboard/connection, and independently compare the 20-character project reference, environment and `SELECT current_database()` with the approved allow-list. The runner accepts only the direct endpoint `db.<project-ref>.supabase.co`, requires `sslmode=verify-full`, and binds that TLS-verified hostname to `EXPECTED_SUPABASE_PROJECT_REF`. Pooler/custom hosts are intentionally rejected. If the project reference or direct endpoint cannot be proved from the approved configuration, stop: the runner must fail closed, and an operator must complete this identity preflight before any apply. Do not infer the target from a URL alone.
 2. Verify and record a current restorable Supabase backup/PITR point, recovery permissions, retention, and a restore-test result. Confirm the reference is for this exact project. This candidate makes no backup and does not touch Storage.
 3. Review production schema/function owners, RLS, API-role memberships, grants, extension placement, and the prerequisites checked in the SQL. Confirm `auth.uid()`, `auth.jwt()`, `anon`, `authenticated`, `service_role`, `extensions.digest(bytea,text)`, unique `(user_id,date)` and `(user_id,scale_id,date)` keys, and the intended NOLOGIN owner-role membership/transfer rights. Stop on any difference; do not broaden grants to make it pass.
 4. Record `server_version_num` (must be PostgreSQL 11+) and inspect `pg_total_relation_size('public.entries')`, estimated/live row count, free database storage, active transactions/lock queue, and the expected receipt-table growth. No production size/backup/allow-list data was available here.
@@ -31,26 +31,26 @@ The previous CAS SQL used `UPDATE public.entries SET revision = 1 WHERE revision
 
 ## Automated apply — no review pauses inside the transaction
 
-Complete and sign off the required preflight above before starting. Use the executable runner from an authorized operator shell, with a mode-0600-or-stricter `PGPASSFILE` populated by the operator's secure secret mechanism. Do not put a password-bearing URI or password in a command, SQL file, shell history, CI secret, or this branch. The following consumes operator-verified environment values; it intentionally contains no runnable placeholder credentials:
+Complete and sign off the required preflight above before starting. Use the executable runner from an authorized operator shell, with a mode-0600-or-stricter `PGPASSFILE` containing exactly one non-wildcard entry matching the approved host, port, database, and role. The runner rejects wildcard entries that could match this target and never prints passfile contents. Do not put a password-bearing URI or password in a command, SQL file, shell history, CI secret, or this branch. The following consumes operator-verified environment values; it intentionally contains no runnable placeholder credentials:
 
 ```sh
-: "${SUPABASE_DB_HOST:?set from the verified project connection}"
+: "${EXPECTED_SUPABASE_PROJECT_REF:?set from the approved, verified project identity}"
 : "${EXPECTED_DATABASE:?set from the approved database allow-list}"
 : "${APPROVED_MIGRATION_ROLE:?set from the reviewed owner/transfer preflight}"
 : "${SECURE_PGPASSFILE:?set to the operator-managed mode-0600 PGPASSFILE}"
 : "${VERIFIED_BACKUP_REFERENCE:?set from the verified backup/PITR record}"
 : "${APPROVED_CHANGE_WINDOW:?set from the approved change record}"
 
-export PGHOST="$SUPABASE_DB_HOST"
+export PGHOST="db.${EXPECTED_SUPABASE_PROJECT_REF}.supabase.co"
 export PGPORT=5432
 export PGDATABASE="$EXPECTED_DATABASE"
 export PGUSER="$APPROVED_MIGRATION_ROLE"
-export PGSSLMODE=require
+export PGSSLMODE=verify-full
 export PGPASSFILE="$SECURE_PGPASSFILE"
 database/apply_conditional_save_move_candidate.sh
 ```
 
-The runner fails closed unless the database/approval metadata is present, the `PGPASSFILE` is private and readable, TLS is required, and `PGDATABASE`, `EXPECTED_DATABASE`, and the server's actual `current_database()` agree exactly. It uses `psql -X --no-password -v ON_ERROR_STOP=1 -f` on the wrapper and does not use `-1`. The psql-only wrapper starts `BEGIN`, sets `lock_timeout = '5s'`, `statement_timeout = '120s'` (per statement), and `idle_in_transaction_session_timeout = '30s'`, creates the temporary approval record with `ON COMMIT DROP`, includes the three migration files in the order above, and reaches `COMMIT` only after all succeed. On success it performs an automatic commit and prints a success line. On any SQL error `ON_ERROR_STOP` exits before `COMMIT`; psql closes the connection and PostgreSQL automatically rolls back the open transaction. Do not pause for review, open another query, or wait for operator input while this transaction is running.
+The runner fails closed unless the verified 20-character project reference matches the direct `db.<project-ref>.supabase.co` host, TLS is set to `verify-full`, the exact database and project endpoint are approved, the `PGPASSFILE` is private/readable with one exact non-wildcard target entry, and the server's actual `current_database()` and `current_user` match `EXPECTED_DATABASE` and `PGUSER` exactly. psql runs under a scrubbed environment with only `PGPASSFILE`, `PGSSLMODE=verify-full`, and non-routing process settings; inherited `PGHOSTADDR`, `PGPASSWORD`, `PGSERVICE`, `PGSERVICEFILE`, `PGOPTIONS`, and all other ambient libpq settings cannot redirect it or replace the approved passfile. It uses explicit host/port/user/database arguments and `psql -X --no-password -v ON_ERROR_STOP=1 -f` on the wrapper; it does not use `-1`. The psql-only wrapper starts `BEGIN`, sets `lock_timeout = '5s'`, `statement_timeout = '120s'` (per statement), and `idle_in_transaction_session_timeout = '30s'`, creates the temporary approval record with `ON COMMIT DROP`, includes the three migration files in the order above, and reaches `COMMIT` only after all succeed. On success it performs an automatic commit and prints a success line. On any SQL error `ON_ERROR_STOP` exits before `COMMIT`; psql closes the connection and PostgreSQL automatically rolls back the open transaction. Do not pause for review, open another query, or wait for operator input while this transaction is running. If the exact project identity cannot be established, do not supply a guessed project ref or use a pooler/custom host; stop and complete operator preflight first.
 
 The wrapper uses psql meta-commands (`\set`, `\ir`) and is not valid input for Supabase SQL Editor. Do not paste the wrapper or the individual fragments into SQL Editor. Use the documented runner from an authorized environment with the verified connection and secure password file. If that runner cannot be used, stop and arrange a separately reviewed supported apply path; do not improvise a manual multi-file apply. This wrapper protects only this documented entry path. A privileged operator can still bypass it by running fragments or handwritten SQL outside a transaction.
 
