@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+
+from guard_local_test_database import (
+    GuardRefusal,
+    run_psql_for_url,
+    validate_local_database_url,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = {
@@ -18,26 +22,22 @@ MIGRATIONS = {
     "capability": ROOT / "android_move_capability_v1_2026-11-11.sql",
 }
 URL = os.environ.get("NON_TEST_GUARD_DATABASE_URL", "")
-parsed = urlparse(URL)
-database = unquote(parsed.path.lstrip("/"))
-if parsed.scheme not in {"postgres", "postgresql"} or database != "postgres":
-    sys.exit("Refusing: guard probe requires the exact disposable postgres database.")
-host = parsed.hostname or ""
-if host and host.lower() != "localhost":
-    try:
-        if not ipaddress.ip_address(host).is_loopback:
-            sys.exit("Refusing: guard probe host must be loopback or a local Unix socket.")
-    except ValueError:
-        sys.exit("Refusing: guard probe host must be loopback or a local Unix socket.")
+try:
+    validate_local_database_url(URL, expected_database="postgres")
+except GuardRefusal:
+    sys.exit("Refusing: guard probe requires the exact numeric-loopback postgres database.")
 
 
 def psql(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["psql", URL, "-X", "-v", "ON_ERROR_STOP=1", *args],
-        text=True,
-        capture_output=True,
-        check=check,
-    )
+    try:
+        return run_psql_for_url(
+            URL,
+            ["-X", "-v", "ON_ERROR_STOP=1", *args],
+            expected_database="postgres",
+            check=check,
+        )
+    except GuardRefusal:
+        sys.exit("Refusing: guard probe psql target was rejected.")
 
 
 expected_guard_error = "production candidate refuses non-test database without transaction-local operator approval"

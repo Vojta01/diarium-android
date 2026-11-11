@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/guard_local_test_database.sh"
 DATABASE_NAME="$(python3 "$SCRIPT_DIR/guard_local_test_database.py")"
 printf 'Running cross-contract CAS/move races in disposable database %s\n' "$DATABASE_NAME"
 
@@ -13,7 +14,7 @@ trap 'rm -rf "$RACE_DIR"' EXIT
 OWNER_A='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 OWNER_B='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
 
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -c "
+psql -X -v ON_ERROR_STOP=1 -c "
 INSERT INTO public.entries (id, user_id, date, note, scale_values) VALUES
   ('30000000-0000-0000-0000-000000000009', '$OWNER_A', '2003-05-01', 'update race seed', '{}'),
   ('30000000-0000-0000-0000-000000000010', '$OWNER_A', '2003-06-01', 'cross-user race source', '{}');
@@ -32,7 +33,7 @@ SET LOCAL \"request.jwt.claims\" = '{\"sub\":\"$owner\",\"role\":\"authenticated
 SELECT pg_catalog.pg_sleep(0.15);
 SELECT public.move_daily_entry_v1('$source_date'::date, '$source_id'::uuid, $source_revision::bigint, '$target_date'::date, $target_exists::boolean, $target_id_sql, $target_revision_sql, $confirm::boolean, '$request_id'::uuid);
 COMMIT;"
-  psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "$sql"
+  psql -X -qAt -v ON_ERROR_STOP=1 -c "$sql"
 }
 
 save_rpc() {
@@ -44,12 +45,12 @@ SET LOCAL \"request.jwt.claims\" = '{\"sub\":\"$owner\",\"role\":\"authenticated
 SELECT pg_catalog.pg_sleep(0.15);
 SELECT public.save_daily_entry_v2(pg_catalog.jsonb_build_object('user_id', '$owner', 'date', '$date_key', 'note', '$note'), true, '$entry_id'::uuid, $revision::bigint, '$request_id'::uuid);
 COMMIT;"
-  psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "$sql"
+  psql -X -qAt -v ON_ERROR_STOP=1 -c "$sql"
 }
 
 snapshot() {
   local from_date="$1" to_date="$2"
-  psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 \
+  psql -X -qAt -v ON_ERROR_STOP=1 \
     -c "SELECT pg_catalog.jsonb_build_object('rows', COALESCE(pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object('user_id', user_id, 'id', id, 'date', date, 'revision', revision, 'note', note) ORDER BY user_id, date), '[]'::jsonb))::text FROM public.entries WHERE user_id IN ('$OWNER_A'::uuid, '$OWNER_B'::uuid) AND date BETWEEN '$from_date'::date AND '$to_date'::date;"
 }
 

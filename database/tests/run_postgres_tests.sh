@@ -2,17 +2,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/guard_local_test_database.sh"
 DATABASE_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 DATABASE_NAME="$(python3 "$SCRIPT_DIR/guard_local_test_database.py")"
 printf 'Applying CAS candidate and transactional tests to disposable database %s\n' "$DATABASE_NAME"
 
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$SCRIPT_DIR/prepare_fixture.sql"
+psql -X -v ON_ERROR_STOP=1 -f "$SCRIPT_DIR/prepare_fixture.sql"
 
 # Force a mid-migration prerequisite failure after the extension DDL is reached.
 # The psql -f wrapper owns the transaction and must roll back without caller -1.
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+psql -X -v ON_ERROR_STOP=1 \
   -c 'CREATE ROLE diarium_entry_sync_owner LOGIN;'
-if output="$(psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+if output="$(psql -X -v ON_ERROR_STOP=1 \
     -v expected_database="$DATABASE_NAME" \
     -v verified_backup_reference='ci-synthetic-not-a-backup' \
     -v approved_change_window='disposable-ci-only' \
@@ -31,7 +32,7 @@ case "$output" in
     exit 1
     ;;
 esac
-rollback_state="$(psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "
+rollback_state="$(psql -X -qAt -v ON_ERROR_STOP=1 -c "
 SELECT concat_ws('|',
   EXISTS (SELECT 1 FROM pg_catalog.pg_attribute
            WHERE attrelid = 'public.entries'::pg_catalog.regclass
@@ -47,13 +48,13 @@ if [[ "$rollback_state" != 'f|f|f|f|f' ]]; then
   printf 'Failure rollback left unexpected candidate state: %s\n' "$rollback_state" >&2
   exit 1
 fi
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+psql -X -v ON_ERROR_STOP=1 \
   -c 'DROP ROLE diarium_entry_sync_owner;'
 printf '%s\n' 'PASS migration failure rolled back extension, column, function, receipt table, and trigger.'
 
 # Fresh integrated apply on the untouched fixture.
 fresh_before_state="$(
-  psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "
+  psql -X -qAt -v ON_ERROR_STOP=1 -c "
 SELECT concat_ws('|',
   EXISTS (SELECT 1 FROM pg_catalog.pg_attribute
            WHERE attrelid = 'public.entries'::pg_catalog.regclass
@@ -73,9 +74,9 @@ if [[ "$fresh_before_state" != 'f|f|f|f|f|f|f' ]]; then
   echo "Fresh integrated apply precondition was not clean: $fresh_before_state" >&2
   exit 1
 fi
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v expected_database="$DATABASE_NAME" -v verified_backup_reference='ci-synthetic-not-a-backup' -v approved_change_window='disposable-ci-only' -v confirmation=I_HAVE_VERIFIED_BACKUP_AND_APPROVE_THIS_DATABASE -f "$DATABASE_DIR/conditional_save_move_candidate_atomic_2026-11-11.sql"
+psql -X -v ON_ERROR_STOP=1 -v expected_database="$DATABASE_NAME" -v verified_backup_reference='ci-synthetic-not-a-backup' -v approved_change_window='disposable-ci-only' -v confirmation=I_HAVE_VERIFIED_BACKUP_AND_APPROVE_THIS_DATABASE -f "$DATABASE_DIR/conditional_save_move_candidate_atomic_2026-11-11.sql"
 fresh_integrated_state="$(
-  psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "
+  psql -X -qAt -v ON_ERROR_STOP=1 -c "
 SELECT concat_ws('|',
   EXISTS (SELECT 1 FROM pg_catalog.pg_attribute
            WHERE attrelid = 'public.entries'::pg_catalog.regclass
@@ -100,17 +101,17 @@ echo 'PASS exact atomic wrapper applied successfully on the fresh fixture before
 
 # Apply the candidate bytes, inspect the existing-row fast default, then rerun
 # the exact migration to prove its intended repeatability.
-psql "$LOCAL_TEST_DATABASE_URL" -X -1 -v ON_ERROR_STOP=1 \
+psql -X -1 -v ON_ERROR_STOP=1 \
   -f "$DATABASE_DIR/save_daily_entry_v2_2026-11-10.sql"
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+psql -X -v ON_ERROR_STOP=1 \
   -f "$SCRIPT_DIR/revision_fast_default.sql"
-psql "$LOCAL_TEST_DATABASE_URL" -X -1 -v ON_ERROR_STOP=1 \
+psql -X -1 -v ON_ERROR_STOP=1 \
   -f "$DATABASE_DIR/save_daily_entry_v2_2026-11-10.sql"
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+psql -X -v ON_ERROR_STOP=1 \
   -f "$SCRIPT_DIR/revision_fast_default.sql"
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+psql -X -v ON_ERROR_STOP=1 \
   -f "$SCRIPT_DIR/save_daily_entry_v2_transactional.sql"
-psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+psql -X -v ON_ERROR_STOP=1 \
   -f "$SCRIPT_DIR/beta5_compatibility.sql"
 bash "$SCRIPT_DIR/race_save_daily_entry_v2.sh"
 printf '%s\n' 'CAS, rerun, failure-rollback, fast-default, and beta5 tests passed.'

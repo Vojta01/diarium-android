@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/guard_local_test_database.sh"
 DATABASE_NAME="$(python3 "$SCRIPT_DIR/guard_local_test_database.py")"
 printf 'Running separate-session CAS races in disposable database %s\n' "$DATABASE_NAME"
 
@@ -31,12 +32,12 @@ SET LOCAL \"request.jwt.claims\" = '{\"sub\":\"$owner\",\"role\":\"authenticated
 SELECT pg_catalog.pg_sleep(0.15);
 SELECT public.save_daily_entry_v2($payload_sql, $expected_exists, $expected_id_sql, $expected_revision_sql, '$request_id');
 COMMIT;"
-  psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c "$sql"
+  psql -X -qAt -v ON_ERROR_STOP=1 -c "$sql"
 }
 
 snapshot_sql() {
   local owner="$1" date_key="$2"
-  psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 \
+  psql -X -qAt -v ON_ERROR_STOP=1 \
     -c "SELECT pg_catalog.jsonb_build_object('count', count(*), 'revision', max(revision), 'note', max(note))::text FROM public.entries WHERE user_id = '$owner'::uuid AND date = '$date_key'::date;"
 }
 

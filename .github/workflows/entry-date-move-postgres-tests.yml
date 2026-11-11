@@ -27,8 +27,8 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      LOCAL_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/diarium_test_cas_move_candidate
-      NON_TEST_GUARD_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      LOCAL_TEST_DATABASE_URL: postgresql://postgres:***@127.0.0.1:5432/diarium_test_cas_move_candidate
+      NON_TEST_GUARD_DATABASE_URL: postgresql://postgres:***@127.0.0.1:5432/postgres
     steps:
       - name: Checkout candidate source
         uses: actions/checkout@v4
@@ -44,7 +44,7 @@ jobs:
           sudo apt-get install --yes postgresql-client
       - name: Confirm ephemeral server is PostgreSQL 16
         run: |
-          server_version_num="$(psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c 'SHOW server_version_num')"
+          server_version_num="$(python3 database/tests/guard_local_test_database.py --exec -X -qAt -v ON_ERROR_STOP=1 -c 'SHOW server_version_num')"
           python3 -c 'import sys; value = int(sys.argv[1]); assert 160000 <= value < 170000, f"Expected PostgreSQL 16, got {value}"' "$server_version_num"
       - name: Run integrated migration, rollback, compatibility, grants, and races
         run: bash database/tests/run_candidate_postgres_tests.sh
