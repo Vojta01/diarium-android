@@ -32,6 +32,7 @@ import cz.digitalnivedomi.diarium.core.data.DraftStore
 import cz.digitalnivedomi.diarium.core.data.ConditionalEntrySaveRequest
 import cz.digitalnivedomi.diarium.core.data.EntryBaseline
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
+import cz.digitalnivedomi.diarium.core.data.EntryMoveStore
 import cz.digitalnivedomi.diarium.core.data.HttpRequest
 import cz.digitalnivedomi.diarium.core.data.HttpResponse
 import cz.digitalnivedomi.diarium.core.data.HttpTransport
@@ -90,6 +91,74 @@ class CheckInDraftRecoveryScreenTest {
     @After
     fun restoreCzechLabels() {
         AppLanguage.set(context, Lang.CS)
+    }
+
+    @Test
+    fun `move stays disabled when RPC is absent and becomes available after a fresh server check`() = runBlocking {
+        val moveAvailable = AtomicBoolean(false)
+        val requests = CopyOnWriteArrayList<HttpRequest>()
+        val transport = HttpTransport { request ->
+            requests += request
+            when {
+                request.method == "GET" && request.url.endsWith("/rest/v1/") -> {
+                    val paths = JSONObject().put(
+                        "/rpc/android_move_capability_v1",
+                        JSONObject().put("get", JSONObject()),
+                    )
+                    if (moveAvailable.get()) {
+                        paths.put("/rpc/move_daily_entry_v1", JSONObject().put("post", JSONObject()))
+                    }
+                    HttpResponse(200, JSONObject().put("openapi", "3.0.0").put("paths", paths).toString())
+                }
+                request.url.endsWith("/rpc/android_move_capability_v1") -> HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("contract", "diarium.android.move-capability.v1")
+                        .put("move_daily_entry_v1", moveAvailable.get())
+                        .toString(),
+                )
+                request.method == "GET" && request.url.contains("/entries?") -> HttpResponse(
+                    200,
+                    """[{"user_id":"$OWNER_ID","id":"$ROW_ID","date":"$DATE","revision":7,"mood":2,"mood_emoji":"😐","note":"stored day","updated_at":"$NEW_REVISION"}]""",
+                )
+                else -> HttpResponse(500, "unexpected test request")
+            }
+        }
+        val moveFile = File(context.cacheDir, "move-ui-${System.nanoTime()}.json")
+        val moveOutbox = EntryMoveStore(moveFile, OWNER_ID)
+
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    CheckInScreen(
+                        deps = CheckInDeps(
+                            entries = repository(transportOverride = transport, moveOutbox = moveOutbox),
+                        ),
+                        today = LocalDate.parse(DATE),
+                        lateNight = false,
+                    )
+                }
+            }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithTag("checkin_move").fetchSemanticsNodes().isNotEmpty() &&
+                    compose.onAllNodesWithText(MOVE_DISABLED_COPY).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("checkin_move").performScrollTo().assertIsNotEnabled()
+            compose.onNodeWithText(MOVE_DISABLED_COPY).performScrollTo().assertExists()
+            assertTrue(requests.none { it.url.endsWith("/rpc/move_daily_entry_v1") })
+
+            // A previous offline/missing result is not sticky: a fresh check after
+            // connectivity/deployment recovery can enable the action without staging.
+            moveAvailable.set(true)
+            compose.onNodeWithTag("checkin_move_capability_retry").performScrollTo().performClick()
+            compose.waitUntil(TIMEOUT) {
+                runCatching { compose.onNodeWithTag("checkin_move").assertIsEnabled() }.isSuccess
+            }
+            compose.onNodeWithTag("checkin_move").assertIsEnabled()
+            assertTrue(requests.none { it.url.endsWith("/rpc/move_daily_entry_v1") })
+        } finally {
+            moveFile.delete()
+        }
     }
 
     @Test
@@ -1169,6 +1238,7 @@ class CheckInDraftRecoveryScreenTest {
         remoteReadResponse: HttpResponse? = null,
         pending: PendingSaveStore? = null,
         transportOverride: HttpTransport? = null,
+        moveOutbox: EntryMoveStore? = null,
     ): EntriesRepository {
         val defaultRemoteResponse = HttpResponse(
             200,
@@ -1202,6 +1272,7 @@ class CheckInDraftRecoveryScreenTest {
             session = SessionContext(store),
             pending = pending,
             expectedOwnerId = OWNER_ID,
+            moveOutbox = moveOutbox,
         )
     }
 
@@ -1217,6 +1288,8 @@ class CheckInDraftRecoveryScreenTest {
         const val SAVING_BLOCKED =
             "Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše."
         const val PENDING_TITLE = "Nesynchronizovaný zápis v tomto telefonu"
+        const val MOVE_DISABLED_COPY =
+            "Přesun vypnutý: serverová podpora atomického přesunu není ověřena. Zkontroluj připojení nebo nasazení; nový požadavek nevznikl."
         const val UNSYNCED_STATUS =
             "Tento starší záznam nemá ověřenou původní revizi a identitu CAS. Zůstává nedotčený a nebude automaticky odeslán; je nutná kontrola uživatele."
         const val TIMEOUT = 10_000L

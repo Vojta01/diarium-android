@@ -37,6 +37,11 @@ class EntriesRepositoryDateMoveTest {
     private var moveResponseOverride: ((JSONObject) -> HttpResponse)? = null
     private var serverRpcCalls = 0
     private var serverMutations = 0
+    private var moveRouteVisible = true
+    private var capabilityRouteVisible = true
+    private var capabilityEnabled = true
+    private var capabilityResponseOverride: HttpResponse? = null
+    private var throwCapabilityRead = false
 
     private val sourceRow = JSONObject()
         .put("id", SOURCE_ID)
@@ -64,6 +69,17 @@ class EntriesRepositoryDateMoveTest {
     private val transport = HttpTransport { request ->
         sent += request
         when {
+            request.method == "GET" && request.url.endsWith("/rest/v1/") -> openApiResponse()
+            request.method == "GET" && request.url.endsWith("/rpc/android_move_capability_v1") -> {
+                if (throwCapabilityRead) throw IOException("synthetic offline capability read")
+                capabilityResponseOverride ?: HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("contract", "diarium.android.move-capability.v1")
+                        .put("move_daily_entry_v1", capabilityEnabled)
+                        .toString(),
+                )
+            }
             request.method == "GET" && request.url.contains("/entries?") -> {
                 val query = URLDecoder.decode(request.url.substringAfter('?'), Charsets.UTF_8.name())
                 val date = query.split('&').first { it.startsWith("date=") }.substringAfter("date=eq.")
@@ -93,6 +109,11 @@ class EntriesRepositoryDateMoveTest {
         moveResponseOverride = null
         serverRpcCalls = 0
         serverMutations = 0
+        moveRouteVisible = true
+        capabilityRouteVisible = true
+        capabilityEnabled = true
+        capabilityResponseOverride = null
+        throwCapabilityRead = false
         sessionStore = SessionStore(context)
         saveSession(OWNER_ID)
     }
@@ -304,7 +325,7 @@ class EntriesRepositoryDateMoveTest {
     }
 
     @Test
-    fun `missing server function fails closed and retains both local snapshots`() = runTest {
+    fun `stale advertised rpc returning 404 is retained and not retried after capability revocation`() = runTest {
         val cache = cacheStore("missing-rpc")
         cache.upsertRows(listOf(sourceRow))
         moveResponseOverride = { HttpResponse(404, "{\"message\":\"function not found\"}") }
@@ -322,6 +343,103 @@ class EntriesRepositoryDateMoveTest {
         assertEquals(SOURCE_ID, serverRows[SOURCE_DATE]?.getString("id"))
         assertNull(serverRows[TARGET_DATE])
         assertEquals(listOf(SOURCE_DATE), cache.readRange(SOURCE_DATE, TARGET_DATE)?.map { it.date })
+        val rpcCountAfter404 = sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") }
+
+        // A request that reached an endpoint but did not yield a trustworthy receipt is
+        // not deleted. Once the server revokes the capability, retry is refused locally.
+        capabilityEnabled = false
+        val retry = repo.retryPendingMove(pending.requestId)
+
+        assertTrue(retry.exceptionOrNull() is EntryMoveUnavailableException)
+        assertEquals(rpcCountAfter404, sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") })
+        assertNotNull(EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE))
+        assertNoBlindWriteOrStorageDelete()
+    }
+
+    @Test
+    fun `missing rpc is rejected before any request is staged`() = runTest {
+        moveRouteVisible = false
+        val repo = repository()
+        val candidate = repo.prepareMove(SOURCE_DATE, TARGET_DATE, SOURCE_ID, 7L).getOrThrow()
+
+        val result = repo.move(candidate, confirmOverwrite = false)
+
+        assertTrue(result.exceptionOrNull() is EntryMoveUnavailableException)
+        assertNull(EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE))
+        assertEquals(0, sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") })
+        assertEquals(SOURCE_ID, serverRows[SOURCE_DATE]?.getString("id"))
+        assertNull(serverRows[TARGET_DATE])
+    }
+
+    @Test
+    fun `unreadable capability response fails closed before staging`() = runTest {
+        capabilityResponseOverride = HttpResponse(503, "synthetic capability outage")
+        val repo = repository()
+        val candidate = repo.prepareMove(SOURCE_DATE, TARGET_DATE, SOURCE_ID, 7L).getOrThrow()
+
+        val result = repo.move(candidate, confirmOverwrite = false)
+
+        assertTrue(result.exceptionOrNull() is EntryMoveUnavailableException)
+        assertNull(EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE))
+        assertEquals(0, sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") })
+    }
+
+    @Test
+    fun `capability false defeats a stale OpenAPI route advertisement`() = runTest {
+        capabilityEnabled = false
+        val repo = repository()
+        val candidate = repo.prepareMove(SOURCE_DATE, TARGET_DATE, SOURCE_ID, 7L).getOrThrow()
+
+        val result = repo.move(candidate, confirmOverwrite = false)
+
+        assertTrue(result.exceptionOrNull() is EntryMoveUnavailableException)
+        assertNull(EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE))
+        assertEquals(0, sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") })
+    }
+
+    @Test
+    fun `capability revoked before staging is rejected locally`() = runTest {
+        capabilityEnabled = false
+        val repo = repository()
+        val candidate = repo.prepareMove(SOURCE_DATE, TARGET_DATE, SOURCE_ID, 7L).getOrThrow()
+
+        val result = repo.move(candidate, confirmOverwrite = false)
+
+        assertTrue(result.exceptionOrNull() is EntryMoveUnavailableException)
+        assertNull(EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE))
+        assertEquals(0, sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") })
+    }
+
+    @Test
+    fun `offline capability lookup fails closed without staging`() = runTest {
+        throwCapabilityRead = true
+        val repo = repository()
+        val candidate = repo.prepareMove(SOURCE_DATE, TARGET_DATE, SOURCE_ID, 7L).getOrThrow()
+
+        val result = repo.move(candidate, confirmOverwrite = false)
+
+        assertTrue(result.exceptionOrNull() is EntryMoveUnavailableException)
+        assertNull(EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE))
+        assertEquals(0, sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") })
+    }
+
+    @Test
+    fun `pending unknown request remains retained and cannot retry offline`() = runTest {
+        timeoutFirstMoveResponse = true
+        val repo = repository()
+        val first = repo.move(EntriesRepository.fromRow(sourceRow), SOURCE_DATE, TARGET_DATE)
+        assertTrue(first.exceptionOrNull() is EntryMoveUnknownException)
+        val pending = EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE)
+        assertNotNull(pending)
+        val callsBeforeOfflineRetry = sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") }
+        throwCapabilityRead = true
+
+        val retry = repo.retryPendingMove(pending!!.requestId)
+
+        assertTrue(retry.exceptionOrNull() is EntryMoveUnavailableException)
+        assertEquals(callsBeforeOfflineRetry, sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") })
+        assertEquals(pending.requestId, EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE)?.requestId)
+        assertEquals(SOURCE_ID, serverRows[TARGET_DATE]?.getString("id"))
         assertNoBlindWriteOrStorageDelete()
     }
 
@@ -481,6 +599,15 @@ class EntriesRepositoryDateMoveTest {
         expectedOwnerId = expectedOwnerId,
         moveOutbox = outbox ?: if (withMoveOutbox) EntryMoveStore(moveFile, expectedOwnerId) else null,
     )
+
+    private fun openApiResponse(): HttpResponse {
+        val paths = JSONObject()
+        if (moveRouteVisible) paths.put("/rpc/move_daily_entry_v1", JSONObject().put("post", JSONObject()))
+        if (capabilityRouteVisible) {
+            paths.put("/rpc/android_move_capability_v1", JSONObject().put("get", JSONObject()))
+        }
+        return HttpResponse(200, JSONObject().put("openapi", "3.0.0").put("paths", paths).toString())
+    }
 
     private fun cacheStore(label: String) = EntriesCacheStore(
         File(context.cacheDir, "entry-move-cache-$label-${UUID.randomUUID()}.json"),
