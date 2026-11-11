@@ -9,11 +9,15 @@ printf 'Applying CAS candidate and transactional tests to disposable database %s
 psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$SCRIPT_DIR/prepare_fixture.sql"
 
 # Force a mid-migration prerequisite failure after the extension DDL is reached.
-# The one-transaction invocation must roll back the extension and all earlier DDL.
+# The psql -f wrapper owns the transaction and must roll back without caller -1.
 psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
   -c 'CREATE ROLE diarium_entry_sync_owner LOGIN;'
-if output="$(psql "$LOCAL_TEST_DATABASE_URL" -X -1 -v ON_ERROR_STOP=1 \
-    -f "$DATABASE_DIR/save_daily_entry_v2_2026-11-10.sql" 2>&1)"; then
+if output="$(psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v expected_database="$DATABASE_NAME" \
+    -v verified_backup_reference='ci-synthetic-not-a-backup' \
+    -v approved_change_window='disposable-ci-only' \
+    -v confirmation=I_HAVE_VERIFIED_BACKUP_AND_APPROVE_THIS_DATABASE \
+    -f "$DATABASE_DIR/conditional_save_move_candidate_atomic_2026-11-11.sql" 2>&1)"; then
   printf '%s\n' 'Expected unsafe-owner preflight failure, but migration unexpectedly succeeded.' >&2
   exit 1
 fi

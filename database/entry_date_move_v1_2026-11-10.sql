@@ -1,4 +1,7 @@
 -- PRODUCTION CANDIDATE — review and preflight required; not applied to production.
+-- This file is a migration fragment, not a safe standalone entry point. Apply it
+-- only through database/apply_conditional_save_move_candidate.sh with the other
+-- two candidate files in its explicit transaction.
 -- Requires the candidate's entries.revision trigger, auth.uid()/auth.jwt(),
 -- extensions.digest(), unique entry/scale keys, and Supabase API roles.
 -- Adds a separate RPC and receipt table; beta5 save_daily_entry and CAS v2 are

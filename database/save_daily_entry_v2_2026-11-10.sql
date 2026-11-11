@@ -1,4 +1,8 @@
 -- PRODUCTION CANDIDATE — review and preflight required; not applied to production.
+-- This file is a migration fragment, not a safe standalone entry point. Apply it
+-- only through database/apply_conditional_save_move_candidate.sh, which wraps
+-- all three candidate files in one explicit transaction. A direct psql -f run
+-- can commit earlier DDL before a later guard fails.
 -- Additive authenticated conditional-save foundation. This candidate adds
 -- entries.revision, a dedicated NOLOGIN function owner, durable request
 -- receipts, and public.save_daily_entry_v2(...). It does not alter, disable,

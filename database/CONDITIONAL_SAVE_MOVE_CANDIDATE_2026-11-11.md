@@ -8,11 +8,11 @@
 2. `database/entry_date_move_v1_2026-11-10.sql`
 3. `database/android_move_capability_v1_2026-11-11.sql`
 
-Run all three in one explicit transaction. The capability stays false until the exact move RPC and its authenticated execute grant exist. Each file independently retains the `diarium_test_*` path for disposable CI. Every non-test database requires the temporary approval record below; a direct run without it raises before changing objects.
+Use only `database/apply_conditional_save_move_candidate.sh` as the apply entry point. It runs the psql-only atomic wrapper, which opens one explicit transaction, creates the temporary opt-in record inside that transaction, includes all three migration sections in order, and commits automatically only after all succeed. The wrapper is designed for plain `psql -f`; it does not depend on caller-supplied `psql -1`.
 
-## Why the gate is temporary and explicit
+The three numbered SQL files below are migration fragments retained for review and disposable test harnesses, not production entry points. Their individual guards do not make standalone `psql -f` atomic: direct fragment execution can commit earlier DDL before a later guard fails. Never invoke the fragments individually or paste them into a SQL editor. A privileged operator can always bypass a wrapper, so this workflow does not claim to make arbitrary fragment execution safe.
 
-Do not remove the test-only proof. For a non-test database, create `pg_temp.diarium_production_migration_approval` with `ON COMMIT DROP` inside the same transaction as the migration. Each file checks exactly one row, exact `current_database()` equality, non-placeholder backup reference, non-placeholder approved window, and the literal operator confirmation `I_HAVE_VERIFIED_BACKUP_AND_APPROVE_THIS_DATABASE`. Closing the transaction drops the table. A non-test apply without that record fails closed.
+For a non-test database, the wrapper creates `pg_temp.diarium_production_migration_approval` with `ON COMMIT DROP` in the same transaction as all migrations. Each migration checks exactly one row, exact `current_database()` equality, non-placeholder backup reference, non-placeholder approved window, and the literal confirmation `I_HAVE_VERIFIED_BACKUP_AND_APPROVE_THIS_DATABASE`. Disposable `diarium_test_*` databases retain their existing test path.
 
 The SQL checks that the operator supplied a backup reference; it cannot establish that a Supabase backup exists, is restorable, or includes the intended project. The backup reference, project/database allow-list, approval and change window must be independently verified by the operator. None was supplied for this task.
 
@@ -27,48 +27,36 @@ The SQL checks that the operator supplied a backup reference; it cannot establis
 
 ### Lock/backfill assessment
 
-The previous CAS SQL used `UPDATE public.entries SET revision = 1 WHERE revision IS NULL`, followed by `SET NOT NULL` and a validated CHECK. That is not retained: it would write/WAL every matching row and could create a long table lock, bloat, and disk pressure on an unknown database. This candidate requires PostgreSQL 11+ and adds `revision bigint NOT NULL DEFAULT 1` with a non-volatile constant default, which uses PostgreSQL's fast-default metadata path rather than rewriting old tuples. It does **not** run a revision backfill or validate a full-table CHECK. Existing unknown/partial `revision` columns fail closed for manual review. The `ALTER TABLE` still needs a brief `ACCESS EXCLUSIVE` lock; every migration sets transaction-local `lock_timeout = '5s'`, so it should abort rather than wait indefinitely. A timeout is not a reason to raise the limit blindly; inspect blockers and reschedule.
+The previous CAS SQL used `UPDATE public.entries SET revision = 1 WHERE revision IS NULL`, followed by `SET NOT NULL` and a validated CHECK. That is not retained: it would write/WAL every matching row and could create a long table lock, bloat, and disk pressure on an unknown database. This candidate requires PostgreSQL 11+ and adds `revision bigint NOT NULL DEFAULT 1` with a non-volatile constant default, which uses PostgreSQL's fast-default metadata path rather than rewriting old tuples. It does **not** run a revision backfill or validate a full-table CHECK. Existing unknown/partial `revision` columns fail closed for manual review. The `ALTER TABLE` still needs a brief `ACCESS EXCLUSIVE` lock. The wrapper bounds each lock wait with `lock_timeout = '5s'`, each statement with `statement_timeout = '120s'`, and idle-in-transaction time with `idle_in_transaction_session_timeout = '30s'`; these transaction-local limits remain active across all three files. A timeout aborts the wrapper transaction. Do not raise the limit blindly; inspect blockers and reschedule. The operator must not pause for a review while the lock is held; postflight is after commit.
 
-## Protective transaction command shape (example only; do not run with placeholders)
+## Automated apply — no review pauses inside the transaction
 
-The following is a template for an authorized operator after the preflight above. It is deliberately interactive so the operator can inspect postflight results before `COMMIT`. Run it from the root of this candidate checkout so the `\i` paths resolve. Use the operator's secure secret mechanism to populate a short-lived `PGPASSFILE` owned by the operator with mode `0600`; do not put a password-bearing connection URI or password in the command line, shell history, SQL files, CI secrets, or this branch. The metadata values below are operator-verified, not secrets.
+Complete and sign off the required preflight above before starting. Use the executable runner from an authorized operator shell, with a mode-0600-or-stricter `PGPASSFILE` populated by the operator's secure secret mechanism. Do not put a password-bearing URI or password in a command, SQL file, shell history, CI secret, or this branch. The following consumes operator-verified environment values; it intentionally contains no runnable placeholder credentials:
 
 ```sh
+: "${SUPABASE_DB_HOST:?set from the verified project connection}"
+: "${EXPECTED_DATABASE:?set from the approved database allow-list}"
+: "${APPROVED_MIGRATION_ROLE:?set from the reviewed owner/transfer preflight}"
+: "${SECURE_PGPASSFILE:?set to the operator-managed mode-0600 PGPASSFILE}"
+: "${VERIFIED_BACKUP_REFERENCE:?set from the verified backup/PITR record}"
+: "${APPROVED_CHANGE_WINDOW:?set from the approved change record}"
+
 export PGHOST="$SUPABASE_DB_HOST"
 export PGPORT=5432
 export PGDATABASE="$EXPECTED_DATABASE"
 export PGUSER="$APPROVED_MIGRATION_ROLE"
 export PGSSLMODE=require
 export PGPASSFILE="$SECURE_PGPASSFILE"
-psql -X -v ON_ERROR_STOP=1 \
-  -v expected_database="$EXPECTED_DATABASE" \
-  -v verified_backup_reference="$VERIFIED_BACKUP_REFERENCE" \
-  -v approved_change_window="$APPROVED_CHANGE_WINDOW" \
-  -v confirmation=I_HAVE_VERIFIED_BACKUP_AND_APPROVE_THIS_DATABASE
+database/apply_conditional_save_move_candidate.sh
 ```
 
-At the `psql` prompt, run:
+The runner fails closed unless the database/approval metadata is present, the `PGPASSFILE` is private and readable, TLS is required, and `PGDATABASE`, `EXPECTED_DATABASE`, and the server's actual `current_database()` agree exactly. It uses `psql -X --no-password -v ON_ERROR_STOP=1 -f` on the wrapper and does not use `-1`. The psql-only wrapper starts `BEGIN`, sets `lock_timeout = '5s'`, `statement_timeout = '120s'` (per statement), and `idle_in_transaction_session_timeout = '30s'`, creates the temporary approval record with `ON COMMIT DROP`, includes the three migration files in the order above, and reaches `COMMIT` only after all succeed. On success it performs an automatic commit and prints a success line. On any SQL error `ON_ERROR_STOP` exits before `COMMIT`; psql closes the connection and PostgreSQL automatically rolls back the open transaction. Do not pause for review, open another query, or wait for operator input while this transaction is running.
 
-```sql
-\set ON_ERROR_STOP on
-BEGIN;
-SET LOCAL lock_timeout = '5s';
-CREATE TEMP TABLE diarium_production_migration_approval (
-  expected_database text NOT NULL,
-  verified_backup_reference text NOT NULL,
-  approved_change_window text NOT NULL,
-  confirmation text NOT NULL
-) ON COMMIT DROP;
-INSERT INTO pg_temp.diarium_production_migration_approval VALUES (
-  :'expected_database', :'verified_backup_reference',
-  :'approved_change_window', :'confirmation'
-);
-\i database/save_daily_entry_v2_2026-11-10.sql
-\i database/entry_date_move_v1_2026-11-10.sql
-\i database/android_move_capability_v1_2026-11-11.sql
-```
+The wrapper uses psql meta-commands (`\set`, `\ir`) and is not valid input for Supabase SQL Editor. Do not paste the wrapper or the individual fragments into SQL Editor. Use the documented runner from an authorized environment with the verified connection and secure password file. If that runner cannot be used, stop and arrange a separately reviewed supported apply path; do not improvise a manual multi-file apply. This wrapper protects only this documented entry path. A privileged operator can still bypass it by running fragments or handwritten SQL outside a transaction.
 
-Before commit, inspect the same-session postflight:
+## Postflight after commit
+
+After the runner reports success and the transaction has committed, use a new psql session from the authorized operator environment and review these read-only results. No migration locks are held during this review:
 
 ```sql
 SELECT current_database(), current_setting('server_version_num');
@@ -102,11 +90,11 @@ SELECT pg_catalog.has_function_privilege('authenticated',
 SELECT public.android_move_capability_v1();
 ```
 
-Expected: `revision` is `bigint NOT NULL`; the save/move security-definer functions are owned by their dedicated NOLOGIN owners with `search_path=''` and `row_security=on`; the capability is `SECURITY INVOKER`, executable by `authenticated` but not `anon`; its response reports the exact move contract as available. Review all output and the expected API-role grants. If any result differs, issue `ROLLBACK;` and stop. Only after explicit operator review should the transaction be committed with `COMMIT;`.
+Expected: `revision` is `bigint NOT NULL`; save/move security-definer functions are owned by the dedicated NOLOGIN owners with `search_path=''` and `row_security=on`; the capability function is `SECURITY INVOKER`, executable by `authenticated` but not `anon`, and reports the exact move contract as available. If a postflight differs, stop client rollout and investigate using the approved recovery plan; do not run ad-hoc DDL to make the output match.
 
 ## Rollback
 
-- **Before `COMMIT`:** on any error or unexpected result, run `ROLLBACK;`. If `psql` exits with an error, its connection closes and PostgreSQL rolls back the open transaction. Verify no revision column/trigger, receipts, move RPC, capability function, policies, grants, or owner roles were committed. Do not retry until the cause is understood.
+- **Automatic rollback on failure before `COMMIT`:** through the documented runner, any SQL error in a migration makes psql exit before the wrapper reaches `COMMIT`; closing the connection rolls the full transaction back, including the extension, schema, tables, policies, grants, and role changes attempted earlier in that transaction. Confirm the runner returned nonzero and verify candidate objects are absent before retrying. If the connection drops during/after `COMMIT` or its outcome is otherwise ambiguous, do not assume rollback and do not blindly retry; reconnect and inspect postflight first. This guarantee applies to the wrapper invocation, not standalone migration fragments. Do not retry until the cause is understood.
 - **After `COMMIT`:** do not run ad-hoc `DROP`/`REVOKE` statements. The candidate introduces durable receipts and a revision column, and clients may have started using the new RPCs. Stop client rollout, keep beta5's `save_daily_entry` available, and use the independently verified backup/PITR or a separately reviewed compensating migration. No production rollback was attempted or claimed here.
 
 ## Compatibility and limits

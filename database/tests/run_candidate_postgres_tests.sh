@@ -47,5 +47,20 @@ psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
 # Third race suite exercises competing CAS-vs-move writes and cross-user RLS.
 bash "$SCRIPT_DIR/race_cas_vs_move.sh"
 python3 "$SCRIPT_DIR/probe_non_test_migration_guard.py"
+# Apply and rerun the all-in-one entry point through plain psql -f (no -1).
+# Existing component suites above exercise fresh application; these runs verify
+# the complete wrapper can be rerun after the integrated contract is installed.
+for apply_pass in 1 2; do
+  psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+    -v expected_database="$DATABASE_NAME" \
+    -v verified_backup_reference='ci-synthetic-not-a-backup' \
+    -v approved_change_window='disposable-ci-only' \
+    -v confirmation=I_HAVE_VERIFIED_BACKUP_AND_APPROVE_THIS_DATABASE \
+    -f "$DATABASE_DIR/conditional_save_move_candidate_atomic_2026-11-11.sql"
+done
+psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$SCRIPT_DIR/beta5_compatibility.sql"
+psql "$LOCAL_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -f "$SCRIPT_DIR/capability_privileges.sql"
 
-printf '%s\n' 'All integrated candidate static, PostgreSQL 16, rollback, rerun, compatibility, ACL, and three race suites passed.'
+printf '%s\n' 'All integrated candidate static, PostgreSQL 16, rollback, atomic-wrapper rerun, compatibility, ACL, and three race suites passed.'

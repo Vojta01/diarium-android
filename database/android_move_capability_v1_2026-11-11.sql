@@ -1,4 +1,7 @@
 -- PRODUCTION CANDIDATE — review and preflight required; not applied to production.
+-- This file is a migration fragment, not a safe standalone entry point. Apply it
+-- only through database/apply_conditional_save_move_candidate.sh with the other
+-- two candidate files in its explicit transaction.
 -- Read-only server capability for the Android atomic date move. Apply after the
 -- exact public.move_daily_entry_v1 signature, in the same approved transaction.
 -- Non-test databases require the operator-created temporary approval table

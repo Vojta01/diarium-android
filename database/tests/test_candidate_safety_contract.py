@@ -34,6 +34,7 @@ class ProductionCandidateSafetyContractTests(unittest.TestCase):
     def test_every_migration_fails_closed_outside_disposable_test_databases(self):
         for name, sql in self.normalized.items():
             with self.subTest(migration=name):
+                self.assertIn("migration fragment, not a safe standalone entry point", self.sql[name].lower())
                 for required in (
                     "current_database() !~ '^diarium_test_",
                     "pg_temp.diarium_production_migration_approval",
@@ -98,6 +99,49 @@ class ProductionCandidateSafetyContractTests(unittest.TestCase):
         self.assertIn("create function public.save_daily_entry(payload jsonb)", fixture)
         self.assertNotIn("\\ir ../save_daily_entry_v2_2026-11-10.sql", fixture)
 
+    def test_atomic_wrapper_commits_all_three_migrations_or_rolls_back_on_error(self):
+        wrapper_path = ROOT / "conditional_save_move_candidate_atomic_2026-11-11.sql"
+        wrapper = wrapper_path.read_text(encoding="utf-8")
+        lines = [line.strip().lower() for line in wrapper.splitlines()]
+        self.assertIn(r"\set on_error_stop on", lines)
+        self.assertEqual(1, lines.count("begin;"))
+        self.assertEqual(1, lines.count("commit;"))
+        self.assertLess(lines.index("begin;"), lines.index("\\ir save_daily_entry_v2_2026-11-10.sql"))
+        self.assertLess(lines.index("\\ir save_daily_entry_v2_2026-11-10.sql"), lines.index("\\ir entry_date_move_v1_2026-11-10.sql"))
+        self.assertLess(lines.index("\\ir entry_date_move_v1_2026-11-10.sql"), lines.index("\\ir android_move_capability_v1_2026-11-11.sql"))
+        self.assertLess(lines.index("\\ir android_move_capability_v1_2026-11-11.sql"), lines.index("commit;"))
+        for required in (
+            "set local lock_timeout = '5s';",
+            "set local statement_timeout = '120s';",
+            "set local idle_in_transaction_session_timeout = '30s';",
+            "on commit drop",
+            "pg_temp.diarium_production_migration_approval",
+            "\\ir save_daily_entry_v2_2026-11-10.sql",
+            "\\ir entry_date_move_v1_2026-11-10.sql",
+            "\\ir android_move_capability_v1_2026-11-11.sql",
+        ):
+            self.assertIn(required, wrapper.lower())
+
+    def test_supported_runner_is_executable_and_does_not_depend_on_psql_single_transaction(self):
+        runner_path = ROOT / "apply_conditional_save_move_candidate.sh"
+        runner = runner_path.read_text(encoding="utf-8")
+        self.assertTrue(runner_path.stat().st_mode & 0o111)
+        self.assertIn("-f \"$SQL_FILE\"", runner)
+        self.assertIn("ON_ERROR_STOP=1", runner)
+        self.assertNotRegex(runner, r"(?<!\S)-1(?=\s|$)")
+        self.assertNotIn("--single-transaction", runner)
+        self.assertIn("PGSSLMODE", runner)
+        self.assertIn("PGPASSFILE", runner)
+
+    def test_unsafe_owner_probe_applies_wrapper_without_psql_single_transaction(self):
+        cas_runner = (ROOT / "tests" / "run_postgres_tests.sh").read_text(encoding="utf-8")
+        start = cas_runner.index('if output="$(psql')
+        end = cas_runner.index("then", start)
+        apply_command = cas_runner[start:end]
+        self.assertIn("conditional_save_move_candidate_atomic_2026-11-11.sql", apply_command)
+        self.assertNotRegex(apply_command, r"(?<!\S)-1(?=\s|$)")
+        self.assertIn("Failure rollback left unexpected candidate state", cas_runner)
+
     def test_postgres_runner_covers_rerun_rollback_compatibility_and_three_race_suites(self):
         runner = (ROOT / "tests" / "run_candidate_postgres_tests.sh").read_text(encoding="utf-8")
         cas_runner = (ROOT / "tests" / "run_postgres_tests.sh").read_text(encoding="utf-8")
@@ -116,9 +160,14 @@ class ProductionCandidateSafetyContractTests(unittest.TestCase):
         self.assertIn("beta5_compatibility.sql", cas_runner)
         self.assertIn("f|f|f|f|f", cas_runner)
         self.assertIn("Failure rollback left unexpected candidate state", cas_runner)
+        self.assertEqual(1, runner.count("conditional_save_move_candidate_atomic_2026-11-11.sql"))
+        self.assertIn("for apply_pass in 1 2", runner)
 
-    def test_operator_plan_requires_explicit_transaction_and_backup_metadata(self):
+    def test_operator_plan_requires_preflight_then_automated_apply_and_postflight(self):
         plan = (ROOT / "CONDITIONAL_SAVE_MOVE_CANDIDATE_2026-11-11.md").read_text(encoding="utf-8").lower()
+        self.assertLess(plan.index("required preflight"), plan.index("automated apply"))
+        self.assertLess(plan.index("automated apply"), plan.index("postflight after commit"))
+        self.assertNotIn("before commit, inspect", plan)
         for behavior in (
             "on commit drop",
             "verified_backup_reference",
@@ -126,6 +175,9 @@ class ProductionCandidateSafetyContractTests(unittest.TestCase):
             "rollback",
             "access exclusive",
             "do not revoke the legacy rpc",
+            "automatic commit",
+            "automatic rollback",
+            "supabase sql editor",
         ):
             self.assertIn(behavior, plan)
 
