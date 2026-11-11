@@ -1,6 +1,10 @@
 package cz.digitalnivedomi.diarium.core.data
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -74,6 +78,61 @@ class LegacyRecoveryCoordinatorTest {
         assertEquals(ownerAEntry, fixture.writer.target(OWNER_A, fixture.draftId.date))
         assertEquals(ownerAEntry, fixture.writer.target(OWNER_B, fixture.draftId.date))
         assertEquals(0, fixture.writer.serverWriteCount)
+    }
+
+    @Test
+    fun `owner switch after old owner persistence reports ambiguous old-account copy`() = runBlocking {
+        val fixture = Fixture()
+        fixture.currentOwner = OWNER_A
+        val copyPersisted = CompletableDeferred<Unit>()
+        val releaseWriter = CompletableDeferred<Unit>()
+        val gatedWriter = object : LegacyRecoveryWriter {
+            override suspend fun copyToAccountDraft(
+                ownerId: String,
+                id: LegacyRecoveryRecordId,
+                payload: LegacyRecoveryPayload,
+            ): LegacyRecoveryCopyResult {
+                val outcome = fixture.writer.copyToAccountDraft(ownerId, id, payload)
+                copyPersisted.complete(Unit)
+                releaseWriter.await()
+                return outcome
+            }
+
+            override suspend fun confirmNoConflictAndRemoveOriginal(
+                ownerId: String,
+                id: LegacyRecoveryRecordId,
+                payload: LegacyRecoveryPayload,
+            ): LegacyRecoveryFinalizeResult =
+                fixture.writer.confirmNoConflictAndRemoveOriginal(ownerId, id, payload)
+        }
+        val coordinator = LegacyRecoveryCoordinator(
+            scanner = LegacyRecoveryScanner(fixture.storage),
+            writer = gatedWriter,
+            verifiedOwnerId = { fixture.currentOwner },
+        )
+        val attestation = fixture.attest(fixture.draftId, coordinator)
+        val copy = async { coordinator.copy(attestation) }
+
+        try {
+            withTimeout(5_000) { copyPersisted.await() }
+            fixture.currentOwner = OWNER_B
+            releaseWriter.complete(Unit)
+            val outcome = withTimeout(5_000) { copy.await() }
+
+            assertEquals("COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT", outcome.name)
+            assertEquals("synthetic local note", fixture.writer.target(OWNER_A, fixture.draftId.date)?.note)
+            assertNull(fixture.writer.target(OWNER_B, fixture.draftId.date))
+            assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
+            assertEquals(
+                LegacyRecoveryFinalizeResult.COPY_REQUIRED,
+                coordinator.confirmNoConflictAndRemoveOriginal(attestation, confirmedNoConflict = true),
+            )
+            assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
+            assertEquals(0, fixture.writer.serverWriteCount)
+        } finally {
+            releaseWriter.complete(Unit)
+            if (copy.isActive) copy.cancelAndJoin()
+        }
     }
 
     @Test
