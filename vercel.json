@@ -1,0 +1,7 @@
+{
+  "git": {
+    "deploymentEnabled": false
+  },
+  "ignoreCommand": "exit 0",
+  "crons": []
+}

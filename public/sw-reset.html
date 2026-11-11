@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Diarium — Reset</title>
+  <style>
+    body{background:#0f0f23;color:#a5b4fc;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:2rem}
+    a{color:#6366f1;text-decoration:underline}
+    .box{max-width:400px}
+    h1{font-size:1.2rem;margin-bottom:1rem}
+    p{margin:0.5rem 0;font-size:0.9rem}
+    #status{margin-top:1.5rem;font-size:0.85rem;color:rgba(165,180,252,0.6)}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>Diarium — Reset aplikace</h1>
+    <p>Tato stránka smaže všechny service workery a mezipaměť.</p>
+    <p><button onclick="doReset()" style="background:#6366f1;color:white;border:none;padding:0.6rem 1.2rem;border-radius:6px;cursor:pointer;font-size:0.9rem">Spustit reset</button></p>
+    <p id="status">Připraveno…</p>
+    <p style="margin-top:1rem;font-size:0.75rem">
+      <a href="/">← Zpět na hlavní stránku</a>
+    </p>
+  </div>
+
+  <script>
+    async function doReset() {
+      const el = document.getElementById('status');
+      el.textContent = 'Odpojuji service workery…';
+
+      // 1. Unregister all service workers
+      if ('serviceWorker' in navigator) {
+        try {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const reg of regs) {
+            if (reg.active) {
+              try { reg.active.postMessage({type:'UNREGISTER_SELF'}); } catch(e) {}
+            }
+          }
+          for (const reg of regs) {
+            await reg.unregister();
+          }
+          el.textContent = 'Service workery odpojeny (' + regs.length + ')';
+        } catch(e) {
+          el.textContent = 'Chyba při odpojování SW: ' + e.message;
+        }
+      } else {
+        el.textContent = 'Service workery nejsou podporovány';
+      }
+
+      // 2. Delete all caches
+      if ('caches' in window) {
+        try {
+          const keys = await caches.keys();
+          for (const k of keys) {
+            await caches.delete(k);
+          }
+          el.textContent = 'Mezipaměť smazána (' + keys.length + ' položek)';
+        } catch(e) {
+          el.textContent = 'Chyba při mazání cache: ' + e.message;
+        }
+      }
+
+      // 3. Clear localStorage auth tokens (optional but helps with stale sessions)
+      try {
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && (key.startsWith('sb-') || key.includes('auth') || key.includes('token'))) {
+            keysToRemove.push(key);
+          }
+        }
+        for (const key of keysToRemove) {
+          localStorage.removeItem(key);
+        }
+        if (keysToRemove.length > 0) {
+          el.textContent = 'Session data vymazána (' + keysToRemove.length + ')';
+        }
+      } catch(e) {}
+
+      // 4. Clear cookies for this domain
+      try {
+        document.cookie.split(';').forEach(function(c) {
+          const name = c.split('=')[0].trim();
+          if (name) {
+            document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+            document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=' + location.hostname;
+          }
+        });
+        el.textContent = 'Cookies vymazány';
+      } catch(e) {}
+
+      // 5. Redirect to home after short delay
+      setTimeout(function() {
+        el.textContent = 'Přesměrovávám…';
+        window.location.href = '/';
+      }, 1500);
+    }
+  </script>
+</body>
+</html>

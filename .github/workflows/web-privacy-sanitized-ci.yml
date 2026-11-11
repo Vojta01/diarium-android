@@ -1,0 +1,92 @@
+name: Web app privacy-sanitized CI
+
+on:
+  push:
+    branches:
+      - ci/web-privacy-sanitized-tests-20261111
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-privacy-sanitized-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Full npm tests, TypeScript, Next build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      NEXT_PUBLIC_SUPABASE_URL: "https://example.invalid"
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "ci-only-not-a-real-key"
+      SUPABASE_SERVICE_ROLE_KEY: "ci-only-not-a-real-key"
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: "ci-only.apps.example.invalid"
+      NEXT_PUBLIC_AUTH_CALLBACK_URL: "https://example.invalid/auth/callback"
+      DEEPSEEK_API_KEY: "ci-only-not-a-real-key"
+      VAPID_PRIVATE_KEY: "ci-only-not-a-real-key"
+      NEXT_PUBLIC_VAPID_PUBLIC_KEY: "ci-only-not-a-real-key"
+      VAPID_EMAIL: "mailto:ci@example.invalid"
+      UPSTASH_REDIS_REST_URL: "https://example.invalid"
+      UPSTASH_REDIS_REST_TOKEN: "ci-only-not-a-real-token"
+      CRON_SECRET: "ci-only-not-a-real-secret"
+      AI_GUARD_ALLOWED_USER_ID: "00000000-0000-4000-8000-000000000000"
+      NEXT_PUBLIC_FEATURES: ""
+    steps:
+      - name: Checkout test-only branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run the full npm test suite (privacy-safe output)
+        shell: bash
+        run: |
+          set +e
+          npm test > "$RUNNER_TEMP/npm-test.log" 2>&1
+          result=$?
+          TEST_STATUS="$result" TEST_LOG="$RUNNER_TEMP/npm-test.log" node -e '
+            const fs = require("node:fs");
+            const text = fs.readFileSync(process.env.TEST_LOG, "utf8");
+            const summary = text.split(/\r?\n/).filter((line) =>
+              /^(?:ℹ|#)\s*(?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)\b/.test(line.trim())
+            );
+            if (summary.length) console.log(summary.join("\n"));
+            const status = Number(process.env.TEST_STATUS);
+            if (status === 0) console.log("Full npm test suite passed.");
+            else console.log("npm test failed; detailed output withheld to prevent publishing fixture or diary text.");
+          '
+          exit "$result"
+
+      - name: TypeScript check
+        shell: bash
+        run: |
+          set +e
+          npx --no-install tsc --noEmit > "$RUNNER_TEMP/tsc.log" 2>&1
+          result=$?
+          if [ "$result" -eq 0 ]; then
+            printf '%s\n' 'TypeScript check passed.'
+          else
+            printf '%s\n' 'TypeScript check failed; diagnostics withheld for privacy.'
+          fi
+          exit "$result"
+
+      - name: Next.js production build
+        shell: bash
+        run: |
+          set +e
+          npm run build > "$RUNNER_TEMP/next-build.log" 2>&1
+          result=$?
+          if [ "$result" -eq 0 ]; then
+            printf '%s\n' 'Next.js production build passed.'
+          else
+            printf '%s\n' 'Next.js production build failed; diagnostics withheld for privacy.'
+          fi
+          exit "$result"

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Diarium — přihlášení</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background:#0f0f23; color:#a5b4fc; font-family:system-ui,sans-serif; padding:1.5rem; }
+  .card { max-width:24rem; text-align:center; }
+  h1 { color:#818cf8; font-size:1.15rem; margin:0 0 .75rem; }
+  p { margin:0; font-size:.9rem; line-height:1.5; }
+  a { color:#a5b4fc; }
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>Diarium</h1>
+  <p id="status" role="status">Dokončuji přihlášení…</p>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var statusEl = document.getElementById("status");
+
+  function fail(message) {
+    statusEl.textContent = message;
+    var link = document.createElement("a");
+    link.href = "/";
+    link.textContent = " Zpět na přihlášení";
+    statusEl.appendChild(link);
+  }
+
+  try {
+    var hash = window.location.hash.replace(/^#/, "");
+    if (hash) {
+      var hashParams = new URLSearchParams(hash);
+      if (hashParams.get("access_token")) {
+        // Never interpret JWT claims here. The app route asks Supabase Auth to
+        // validate the token before it stores an identity or opens account data.
+        window.location.replace("/auth/callback" + window.location.search + window.location.hash);
+        return;
+      }
+    }
+
+    var params = new URLSearchParams(window.location.search);
+    if (params.get("code")) {
+      // PKCE: the app route owns the anon key and code verifier.
+      window.location.replace("/auth/callback" + window.location.search);
+      return;
+    }
+
+    if (params.get("error")) {
+      fail("Přihlášení se nepodařilo. Zkus to prosím znovu.");
+      return;
+    }
+
+    fail("Chybí přihlašovací údaje.");
+  } catch (e) {
+    fail("Přihlášení se nepodařilo. Zkus to prosím znovu.");
+  }
+})();
+</script>
+</body>
+</html>

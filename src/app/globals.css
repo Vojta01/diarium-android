@@ -1,0 +1,500 @@
+@import "tailwindcss";
+
+@theme {
+  --color-accent: #6366f1;
+  --color-accent-light: #818cf8;
+  --color-accent-dark: #4f46e5;
+  --color-accent-glow: rgba(99, 102, 241, 0.3);
+  --color-mood-5: #22c55e;
+  --color-mood-4: #86efac;
+  --color-mood-3: #facc15;
+  --color-mood-2: #fb923c;
+  --color-mood-1: #ef4444;
+
+  /* Android 2.0.0-beta5 shared foundations. Additive: the legacy accent and
+     mood tokens above keep their current values so existing utilities render
+     exactly as before until screens migrate to these tokens. */
+  --color-ink: #0a0a0f;
+  --color-ink-deep: #07070b;
+  --color-indigo: #6366f1;
+  --color-indigo-light: #818cf8;
+  --color-indigo-deep: #4338ca;
+  --color-violet: #8b5cf6;
+  --color-surface-1: #12121a;
+  --color-surface-2: #1a1a26;
+  --color-surface-3: #232333;
+  --color-text-1: #ededf5;
+  --color-text-2: #9c9cb4;
+  --color-text-3: #6e6e85;
+  --color-mood-chart-1: #ef4444;
+  --color-mood-chart-2: #f97316;
+  --color-mood-chart-3: #fbbf24;
+  --color-mood-chart-4: #34d399;
+  --color-mood-chart-5: #22d3ee;
+  --radius-card: 20px;
+  --spacing-card: 18px;
+}
+
+:root {
+  /* Diarium is dark-only on the web and on Android (`Theme.kt`). Declaring the
+     scheme makes native date inputs, scrollbars and form controls render dark
+     in Safari/Firefox instead of light-on-dark. */
+  color-scheme: dark;
+
+  /* Canonical beta5 tokens; the @theme entries above expose the Tailwind
+     utilities (bg-ink, rounded-card, p-card, …). */
+  --ink: #0a0a0f;
+  --ink-deep: #07070b;
+  --indigo: #6366f1;
+  --indigo-light: #818cf8;
+  --indigo-deep: #4338ca;
+  --violet: #8b5cf6;
+  --cyan: #22d3ee;
+  --surface-1: #12121a;
+  --surface-2: #1a1a26;
+  --surface-3: #232333;
+  --text-1: #ededf5;
+  --text-2: #9c9cb4;
+  --text-3: #6e6e85;
+  --grid-size: 34px;
+  --pad-card: 18px;
+  --mood-chart-none: #6e6e85;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Ink backdrop with the two beta5 radial washes. */
+body {
+  background-color: var(--ink-deep);
+  background-image:
+    radial-gradient(110% 70% at 105% -5%, rgba(99, 102, 241, 0.20), transparent 60%),
+    radial-gradient(90% 60% at -15% 92%, rgba(139, 92, 246, 0.13), transparent 60%),
+    linear-gradient(180deg, var(--ink-deep), var(--ink) 45%, var(--ink-deep));
+  background-attachment: fixed;
+  color: var(--text-1);
+  min-height: 100vh;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Subtle 34px shell grid — same cell size as Android `ShellChrome`. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.013) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.020) 1px, transparent 1px);
+  background-size: 34px 34px;
+}
+
+/* Top vignette so the screen header sits on a calmer surface. */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 16vh;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(7, 7, 11, 0.55), transparent);
+}
+
+.app-shell {
+  position: relative;
+  min-height: 100vh;
+}
+
+
+/* Glass card — beta5 surface: 20px radius, 18px padding, sheen + hairline. */
+.glass-card {
+  position: relative;
+  z-index: 1;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018) 55%, rgba(18, 18, 26, 0.5)),
+    rgba(18, 18, 26, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 10px 32px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 20px;
+  padding: 18px;
+  transition:
+    border-color 0.22s var(--ease-standard),
+    box-shadow 0.22s var(--ease-standard),
+    transform 0.22s var(--ease-standard);
+}
+
+.glass-card:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+}
+
+/* Glass card — accent border */
+.glass-card-accent {
+  border-color: rgba(99, 102, 241, 0.3);
+  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.1);
+}
+
+/* Glass card — interactive */
+.glass-card-interactive {
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card-interactive:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.glass-card-interactive:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* Glass button */
+.btn-glass {
+  position: relative;
+  z-index: 1;
+  background: rgba(18, 18, 24, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: 1.5rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.btn-glass:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.btn-glass:active {
+  transform: scale(0.95);
+}
+
+/* Primary button */
+.btn-primary {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+  border-radius: 1rem;
+  padding: 0.75rem 1.5rem;
+  font-weight: 600;
+  color: white;
+  transition: all 0.3s;
+}
+
+.btn-primary:hover {
+  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.5);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: scale(0.97);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Scrollbar */
+.overflow-y-auto::-webkit-scrollbar {
+  width: 4px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes bounceIn {
+  0% { opacity: 0; transform: scale(0.3); }
+  50% { opacity: 1; transform: scale(1.1); }
+  70% { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(99, 102, 241, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.6); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes confetti {
+  0% { opacity: 1; transform: translateY(0) rotate(0deg); }
+  100% { opacity: 0; transform: translateY(-60px) rotate(720deg); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.6s ease-out forwards;
+}
+
+.animate-bounce-in {
+  animation: bounceIn 0.8s cubic-bezier(0.68, -0.55, 0.265, 1.55) forwards;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.5s ease-out forwards;
+}
+
+.animate-glow {
+  animation: glow 2s ease-in-out infinite;
+}
+
+.animate-pulse-slow {
+  animation: pulse 3s ease-in-out infinite;
+}
+
+/* Stagger children animations */
+.stagger-children > * {
+  opacity: 0;
+  animation: slideUp 0.4s ease-out forwards;
+}
+
+.stagger-children > *:nth-child(1) { animation-delay: 0.1s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.2s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.3s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.4s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.5s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.6s; }
+
+/* Glass input field */
+.input-glass {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  color: white;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.input-glass:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.input-glass::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* Mood glow effect */
+.mood-glow {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mood-glow:hover {
+  transform: scale(1.15);
+}
+
+.mood-glow.selected {
+  transform: scale(1.2);
+  filter: drop-shadow(0 0 12px currentColor);
+}
+
+/* ── App shell chrome (Android beta5) ── */
+
+.screen-header__bar {
+  display: block;
+  flex-shrink: 0;
+  width: 4px;
+  height: 22px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--indigo-light), var(--indigo));
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.35);
+}
+
+.glass-divider {
+  height: 1px;
+  width: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14), transparent);
+}
+
+/* ── Check-in section card (Android beta5 section hierarchy) ──
+   A dedicated surface instead of `.glass-card` because the section owns its
+   own header/body padding; `glass-card`'s 18px padding would double it. */
+.checkin-section {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.05),
+      rgba(255, 255, 255, 0.014) 58%,
+      rgba(18, 18, 26, 0.48)
+    ),
+    rgba(18, 18, 26, 0.6);
+  box-shadow:
+    0 8px 26px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: border-color 0.22s var(--ease-standard);
+}
+
+.checkin-section:focus-within {
+  border-color: rgba(129, 140, 248, 0.28);
+}
+
+.checkin-section__bar {
+  display: block;
+  flex-shrink: 0;
+  width: 3px;
+  height: 18px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--indigo-light), var(--indigo));
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.35);
+}
+
+/* Range input: the selected track is indigo, the unset track stays muted.
+   Both states also differ in the numeric value, so colour is never the only
+   signal. */
+.checkin-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 24px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.checkin-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.checkin-range::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.checkin-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -7px;
+  height: 20px;
+  width: 20px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: var(--indigo);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.45);
+}
+
+.checkin-range::-moz-range-thumb {
+  height: 18px;
+  width: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  background: var(--indigo);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.45);
+}
+
+.checkin-range:focus-visible {
+  outline: none;
+}
+
+.checkin-range:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 2px #07070b,
+    0 0 0 4px rgba(129, 140, 248, 0.85);
+}
+
+.checkin-range:focus-visible::-moz-range-thumb {
+  box-shadow:
+    0 0 0 2px #07070b,
+    0 0 0 4px rgba(129, 140, 248, 0.85);
+}
+
+
+.nav-shell {
+  background: linear-gradient(180deg, rgba(18, 18, 26, 0.78), rgba(18, 18, 26, 0.97));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.nav-shell__hairline {
+  height: 1px;
+  width: 100%;
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.45), rgba(139, 92, 246, 0.35));
+}
+
+.nav-tab {
+  display: flex;
+  min-width: 58px;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  color: var(--text-3);
+  transition:
+    color 160ms var(--ease-standard),
+    background-color 160ms var(--ease-standard),
+    border-color 160ms var(--ease-standard),
+    box-shadow 160ms var(--ease-standard);
+}
+
+.nav-tab--selected {
+  color: var(--indigo-light);
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.40), rgba(67, 56, 202, 0.24));
+  border-color: rgba(129, 140, 248, 0.55);
+  box-shadow:
+    0 0 18px rgba(99, 102, 241, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
