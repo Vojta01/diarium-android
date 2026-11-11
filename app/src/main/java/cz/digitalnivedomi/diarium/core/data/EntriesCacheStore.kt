@@ -7,6 +7,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.Base64
 
 /**
@@ -86,6 +87,31 @@ class EntriesCacheStore(
                     changed = true
                 }
                 if (changed) persist(stored)
+            }
+        }
+    }
+
+    /**
+     * Atomically mirrors a confirmed server-side date move in this disposable
+     * cache. The moved server row replaces any target row and the source key is
+     * removed in the same file replacement; the move outbox is retained by the
+     * repository until this write succeeds.
+     */
+    suspend fun moveDate(from: String, to: String, movedRow: JSONObject) {
+        mutex.withLock {
+            withContext(Dispatchers.IO) {
+                require(movedRow.plainString("date") == to) { "Moved cache row has the wrong date." }
+                if (ownerId != null && movedRow.plainString("user_id") != ownerId) {
+                    throw IOException("Moved cache row belongs to another owner.")
+                }
+                val stored = if (!file.exists()) {
+                    JSONObject()
+                } else {
+                    readRowsOrNull() ?: throw IOException("Existing entries cache could not be safely updated.")
+                }
+                stored.remove(from)
+                stored.put(to, JSONObject(movedRow.toString()))
+                persist(stored)
             }
         }
     }
