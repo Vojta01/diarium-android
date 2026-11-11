@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -111,6 +112,10 @@ class CheckInRecoveredDraftRebaseTest {
             assertEquals(true, write.getBoolean("p_expected_exists"))
             assertEquals(ROW_ID, write.getString("p_expected_id"))
             assertEquals(7L, write.getLong("p_expected_revision"))
+            val dayReads = requests.filter(::isDayRead)
+            assertEquals(2, dayReads.size)
+            assertTrue(dayReads.last().url.contains("user_id=eq.$OWNER_ID"))
+            assertEquals("Bearer synthetic-access-token", dayReads.last().headers["Authorization"])
             assertTrue(requests.none { it.url.endsWith("/rpc/save_daily_entry") })
             assertNull("the account draft is cleared only after the verified v2 save", fixture.drafts.loadRecord(DATE))
             assertEquals(fixture.sourceRaw, fixture.readLegacySource())
@@ -198,6 +203,7 @@ class CheckInRecoveredDraftRebaseTest {
             val retained = fixture.drafts.loadRecord(DATE)
             assertEquals("synthetic recovered draft", retained?.entry?.note)
             assertEquals(RECOVERY_ID, retained?.legacyRecoveryOrigin)
+            assertTrue(retained?.legacyRecoverySourceHash?.isNotBlank() == true)
             assertEquals(fixture.sourceRaw, fixture.readLegacySource())
             assertTrue(requests.none { it.url.endsWith("/rpc/save_daily_entry") })
         } finally {
@@ -263,6 +269,7 @@ class CheckInRecoveredDraftRebaseTest {
             show(fixture, includeLiveSession = false)
             waitForRecoveryPanel()
             reviewAndRebase(start = false)
+            compose.onNodeWithTag("checkin_rebase_recovered_draft").performScrollTo().performClick()
             assertTrue("fresh authenticated read should start", rebaseReadStarted.await(TIMEOUT, TimeUnit.MILLISECONDS))
 
             session.save(sessionJson(OTHER_OWNER_ID))
@@ -335,6 +342,7 @@ class CheckInRecoveredDraftRebaseTest {
             assertEquals(ROW_ID, restarted?.baselineId)
             assertEquals(7L, restarted?.baselineRevision)
             assertEquals(RECOVERY_ID, restarted?.legacyRecoveryOrigin)
+            assertTrue(restarted?.legacyRecoverySourceHash?.isNotBlank() == true)
 
             compose.runOnIdle {
                 deps.value = CheckInDeps(entries = fixture.repository, drafts = restartedDrafts)
@@ -383,11 +391,13 @@ class CheckInRecoveredDraftRebaseTest {
 
     private fun reviewAndRebase(start: Boolean = true) {
         compose.onNodeWithTag("checkin_review_local_draft").performClick()
-        compose.onNodeWithTag("checkin_rebase_confirmation").performClick()
+        compose.onNodeWithTag("checkin_rebase_recovered_draft").assertIsNotEnabled()
+        compose.onNodeWithTag("checkin_rebase_owner_attestation").performScrollTo().performClick()
+        compose.onNodeWithTag("checkin_rebase_recovered_draft").assertIsNotEnabled()
+        compose.onNodeWithTag("checkin_rebase_confirmation").performScrollTo().performClick()
+        compose.onNodeWithTag("checkin_rebase_recovered_draft").performScrollTo().assertIsEnabled()
         if (start) {
-            compose.onNodeWithTag("checkin_rebase_recovered_draft").assertIsEnabled().performClick()
-        } else {
-            compose.onNodeWithTag("checkin_rebase_recovered_draft").assertIsEnabled()
+            compose.onNodeWithTag("checkin_rebase_recovered_draft").performClick()
         }
     }
 

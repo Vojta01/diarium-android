@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import cz.digitalnivedomi.diarium.ui.i18n.Text
@@ -38,6 +39,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -170,6 +172,9 @@ fun CheckInScreen(
     // never replace its preserved local draft.
     var draftRecovery by remember(ownerId, state.date) { mutableStateOf<DraftRecoveryView?>(null) }
     var draftRecoveryChoice by remember(ownerId, state.date) { mutableStateOf(DraftRecoveryChoice.UNRESOLVED) }
+    var recoveredOwnerAttested by remember(ownerId, state.date) { mutableStateOf(false) }
+    var recoveredLocalReviewed by remember(ownerId, state.date) { mutableStateOf(false) }
+    var recoveredRebaseInProgress by remember(ownerId, state.date) { mutableStateOf(false) }
     var pendingRecovery by remember(ownerId, state.date) { mutableStateOf<PendingRecoveryView?>(null) }
     var pendingRecoveryIssue by remember(ownerId, state.date) { mutableStateOf<PendingSaveRecoveryIssue?>(null) }
     var pendingRecoveryChoice by remember(ownerId, state.date) { mutableStateOf(PendingRecoveryChoice.LOCAL) }
@@ -416,7 +421,7 @@ fun CheckInScreen(
     val currentUploadingPhoto = rememberUpdatedState(uploadingPhoto)
     // A selected-day read, save, photo upload, date-flush or unresolved move owns the form until safe.
     val busy = state.loading || state.saving || uploadingPhoto || dateNavigationInProgress ||
-        moveInProgress || moveRecoveryLoading
+        moveInProgress || moveRecoveryLoading || recoveredRebaseInProgress
     // Bumped by the load error's retry button: the load effect keys on it as well as
     // the date, so a failed read can be attempted again without leaving the day.
     fun retryDayLoad() {
@@ -454,6 +459,103 @@ fun CheckInScreen(
             reloadToken++
         }
     }
+    suspend fun recoveryOwnerIsCurrent(owner: String, repository: EntriesRepository, store: DraftStore): Boolean {
+        if (store.ownerId != owner || repository.currentUserId() != owner) return false
+        val sessionStore = deps.sessionStore ?: return true
+        return SessionContext(sessionStore).userId() == owner
+    }
+
+    fun blockRecoveredRebase(recovery: DraftRecoveryView, message: String) {
+        draftRecovery = DraftRecoveryView(recovery.record, remote = null, remoteError = message)
+        draftRecoveryChoice = DraftRecoveryChoice.UNRESOLVED
+        recoveredOwnerAttested = false
+        recoveredLocalReviewed = false
+        holder.markLoadFailed(
+            message = message,
+            draft = recovery.record.entry,
+            baselineUpdatedAt = recovery.record.baselineUpdatedAt,
+            baselineExists = recovery.record.baselineExists,
+            baselineId = recovery.record.baselineId,
+            baselineRevision = recovery.record.baselineRevision,
+            pendingSaveRequestId = null,
+            pendingAiReflection = recovery.record.pendingAiReflection,
+        )
+    }
+
+    fun rebaseRecoveredDraft(recovery: DraftRecoveryView) {
+        val owner = ownerId ?: return
+        val repository = entriesRepo ?: return
+        val store = drafts?.takeIf { it.ownerId == owner } ?: return
+        if (recoveredRebaseInProgress || !recoveredOwnerAttested || !recoveredLocalReviewed ||
+            draftRecoveryChoice != DraftRecoveryChoice.LOCAL || recovery.remoteError != null ||
+            recovery.record.legacyRecoveryOrigin == null
+        ) return
+        recoveredRebaseInProgress = true
+        scope.launch {
+            try {
+                if (!recoveryOwnerIsCurrent(owner, repository, store)) {
+                    blockRecoveredRebase(recovery, "Účet se během obnovy změnil. Nic nebylo uloženo; znovu ověř účet a načti zápisy.")
+                    return@launch
+                }
+                val refreshed = repository.loadRemoteEntrySnapshot(recovery.record.date)
+                if (!recoveryOwnerIsCurrent(owner, repository, store)) {
+                    blockRecoveredRebase(recovery, "Účet se během načítání změnil. Místní i serverová kopie zůstaly zachovány.")
+                    return@launch
+                }
+                if (refreshed.isFailure) {
+                    blockRecoveredRebase(
+                        recovery,
+                        refreshed.exceptionOrNull()?.message ?: "Serverovou kopii se nepodařilo znovu ověřit.",
+                    )
+                    return@launch
+                }
+                val remote = refreshed.getOrNull()
+                if (remote != null && !EntryBaseline(true, remote.id, remote.revision).isValid) {
+                    blockRecoveredRebase(recovery, "Serverová kopie nemá ověřenou identitu a revizi. Zkus ji načíst znovu.")
+                    return@launch
+                }
+                val current = store.loadRecord(recovery.record.date)
+                if (current != recovery.record) {
+                    blockRecoveredRebase(recovery, "Místní návrh se změnil. Znovu načti a prohlédni obě kopie.")
+                    return@launch
+                }
+                val rebased = store.rebaseLegacyRecovery(recovery.record.date, recovery.record, remote)
+                if (rebased == null) {
+                    blockRecoveredRebase(recovery, "Původní místní záznam se změnil nebo jej nelze ověřit. Nic nebylo přepsáno.")
+                    return@launch
+                }
+                if (!recoveryOwnerIsCurrent(owner, repository, store)) {
+                    blockRecoveredRebase(recovery, "Účet se po načtení změnil. Nic nebylo odesláno; přihlas se zpět a zkus znovu.")
+                    return@launch
+                }
+                draftRecovery = null
+                draftRecoveryChoice = DraftRecoveryChoice.LOCAL
+                recoveredOwnerAttested = false
+                recoveredLocalReviewed = false
+                holder.load(
+                    entry = rebased.entry,
+                    stored = remote != null && isRecordedDay(remote.entry.mood),
+                    baselineUpdatedAt = remote?.updatedAt,
+                    baselineExists = remote != null,
+                    baselineId = remote?.id,
+                    baselineRevision = remote?.revision,
+                    pendingSaveRequestId = null,
+                    pendingAiReflection = rebased.pendingAiReflection,
+                    editingOverride = true,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                blockRecoveredRebase(
+                    recovery,
+                    failure.message ?: "Obnovu se nepodařilo bezpečně ověřit. Místní i serverová kopie zůstaly zachovány.",
+                )
+            } finally {
+                recoveredRebaseInProgress = false
+            }
+        }
+    }
+
     // Why the last photo pick failed, shown right under the buttons (the shared
     // ErrorBanner sits at the top of the form, far above the photo section, so a
     // photo failure was invisible while the user was scrolled down).
@@ -500,6 +602,8 @@ fun CheckInScreen(
     LaunchedEffect(ownerId, state.date, reloadToken, entriesRepo, drafts) {
         traceDraftRecovery("load effect token=$reloadToken")
         holder.setLoading(true)
+        recoveredOwnerAttested = false
+        recoveredLocalReviewed = false
         val repo = entriesRepo
         val savedDraft = try {
             drafts?.loadRecord(state.date)
@@ -758,6 +862,14 @@ fun CheckInScreen(
             }
         }
         if (saved.isSuccess) {
+            val receipt = saved.getOrThrow()
+            try {
+                draftStore.recordVerifiedLegacyRecoverySave(request, receipt)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                Log.w("CheckInDraft", "Verified recovery-save marker failed (${failure.javaClass.simpleName})")
+            }
             try {
                 draftStore.clearIfUnchanged(request.date, request.entry, request.requestId)
             } catch (cancelled: CancellationException) {
@@ -1388,8 +1500,19 @@ fun CheckInScreen(
                 recovery = recovery,
                 choice = draftRecoveryChoice,
                 canChooseCopy = canChooseCopy,
+                ownerAttested = recoveredOwnerAttested,
+                localReviewed = recoveredLocalReviewed,
+                rebaseInProgress = recoveredRebaseInProgress,
+                canRebase = canChooseCopy && ownerId != null && entriesRepo != null &&
+                    drafts?.ownerId == ownerId && recoveredOwnerAttested && recoveredLocalReviewed &&
+                    draftRecoveryChoice == DraftRecoveryChoice.LOCAL && !recoveredRebaseInProgress,
+                onOwnerAttestedChanged = { recoveredOwnerAttested = it },
+                onLocalReviewedChanged = { recoveredLocalReviewed = it },
+                onRebase = { rebaseRecoveredDraft(recovery) },
                 onReviewLocal = {
                     if (canChooseCopy) {
+                        recoveredOwnerAttested = false
+                        recoveredLocalReviewed = false
                         draftRecoveryChoice = DraftRecoveryChoice.LOCAL
                         holder.load(
                             entry = recovery.record.entry,
@@ -1406,6 +1529,8 @@ fun CheckInScreen(
                 },
                 onReviewServer = {
                     if (canChooseCopy) {
+                        recoveredOwnerAttested = false
+                        recoveredLocalReviewed = false
                         draftRecoveryChoice = DraftRecoveryChoice.SERVER
                         val snapshot = recovery.remote
                         holder.load(
@@ -2096,6 +2221,13 @@ private fun DraftRecoveryPanel(
     recovery: DraftRecoveryView,
     choice: DraftRecoveryChoice,
     canChooseCopy: Boolean,
+    ownerAttested: Boolean,
+    localReviewed: Boolean,
+    rebaseInProgress: Boolean,
+    canRebase: Boolean,
+    onOwnerAttestedChanged: (Boolean) -> Unit,
+    onLocalReviewedChanged: (Boolean) -> Unit,
+    onRebase: () -> Unit,
     onReviewLocal: () -> Unit,
     onReviewServer: () -> Unit,
 ) {
@@ -2186,6 +2318,47 @@ private fun DraftRecoveryPanel(
                 testTag = "checkin_review_server",
                 onClick = onReviewServer,
             )
+            if (recovery.record.legacyRecoveryOrigin != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = ownerAttested,
+                        onCheckedChange = { if (canChooseCopy && !rebaseInProgress) onOwnerAttestedChanged(it) },
+                        enabled = canChooseCopy && !rebaseInProgress,
+                        modifier = Modifier.testTag("checkin_rebase_owner_attestation"),
+                    )
+                    Text(
+                        "Potvrzuji, že jsem přihlášený vlastník této obnovené kopie.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = localReviewed,
+                        onCheckedChange = { if (canChooseCopy && choice == DraftRecoveryChoice.LOCAL && !rebaseInProgress) onLocalReviewedChanged(it) },
+                        enabled = canChooseCopy && choice == DraftRecoveryChoice.LOCAL && !rebaseInProgress,
+                        modifier = Modifier.testTag("checkin_rebase_confirmation"),
+                    )
+                    Text(
+                        "Prohlédl(a) jsem místní kopii a chci ji ručně připravit k uložení.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                }
+                Text(
+                    "Příprava znovu načte účetní serverovou revizi; sama nic neodešle ani nesmaže. Potom můžeš samostatně stisknout Uložit, které použije podmíněné v2 porovnání.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+                SecondaryButton(
+                    text = if (rebaseInProgress) "Ověřuji aktuální serverovou verzi…" else "Připravit místní kopii k bezpečnému uložení",
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = canRebase,
+                    testTag = "checkin_rebase_recovered_draft",
+                    onClick = onRebase,
+                )
+            }
         }
         RecoveryCopyPreview("Návrh v tomto telefonu", recovery.record.entry)
         if (recovery.remote != null) {

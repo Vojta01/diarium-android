@@ -54,6 +54,7 @@ class PreferenceLegacyRecoveryWriter(
             LegacyRecoveryType.PENDING_SAVE -> target.confirmAndRemoveLegacyPendingSource(
                 date = id.date,
                 origin = id,
+                sourceRaw = payload.sourceRaw,
                 expectedEntry = payload.entry,
                 removeSourceIfUnchanged = {
                     ownerlessPendingSaves.removeLegacyRecoveryValueIfUnchanged(id.date, payload.sourceRaw)

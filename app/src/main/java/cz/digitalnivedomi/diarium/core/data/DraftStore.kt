@@ -19,6 +19,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.WeakHashMap
 
 /** A draft is bound to the authenticated owner and the server revision it started from. */
@@ -37,6 +38,8 @@ data class DraftRecord(
     val pendingAiReflection: String? = null,
     /** Local recovery origin, used only to make retries idempotent and cleanup verifiable. */
     val legacyRecoveryOrigin: LegacyRecoveryRecordId? = null,
+    /** Hash of the exact ownerless source; never persist a second copy of its diary JSON. */
+    val legacyRecoverySourceHash: String? = null,
 ) {
     fun conflictsWith(
         remoteExists: Boolean,
@@ -203,6 +206,7 @@ class DraftStore(
             ?: return LegacyRecoveryCopyResult.OWNER_UNAVAILABLE
         if (origin.date != date || !isCanonicalDate(date)) return LegacyRecoveryCopyResult.RECORD_NOT_RECOVERABLE
         val mutation = mutationState(owner, date)
+        val sourceHash = sha256(sourceRaw)
         var outcome = LegacyRecoveryCopyResult.FAILED
         mutation.mutex.withLock {
             val targetKey = stringPreferencesKey(key(owner, date))
@@ -228,8 +232,23 @@ class DraftStore(
                     outcome = if (
                         existing != null &&
                         existing.legacyRecoveryOrigin == origin &&
-                        sameUserEntry(existing.entry, entry)
+                        sameUserEntry(existing.entry, entry) &&
+                        (existing.legacyRecoverySourceHash == null || existing.legacyRecoverySourceHash == sourceHash)
                     ) {
+                        if (existing.legacyRecoverySourceHash == null) {
+                            prefs[targetKey] = encode(
+                                owner,
+                                existing.entry,
+                                existing.baselineUpdatedAt,
+                                existing.baselineExists,
+                                existing.baselineId,
+                                existing.baselineRevision,
+                                existing.pendingSaveRequestId,
+                                existing.pendingAiReflection,
+                                origin,
+                                sourceHash,
+                            )
+                        }
                         LegacyRecoveryCopyResult.ALREADY_COPIED
                     } else {
                         LegacyRecoveryCopyResult.TARGET_CONFLICT
@@ -246,6 +265,7 @@ class DraftStore(
                     pendingSaveRequestId = null,
                     pendingAiReflection = null,
                     legacyRecoveryOrigin = origin,
+                    legacyRecoverySourceHash = sourceHash,
                 )
                 outcome = LegacyRecoveryCopyResult.COPIED
             }
@@ -254,8 +274,106 @@ class DraftStore(
     }
 
     /**
+     * Replace an unknown legacy comparison token only after the caller has obtained
+     * a fresh owner-scoped server snapshot and the owner explicitly reviewed the
+     * recovered copy. The account draft must still be byte-for-byte the reviewed
+     * record; otherwise no baseline is changed.
+     */
+    internal suspend fun rebaseLegacyRecovery(
+        date: String,
+        expectedRecord: DraftRecord,
+        remote: StoredEntrySnapshot?,
+    ): DraftRecord? {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return null
+        if (expectedRecord.ownerId != owner || expectedRecord.date != date ||
+            expectedRecord.legacyRecoveryOrigin == null ||
+            expectedRecord.legacyRecoverySourceHash.isNullOrBlank()
+        ) return null
+        if (remote != null && (remote.id.isNullOrBlank() || remote.revision == null)) return null
+
+        val mutation = mutationState(owner, date)
+        var rebased: DraftRecord? = null
+        mutation.mutex.withLock {
+            val targetKey = stringPreferencesKey(key(owner, date))
+            dataStore.edit { prefs ->
+                val current = prefs[targetKey]?.let { decode(owner, date, it) } ?: return@edit
+                if (current != expectedRecord) return@edit
+                val origin = current.legacyRecoveryOrigin ?: return@edit
+                if (origin.type == LegacyRecoveryType.DRAFT) {
+                    val sourceRaw = prefs[stringPreferencesKey(legacyKey(date))] as? String
+                        ?: return@edit
+                    if (sha256(sourceRaw) != current.legacyRecoverySourceHash) return@edit
+                }
+                val updated = current.copy(
+                    baselineUpdatedAt = remote?.updatedAt,
+                    baselineExists = remote != null,
+                    baselineId = remote?.id,
+                    baselineRevision = remote?.revision,
+                    pendingSaveRequestId = null,
+                )
+                prefs[targetKey] = encode(
+                    owner = owner,
+                    entry = updated.entry,
+                    baselineUpdatedAt = updated.baselineUpdatedAt,
+                    baselineExists = updated.baselineExists,
+                    baselineId = updated.baselineId,
+                    baselineRevision = updated.baselineRevision,
+                    pendingSaveRequestId = null,
+                    pendingAiReflection = updated.pendingAiReflection,
+                    legacyRecoveryOrigin = updated.legacyRecoveryOrigin,
+                    legacyRecoverySourceHash = updated.legacyRecoverySourceHash,
+                )
+                rebased = updated
+            }
+        }
+        return rebased
+    }
+
+    /**
+     * Record proof of a verified v2 response before the ordinary account draft is
+     * cleared. This metadata contains only hashes and CAS tokens, never diary text.
+     */
+    internal suspend fun recordVerifiedLegacyRecoverySave(
+        request: ConditionalEntrySaveRequest,
+        receipt: ConditionalSaveReceipt,
+    ): Boolean {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return false
+        if (request.ownerId != owner || !request.baseline.isValid ||
+            receipt.entryId.isBlank() || receipt.revision < 1
+        ) return false
+        val mutation = mutationState(owner, request.date)
+        var recorded = false
+        mutation.mutex.withLock {
+            val targetKey = stringPreferencesKey(key(owner, request.date))
+            val proofKey = stringPreferencesKey(legacyRecoverySaveProofKey(owner, request.date))
+            dataStore.edit { prefs ->
+                val current = prefs[targetKey]?.let { decode(owner, request.date, it) } ?: return@edit
+                val origin = current.legacyRecoveryOrigin ?: return@edit
+                val sourceHash = current.legacyRecoverySourceHash?.takeIf { it.isNotBlank() } ?: return@edit
+                if (current.pendingSaveRequestId != request.requestId ||
+                    !sameUserEntry(current.entry, request.entry)
+                ) return@edit
+                prefs[proofKey] = JSONObject()
+                    .put("ownerId", owner)
+                    .put("date", request.date)
+                    .put("sourceType", origin.type.name)
+                    .put("sourceHash", sourceHash)
+                    .put("requestId", request.requestId)
+                    .put("baselineExists", request.baseline.exists)
+                    .put("baselineId", request.baseline.id)
+                    .put("baselineRevision", request.baseline.revision)
+                    .put("savedEntryId", receipt.entryId)
+                    .put("savedRevision", receipt.revision)
+                    .toString()
+                recorded = true
+            }
+        }
+        return recorded
+    }
+
+    /**
      * Remove a draft-origin source in the same DataStore transaction that verifies
-     * the copied target. The caller invokes this only after explicit user confirmation.
+     * the copied target and a successful owner-scoped v2 save.
      */
     internal suspend fun confirmAndRemoveLegacyDraftSource(
         date: String,
@@ -274,14 +392,6 @@ class DraftStore(
             val targetKey = stringPreferencesKey(key(owner, date))
             val sourceKey = stringPreferencesKey(legacyKey(date))
             dataStore.edit { prefs ->
-                val currentRaw = prefs.asMap().entries
-                    .firstOrNull { it.key.name == targetKey.name }
-                    ?.value as? String
-                val current = currentRaw?.let { runCatching { decode(owner, date, it) }.getOrNull() }
-                if (current == null || current.legacyRecoveryOrigin != origin || !sameUserEntry(current.entry, expectedEntry)) {
-                    outcome = LegacyRecoveryFinalizeResult.TARGET_CHANGED
-                    return@edit
-                }
                 val sourceValue = prefs.asMap().entries
                     .firstOrNull { it.key.name == sourceKey.name }
                     ?.value
@@ -289,7 +399,35 @@ class DraftStore(
                     outcome = LegacyRecoveryFinalizeResult.SOURCE_CHANGED
                     return@edit
                 }
+                val currentRaw = prefs[targetKey]
+                val current = currentRaw?.let { runCatching { decode(owner, date, it) }.getOrNull() }
+                if (currentRaw != null && current == null) {
+                    outcome = LegacyRecoveryFinalizeResult.TARGET_CHANGED
+                    return@edit
+                }
+                val sourceHash = sha256(sourceRaw)
+                if (!hasVerifiedSaveProof(
+                        prefs[stringPreferencesKey(legacyRecoverySaveProofKey(owner, date))] as? String,
+                        owner,
+                        date,
+                        origin,
+                        sourceHash,
+                    )
+                ) {
+                    outcome = LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED
+                    return@edit
+                }
+                if (current != null &&
+                    (current.legacyRecoveryOrigin != origin ||
+                        current.legacyRecoverySourceHash != sourceHash ||
+                        !sameUserEntry(current.entry, expectedEntry) ||
+                        current.pendingSaveRequestId != null)
+                ) {
+                    outcome = LegacyRecoveryFinalizeResult.TARGET_CHANGED
+                    return@edit
+                }
                 prefs.remove(sourceKey)
+                prefs.remove(stringPreferencesKey(legacyRecoverySaveProofKey(owner, date)))
                 outcome = LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED
             }
         }
@@ -303,6 +441,7 @@ class DraftStore(
     internal suspend fun confirmAndRemoveLegacyPendingSource(
         date: String,
         origin: LegacyRecoveryRecordId,
+        sourceRaw: String,
         expectedEntry: DiaryEntry,
         removeSourceIfUnchanged: () -> Boolean,
     ): LegacyRecoveryFinalizeResult {
@@ -313,21 +452,31 @@ class DraftStore(
         }
         val mutation = mutationState(owner, date)
         return mutation.mutex.withLock {
-            val raw = try {
-                dataStore.data.first()[stringPreferencesKey(key(owner, date))]
+            val preferences = try {
+                dataStore.data.first()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
                 return@withLock LegacyRecoveryFinalizeResult.FAILED
-            } ?: return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
-            val current = runCatching { decode(owner, date, raw) }.getOrNull()
-                ?: return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
-            if (current.legacyRecoveryOrigin != origin || !sameUserEntry(current.entry, expectedEntry)) {
-                return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
+            }
+            val raw = preferences[stringPreferencesKey(key(owner, date))]
+            val current = raw?.let { runCatching { decode(owner, date, it) }.getOrNull() }
+            if (raw != null && current == null) return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
+            if (current != null &&
+                (current.legacyRecoveryOrigin != origin ||
+                    current.legacyRecoverySourceHash != sha256(sourceRaw) ||
+                    !sameUserEntry(current.entry, expectedEntry) ||
+                    current.pendingSaveRequestId != null)
+            ) return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
+            val sourceHash = sha256(sourceRaw)
+            val proof = preferences[stringPreferencesKey(legacyRecoverySaveProofKey(owner, date))] as? String
+            if (!hasVerifiedSaveProof(proof, owner, date, origin, sourceHash)) {
+                return@withLock LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED
             }
             if (!runCatching(removeSourceIfUnchanged).getOrDefault(false)) {
                 return@withLock LegacyRecoveryFinalizeResult.SOURCE_CHANGED
             }
+            dataStore.edit { it.remove(stringPreferencesKey(legacyRecoverySaveProofKey(owner, date))) }
             LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED
         }
     }
@@ -370,6 +519,7 @@ class DraftStore(
                         null,
                         current.pendingAiReflection,
                         current.legacyRecoveryOrigin,
+                        current.legacyRecoverySourceHash,
                     )
                     cleared = true
                 }
@@ -439,6 +589,7 @@ class DraftStore(
                 requestId,
                 reflection,
                 prior?.legacyRecoveryOrigin,
+                prior?.legacyRecoverySourceHash,
             )
         }
     }
@@ -457,6 +608,7 @@ class DraftStore(
         pendingSaveRequestId: String?,
         pendingAiReflection: String?,
         legacyRecoveryOrigin: LegacyRecoveryRecordId? = null,
+        legacyRecoverySourceHash: String? = null,
     ): String = JSONObject()
         .put("ownerId", owner)
         .put("entry", entry.toJson())
@@ -473,6 +625,7 @@ class DraftStore(
                     JSONObject().put("type", origin.type.name).put("date", origin.date),
                 )
             }
+            legacyRecoverySourceHash?.let { put("legacyRecoverySourceHash", it) }
         }
         .toString()
 
@@ -504,6 +657,7 @@ class DraftStore(
                 pendingSaveRequestId = json.optString("pendingSaveRequestId").takeIf { it.isNotBlank() },
                 pendingAiReflection = pendingAiReflection,
                 legacyRecoveryOrigin = decodeLegacyRecoveryOrigin(json.optJSONObject("legacyRecoverySource")),
+                legacyRecoverySourceHash = json.optString("legacyRecoverySourceHash").takeIf { it.isNotBlank() },
             )
         } catch (failure: DraftStoreReadException) {
             throw failure
@@ -522,9 +676,52 @@ class DraftStore(
         /** Key used by builds before account scoping; retained only for quarantine diagnostics. */
         fun legacyKey(date: String): String = "diarium_draft_$date"
 
+        internal fun legacyRecoverySaveProofKey(ownerId: String, date: String): String =
+            "diarium_legacy_recovery_saved_v1_${ownerId}_$date"
+
         fun from(context: Context, ownerId: String?): DraftStore =
             DraftStore(context.draftDataStore, ownerId?.takeIf { it.isNotBlank() })
     }
+}
+
+private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(value.toByteArray(Charsets.UTF_8))
+    .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+private fun hasVerifiedSaveProof(
+    raw: String?,
+    owner: String,
+    date: String,
+    origin: LegacyRecoveryRecordId,
+    sourceHash: String,
+): Boolean {
+    if (raw.isNullOrBlank()) return false
+    return runCatching {
+        val json = JSONObject(raw)
+        val exists = if (!json.has("baselineExists") || json.isNull("baselineExists")) {
+            null
+        } else {
+            json.optBoolean("baselineExists")
+        }
+        val baselineId = if (!json.has("baselineId") || json.isNull("baselineId")) {
+            null
+        } else {
+            json.optString("baselineId").takeIf { it.isNotBlank() }
+        }
+        val baselineRevision = if (json.has("baselineRevision") && !json.isNull("baselineRevision")) {
+            json.optLong("baselineRevision")
+        } else {
+            null
+        }
+        json.optString("ownerId") == owner &&
+            json.optString("date") == date &&
+            json.optString("sourceType") == origin.type.name &&
+            json.optString("sourceHash") == sourceHash &&
+            json.optString("requestId").isNotBlank() &&
+            json.optString("savedEntryId").isNotBlank() &&
+            json.optLong("savedRevision", 0) >= 1 &&
+            EntryBaseline(exists, baselineId, baselineRevision).isValid
+    }.getOrDefault(false)
 }
 
 private fun isCanonicalDate(value: String): Boolean =

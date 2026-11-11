@@ -302,7 +302,7 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
             title = { Text("Odstranit původní ownerless záznam?") },
             text = {
                 Text(
-                    "Tím výslovně potvrzuješ, že jsi zkontroloval(a) místní koncept tohoto účtu, obnova proběhla úspěšně a není v konfliktu s jiným místním konceptem. Původní záznam se odstraní jen pokud se od kopie nezměnil a místní cílový koncept stále odpovídá. Žádný serverový požadavek se neodešle.",
+                    "Tím potvrzuješ, že jsi zkontroloval(a) místní koncept tohoto účtu, výslovné uložení přes serverové v2 porovnání skončilo úspěšně a není známý nevyřešený konflikt. Původní záznam se odstraní jen pokud se od kopie nezměnil; jinak zůstane zachován. Žádný další serverový požadavek se neodešle.",
                 )
             },
             confirmButton = {
@@ -471,13 +471,15 @@ private fun copyMessage(result: LegacyRecoveryCopyResult): String = when (result
 }
 
 private fun finalizeMessage(result: LegacyRecoveryFinalizeResult): String = when (result) {
-    LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED -> "Původní záznam byl odstraněn po potvrzení; cílový koncept zůstává místní."
+    LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED -> "Původní záznam byl po potvrzení odstraněn; serverový záznam po ověřeném v2 uložení zůstal zachován."
     LegacyRecoveryFinalizeResult.CONFIRMATION_REQUIRED -> "Pro odstranění zdroje je nutné výslovné potvrzení."
     LegacyRecoveryFinalizeResult.TARGET_CHANGED -> "Cílový koncept už neodpovídá kopii. Původní záznam zůstal zachován."
     LegacyRecoveryFinalizeResult.SOURCE_CHANGED -> "Původní záznam se změnil nebo jej nelze ověřit. Zůstal zachován."
     LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE,
     LegacyRecoveryFinalizeResult.OWNER_CHANGED -> "Ověřený účet se změnil nebo není dostupný. Původní záznam zůstal zachován."
     LegacyRecoveryFinalizeResult.COPY_REQUIRED -> "Nejdřív vytvoř místní kopii."
+    LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED ->
+        "Původní záznam zůstává zachován. Nejdřív po prohlédnutí nastav nový porovnávací základ, ulož přes ověřené v2 porovnání a potom znovu potvrď odstranění zdroje."
     LegacyRecoveryFinalizeResult.RECORD_NOT_RECOVERABLE -> "Tento záznam už nelze bezpečně potvrdit. Původní data zůstala zachována."
     LegacyRecoveryFinalizeResult.FAILED -> "Původní záznam se nepodařilo bezpečně odstranit; zůstal zachován."
 }

@@ -269,11 +269,20 @@ class LegacyRecoveryStorageIntegrationTest {
                 restarted.confirmNoConflictAndRemoveOriginal(restartedAttestation, confirmedNoConflict = false),
             )
             assertEquals(
+                LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED,
+                restarted.confirmNoConflictAndRemoveOriginal(restartedAttestation, confirmedNoConflict = true),
+            )
+            assertEquals(draftRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
+            val recovered = targetA.loadRecord(date)!!
+            val rebased = targetA.rebaseLegacyRecovery(date, recovered, remote = null)!!
+            assertEquals(false, rebased.baselineExists)
+            recordVerifiedRecoverySave(targetA, date, rebased.entry)
+            assertEquals(draftRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
+            assertEquals(
                 LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED,
                 restarted.confirmNoConflictAndRemoveOriginal(restartedAttestation, confirmedNoConflict = true),
             )
-            assertEquals("synthetic-recovery-fixture", targetA.loadRecord(date)?.entry?.note)
-            assertEquals(draftId, targetA.loadRecord(date)?.legacyRecoveryOrigin)
+            assertNull(targetA.loadRecord(date))
             assertNull(recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
 
             val conflictAttestation = (restarted.authorize(
@@ -286,12 +295,12 @@ class LegacyRecoveryStorageIntegrationTest {
             assertEquals(LegacyRecoveryCopyResult.TARGET_CONFLICT, restarted.copy(conflictAttestation))
             assertEquals(existingTarget, targetA.loadRecord(conflictDate)?.entry)
             assertEquals(conflictRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(conflictDate)])
-            assertEquals("synthetic-recovery-fixture", targetA.loadRecord(date)?.entry?.note)
+            assertNull(targetA.loadRecord(date))
         }
     }
 
     @Test
-    fun `real queued-save recovery creates only a local draft and deletes queue only after confirmation`() = runBlocking {
+    fun `real queued-save recovery stays local until a verified v2 save and explicit source confirmation`() = runBlocking {
         val baseContext = ApplicationProvider.getApplicationContext<Context>()
         val root = File.createTempFile("manual-pending-recovery-test", ".tmp").apply {
             delete()
@@ -325,12 +334,43 @@ class LegacyRecoveryStorageIntegrationTest {
             assertEquals(pendingRaw, pendingPrefs.getString(date, null))
             assertTrue(PendingSaveStore.from(context, OWNER_A).peekAll().isEmpty())
             assertEquals(
+                LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED,
+                coordinator.confirmNoConflictAndRemoveOriginal(attestation, confirmedNoConflict = true),
+            )
+            assertEquals(pendingRaw, pendingPrefs.getString(date, null))
+            val recovered = targetA.loadRecord(date)!!
+            val rebased = targetA.rebaseLegacyRecovery(date, recovered, remote = null)!!
+            recordVerifiedRecoverySave(targetA, date, rebased.entry)
+            assertEquals(pendingRaw, pendingPrefs.getString(date, null))
+            assertEquals(
                 LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED,
                 coordinator.confirmNoConflictAndRemoveOriginal(attestation, confirmedNoConflict = true),
             )
             assertNull(pendingPrefs.getString(date, null))
-            assertEquals("synthetic-pending-fixture", targetA.loadRecord(date)?.entry?.note)
+            assertNull(targetA.loadRecord(date))
         }
+    }
+
+    private suspend fun recordVerifiedRecoverySave(store: DraftStore, date: String, entry: DiaryEntry) {
+        val requestId = "30000000-0000-4000-8000-${date.replace("-", "")}0000"
+        val baseline = EntryBaseline(exists = false, id = null, revision = null)
+        store.save(
+            date = date,
+            entry = entry,
+            baselineUpdatedAt = null,
+            baselineExists = false,
+            baselineId = null,
+            baselineRevision = null,
+            pendingSaveRequestId = requestId,
+        )
+        val request = ConditionalEntrySaveRequest(OWNER_A, date, entry, baseline, requestId)
+        assertTrue(
+            store.recordVerifiedLegacyRecoverySave(
+                request,
+                ConditionalSaveReceipt("10000000-0000-4000-8000-000000000001", revision = 1, replayed = false),
+            ),
+        )
+        assertTrue(store.clearIfUnchanged(date, entry, requestId))
     }
 
     private class SyntheticContext(

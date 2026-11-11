@@ -74,6 +74,7 @@ enum class LegacyRecoveryFinalizeResult {
     OWNER_UNAVAILABLE,
     OWNER_CHANGED,
     COPY_REQUIRED,
+    SERVER_SAVE_REQUIRED,
     RECORD_NOT_RECOVERABLE,
     FAILED,
 }

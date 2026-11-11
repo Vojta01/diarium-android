@@ -4,12 +4,20 @@ on:
   push:
     branches:
       - ci/android-recovery-rebase-20261111
+  workflow_dispatch:
+    inputs:
+      recovery_tests_only:
+        description: Run only the synthetic recovered-draft UI suite
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   database-contract-tests:
+    if: github.ref == 'refs/heads/ci/android-recovery-rebase-20261111'
     name: Database contract tests (static)
     runs-on: ubuntu-latest
     steps:
@@ -22,6 +30,7 @@ jobs:
         run: python3 -m unittest discover -s database/tests -p 'test_android_move_capability_contract.py' -v
 
   android-unit-tests:
+    if: github.ref == 'refs/heads/ci/android-recovery-rebase-20261111'
     name: Full Android unit tests (no APK or release)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -51,7 +60,14 @@ jobs:
           test ! -e keystore.properties
           test ! -e local.properties
 
+      - name: Run targeted recovered-draft UI tests
+        if: github.event_name == 'workflow_dispatch' && inputs.recovery_tests_only
+        run: >-
+          ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest
+          --tests cz.digitalnivedomi.diarium.ui.CheckInRecoveredDraftRebaseTest
+
       - name: Run complete app unit-test suite
+        if: github.event_name != 'workflow_dispatch' || !inputs.recovery_tests_only
         run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest
 
       - name: Run buildSrc tests

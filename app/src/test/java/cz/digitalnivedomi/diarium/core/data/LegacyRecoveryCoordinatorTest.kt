@@ -194,7 +194,7 @@ class LegacyRecoveryCoordinatorTest {
     }
 
     @Test
-    fun `interrupted copy survives process restart and can be safely confirmed`() = runBlocking {
+    fun `interrupted recovery survives restart but source removal waits for a verified save`() = runBlocking {
         val fixture = Fixture()
         fixture.currentOwner = OWNER_A
         fixture.writer.interruptAfterNextCopy = true
@@ -211,6 +211,12 @@ class LegacyRecoveryCoordinatorTest {
             LegacyRecoveryFinalizeResult.CONFIRMATION_REQUIRED,
             restarted.confirmNoConflictAndRemoveOriginal(attestationAfterRestart, confirmedNoConflict = false),
         )
+        assertEquals(
+            LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED,
+            restarted.confirmNoConflictAndRemoveOriginal(attestationAfterRestart, confirmedNoConflict = true),
+        )
+        assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])
+        fixture.writer.markVerifiedSave(OWNER_A, fixture.draftId)
         assertEquals(
             LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED,
             restarted.confirmNoConflictAndRemoveOriginal(attestationAfterRestart, confirmedNoConflict = true),
@@ -289,6 +295,7 @@ class LegacyRecoveryCoordinatorTest {
     private class MemoryRecoveryWriter(private val storage: MemoryRecoveryStorage) : LegacyRecoveryWriter {
         private data class Target(val origin: LegacyRecoveryRecordId?, var entry: DiaryEntry)
         private val targets = mutableMapOf<Pair<String, String>, Target>()
+        private val verifiedSavedTargets = mutableSetOf<Pair<String, String>>()
         var interruptAfterNextCopy = false
         var serverWriteCount = 0
             private set
@@ -299,6 +306,10 @@ class LegacyRecoveryCoordinatorTest {
 
         fun editTarget(owner: String, date: String, entry: DiaryEntry) {
             targets.getValue(owner to date).entry = entry
+        }
+
+        fun markVerifiedSave(owner: String, id: LegacyRecoveryRecordId) {
+            verifiedSavedTargets += owner to id.date
         }
 
         fun target(owner: String, date: String): DiaryEntry? = targets[owner to date]?.entry
@@ -335,6 +346,7 @@ class LegacyRecoveryCoordinatorTest {
             if (sourceValue(id) != payload.sourceRaw) return LegacyRecoveryFinalizeResult.SOURCE_CHANGED
             val target = targets[ownerId to id.date] ?: return LegacyRecoveryFinalizeResult.TARGET_CHANGED
             if (target.origin != id || target.entry != payload.entry) return LegacyRecoveryFinalizeResult.TARGET_CHANGED
+            if (ownerId to id.date !in verifiedSavedTargets) return LegacyRecoveryFinalizeResult.SERVER_SAVE_REQUIRED
             removeSource(id)
             return LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED
         }
