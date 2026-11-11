@@ -119,7 +119,7 @@ class LegacyRecoveryCoordinatorTest {
             releaseWriter.complete(Unit)
             val outcome = withTimeout(5_000) { copy.await() }
 
-            assertEquals("COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT", outcome.name)
+            assertEquals(LegacyRecoveryCopyResult.COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT, outcome)
             assertEquals("synthetic local note", fixture.writer.target(OWNER_A, fixture.draftId.date)?.note)
             assertNull(fixture.writer.target(OWNER_B, fixture.draftId.date))
             assertEquals(fixture.originalDraft, fixture.storage.drafts["diarium_draft_${fixture.draftId.date}"])

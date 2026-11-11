@@ -256,7 +256,8 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
                                     busy = true
                                     val outcome = deps.coordinator.copy(authorized)
                                     if (outcome == LegacyRecoveryCopyResult.OWNER_CHANGED ||
-                                        outcome == LegacyRecoveryCopyResult.OWNER_UNAVAILABLE
+                                        outcome == LegacyRecoveryCopyResult.OWNER_UNAVAILABLE ||
+                                        outcome == LegacyRecoveryCopyResult.COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT
                                     ) {
                                         clearSelection()
                                         scanResult = deps.coordinator.scan()
@@ -461,6 +462,9 @@ private fun copyMessage(result: LegacyRecoveryCopyResult): String = when (result
     LegacyRecoveryCopyResult.SOURCE_CHANGED -> "Původní záznam se změnil. Kopie nebyla provedena; zdroj zůstal zachován."
     LegacyRecoveryCopyResult.OWNER_UNAVAILABLE,
     LegacyRecoveryCopyResult.OWNER_CHANGED -> "Ověřený účet se změnil nebo není dostupný. Kopie nebyla provedena."
+    LegacyRecoveryCopyResult.COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT ->
+        "Účet se změnil během kopírování. Kopie mohla být uložena jako místní koncept původního účtu. " +
+            "Přihlas se znovu k tomuto účtu a ověř ji; původní záznam zůstává zachován. Nic nebylo odesláno."
     LegacyRecoveryCopyResult.PREVIEW_REQUIRED -> "Nejdřív potvrď vlastnictví a zobraz místní náhled."
     LegacyRecoveryCopyResult.RECORD_NOT_RECOVERABLE -> "Tento záznam už nelze bezpečně obnovit. Původní data zůstala zachována."
     LegacyRecoveryCopyResult.FAILED -> "Kopii se nepodařilo dokončit. Původní záznam zůstává zachován; můžeš bezpečně zkusit znovu."

@@ -60,6 +60,7 @@ enum class LegacyRecoveryCopyResult {
     SOURCE_CHANGED,
     OWNER_UNAVAILABLE,
     OWNER_CHANGED,
+    COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT,
     PREVIEW_REQUIRED,
     RECORD_NOT_RECOVERABLE,
     FAILED,
@@ -163,7 +164,18 @@ class LegacyRecoveryCoordinator(
         } catch (_: Exception) {
             LegacyRecoveryCopyResult.FAILED
         }
-        if (verifiedOwnerId() != owner) return LegacyRecoveryCopyResult.OWNER_CHANGED
+        // The writer is bound to the attested owner, so it cannot redirect to a
+        // newly active account. A completed/ambiguous write may nevertheless have
+        // persisted before this post-check; do not claim that no copy happened.
+        if (verifiedOwnerId() != owner) {
+            return when (outcome) {
+                LegacyRecoveryCopyResult.COPIED,
+                LegacyRecoveryCopyResult.ALREADY_COPIED,
+                LegacyRecoveryCopyResult.FAILED ->
+                    LegacyRecoveryCopyResult.COPY_MAY_HAVE_COMPLETED_FOR_OLD_ACCOUNT
+                else -> LegacyRecoveryCopyResult.OWNER_CHANGED
+            }
+        }
         if (outcome == LegacyRecoveryCopyResult.COPIED || outcome == LegacyRecoveryCopyResult.ALREADY_COPIED) {
             attestation.copyCompleted = true
         }
