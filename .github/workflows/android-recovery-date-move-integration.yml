@@ -1,0 +1,72 @@
+name: Android recovery and safe date-move integration tests
+
+on:
+  push:
+    branches:
+      - ci/android-recovery-date-move-integration-20261111
+
+permissions:
+  contents: read
+
+jobs:
+  move-capability-contract:
+    name: Server capability SQL contract (static)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify capability migration contract
+        run: python3 -m unittest discover -s database/tests -p 'test_android_move_capability_contract.py' -v
+
+  android-unit-tests:
+    name: Full Android unit tests (no APK or release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Confirm private build inputs are absent
+        run: |
+          test ! -e app/google-services.json
+          test ! -e keystore.properties
+          test ! -e local.properties
+
+      - name: Run complete app unit-test suite
+        run: ./gradlew --no-daemon --max-workers=2 :app:testDebugUnitTest
+
+      - name: Run buildSrc tests
+        if: always()
+        run: ./gradlew -p buildSrc --no-daemon --max-workers=2 test
+
+      - name: Upload synthetic test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-recovery-date-move-test-reports
+          path: |
+            app/build/test-results/testDebugUnitTest/TEST-*.xml
+            app/build/reports/tests/testDebugUnitTest/**
+            buildSrc/build/test-results/test/TEST-*.xml
+            buildSrc/build/reports/tests/test/**
+          if-no-files-found: warn
+          retention-days: 7
