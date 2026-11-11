@@ -1289,7 +1289,7 @@ class CheckInDraftRecoveryScreenTest {
             "Ukládání zůstává zablokované. Prohlédni si obě kopie; výběr nic nepřepíše."
         const val PENDING_TITLE = "Nesynchronizovaný zápis v tomto telefonu"
         const val MOVE_DISABLED_COPY =
-            "Přesun vypnutý: serverová podpora atomického přesunu není ověřena. Zkontroluj připojení nebo nasazení; nový požadavek nevznikl."
+            "Přesun vypnutý: serverová metoda move_daily_entry_v1 není dostupná. Zkontroluj nasazení; nový požadavek nevznikl."
         const val UNSYNCED_STATUS =
             "Tento starší záznam nemá ověřenou původní revizi a identitu CAS. Zůstává nedotčený a nebude automaticky odeslán; je nutná kontrola uživatele."
         const val TIMEOUT = 10_000L

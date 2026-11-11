@@ -10,6 +10,18 @@ permissions:
   contents: read
 
 jobs:
+  capability-contract:
+    name: Server capability SQL contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out CI-only branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify capability migration contract
+        run: python3 -m unittest discover -s database/tests -p 'test_android_move_capability_contract.py' -v
+
   android-unit-tests:
     name: Focused Android move tests (no APK or release)
     runs-on: ubuntu-latest

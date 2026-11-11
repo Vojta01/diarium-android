@@ -53,8 +53,11 @@ class SupabaseClient(
     }
 
     /** PostgREST SELECT, e.g. `get("entries", mapOf("user_id" to "eq.$id", "limit" to "50"))`. */
-    fun get(path: String, query: Map<String, String> = emptyMap()): HttpResponse =
-        execute("GET", path, query, body = null)
+    fun get(
+        path: String,
+        query: Map<String, String> = emptyMap(),
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): HttpResponse = execute("GET", path, query, body = null, extraHeaders = extraHeaders)
 
     /** PostgREST INSERT/UPSERT (add `Prefer: resolution=merge-duplicates` via [extraHeaders]). */
     fun post(

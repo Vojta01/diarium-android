@@ -119,6 +119,19 @@ class EntriesRepositoryDateMoveTest {
     }
 
     @Test
+    fun `enabled capability requires exposed routes and live server confirmation`() = runTest {
+        val repo = repository()
+
+        val capability = repo.checkAtomicDateMoveCapability()
+
+        assertTrue(capability.available)
+        val openApiRequest = sent.single { it.url.endsWith("/rest/v1/") }
+        assertEquals("application/openapi+json", openApiRequest.headers["Accept"])
+        assertTrue(sent.any { it.url.endsWith("/rpc/android_move_capability_v1") })
+        assertEquals(0, sent.count { it.url.endsWith("/rpc/move_daily_entry_v1") })
+    }
+
+    @Test
     fun `absent destination uses exact tokens and updates cached photo and scale data`() = runTest {
         val cache = cacheStore("absent")
         cache.upsertRows(listOf(sourceRow, targetRow(TARGET_DATE, TARGET_ID, "stale cache target", PHOTO_TARGET)))
@@ -398,10 +411,11 @@ class EntriesRepositoryDateMoveTest {
     }
 
     @Test
-    fun `capability revoked before staging is rejected locally`() = runTest {
-        capabilityEnabled = false
+    fun `capability revoked after a successful preflight blocks staging`() = runTest {
         val repo = repository()
         val candidate = repo.prepareMove(SOURCE_DATE, TARGET_DATE, SOURCE_ID, 7L).getOrThrow()
+        assertTrue(repo.checkAtomicDateMoveCapability().available)
+        capabilityEnabled = false
 
         val result = repo.move(candidate, confirmOverwrite = false)
 

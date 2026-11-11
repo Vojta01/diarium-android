@@ -23,6 +23,12 @@ import java.util.UUID
  */
 data class PhotoUpload(val url: String? = null, val error: String? = null)
 
+/** Server-reported move capability; local outbox presence alone never enables moves. */
+data class EntryMoveCapability(
+    val available: Boolean,
+    val reason: String,
+)
+
 /** Server token captured by the successful foreground day read. */
 data class EntryBaseline(
     val exists: Boolean?,
@@ -115,9 +121,65 @@ class EntriesRepository(
 
     suspend fun currentUserId(): String? = authorizedUserId()
 
-    /** True only when this live owner has an owner-matched durable move outbox. */
-    val supportsAtomicDateMove: Boolean
-        get() = authorizedUserId()?.let { moveOutboxFor(it) != null } == true
+    /**
+     * Reads deployment capability from PostgREST itself. The OpenAPI document must
+     * expose both the read-only capability RPC and the exact move RPC route; the
+     * capability RPC independently checks the live PostgreSQL function signature
+     * and authenticated EXECUTE privilege. Any missing, stale, malformed or
+     * unreachable evidence fails closed. This value is never persisted/cached.
+     */
+    suspend fun checkAtomicDateMoveCapability(): EntryMoveCapability = withContext(Dispatchers.IO) {
+        val userId = authorizedUserId()
+            ?: return@withContext EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+        if (moveOutboxFor(userId) == null) {
+            return@withContext EntryMoveCapability(false, MOVE_LOCAL_RECOVERY_UNAVAILABLE)
+        }
+        try {
+            val ownerClient = ownerClient(userId)
+            val schemaResponse = ownerClient.get(
+                path = "",
+                extraHeaders = mapOf("Accept" to POSTGREST_OPENAPI_MEDIA_TYPE),
+            )
+            if (!schemaResponse.isSuccessful) {
+                return@withContext EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+            }
+            val schema = schemaResponse.asJsonObject()
+                ?: return@withContext EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+            val paths = schema.optJSONObject("paths")
+                ?: return@withContext EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+            if (paths.optJSONObject(MOVE_CAPABILITY_PATH)?.optJSONObject("get") == null) {
+                return@withContext EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+            }
+            if (paths.optJSONObject(MOVE_RPC_PATH)?.optJSONObject("post") == null) {
+                return@withContext EntryMoveCapability(false, MOVE_SERVER_RPC_UNAVAILABLE)
+            }
+            if (authorizedUserId() != userId) {
+                return@withContext EntryMoveCapability(false, MOVE_SESSION_CHANGED)
+            }
+            val capabilityResponse = ownerClient.get(MOVE_CAPABILITY_PATH)
+            if (!capabilityResponse.isSuccessful) {
+                return@withContext EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+            }
+            val capability = capabilityResponse.asJsonObject()
+                ?: return@withContext EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+            if (capability.plainString("contract") != MOVE_CAPABILITY_CONTRACT ||
+                !capability.has("move_daily_entry_v1")
+            ) {
+                return@withContext EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+            }
+            if (!capability.optBoolean("move_daily_entry_v1", false)) {
+                return@withContext EntryMoveCapability(false, MOVE_SERVER_RPC_UNAVAILABLE)
+            }
+            if (authorizedUserId() != userId) {
+                return@withContext EntryMoveCapability(false, MOVE_SESSION_CHANGED)
+            }
+            EntryMoveCapability(true, MOVE_SERVER_RPC_AVAILABLE)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            EntryMoveCapability(false, MOVE_CAPABILITY_UNVERIFIED)
+        }
+    }
 
     private fun authorizedUserId(): String? = session.userId()?.takeIf { current ->
         expectedOwnerId == null || current == expectedOwnerId
@@ -1209,6 +1271,13 @@ class EntriesRepository(
             if (authorizedUserId() != userId) {
                 return@withDispatchLock Result.failure(SessionOwnerMismatchException())
             }
+            val capability = checkAtomicDateMoveCapability()
+            if (!capability.available) {
+                return@withDispatchLock Result.failure(EntryMoveUnavailableException(capability.reason))
+            }
+            if (authorizedUserId() != userId) {
+                return@withDispatchLock Result.failure(SessionOwnerMismatchException())
+            }
             try {
                 outbox.stage(request)
             } catch (cancelled: CancellationException) {
@@ -1241,6 +1310,13 @@ class EntriesRepository(
                 return@withDispatchLock Result.failure(failure)
             } ?: return@withDispatchLock Result.failure(IllegalStateException("Přesun k opakování nebyl nalezen."))
             if (request.ownerId != userId) {
+                return@withDispatchLock Result.failure(SessionOwnerMismatchException())
+            }
+            val capability = checkAtomicDateMoveCapability()
+            if (!capability.available) {
+                return@withDispatchLock Result.failure(EntryMoveUnavailableException(capability.reason))
+            }
+            if (authorizedUserId() != userId) {
                 return@withDispatchLock Result.failure(SessionOwnerMismatchException())
             }
             dispatchMove(request, outbox)
@@ -1311,7 +1387,7 @@ class EntriesRepository(
             return when {
                 response.code == 404 -> Result.failure(
                     EntryMoveUnavailableException(
-                        "Server nepodporuje atomický přesun. Nic se nezapsalo; místní kopie a požadavek zůstaly zachované.",
+                        "Serverová metoda přesunu vrátila 404. Místní kopie i požadavek zůstaly zachované; před opakováním se musí znovu ověřit dostupnost serveru.",
                     ),
                 )
                 response.code == 408 || response.code == 429 || response.code >= 500 ->
@@ -1593,6 +1669,21 @@ class EntriesRepository(
         /** A move is two remote writes; queuing only its target would duplicate the day. */
         private const val MOVE_OFFLINE_BLOCKED =
             "Přesun data vyžaduje připojení. Zápis zůstal v původním dni; zkus to znovu online."
+
+        private const val POSTGREST_OPENAPI_MEDIA_TYPE = "application/openapi+json"
+        private const val MOVE_RPC_PATH = "/rpc/move_daily_entry_v1"
+        private const val MOVE_CAPABILITY_PATH = "rpc/android_move_capability_v1"
+        private const val MOVE_CAPABILITY_CONTRACT = "diarium.android.move-capability.v1"
+        private const val MOVE_CAPABILITY_UNVERIFIED =
+            "Přesun vypnutý: podporu serveru se nepodařilo ověřit. Zkontroluj připojení nebo nasazení; nový požadavek nevznikl."
+        private const val MOVE_SERVER_RPC_UNAVAILABLE =
+            "Přesun vypnutý: serverová metoda move_daily_entry_v1 není dostupná. Zkontroluj nasazení; nový požadavek nevznikl."
+        private const val MOVE_SERVER_RPC_AVAILABLE =
+            "Dostupnost metody move_daily_entry_v1 je potvrzena serverem."
+        private const val MOVE_LOCAL_RECOVERY_UNAVAILABLE =
+            "Přesun vypnutý: místní požadavek nelze bezpečně evidovat."
+        private const val MOVE_SESSION_CHANGED =
+            "Účet se změnil. Dostupnost přesunu nebyla potvrzena pro aktuální účet."
 
         private const val PENDING_SAVE_RECOVERY_BLOCKED =
             "Místní zápis čeká na bezpečné dokončení nebo ruční kontrolu. Původní kopie zůstala zachovaná."

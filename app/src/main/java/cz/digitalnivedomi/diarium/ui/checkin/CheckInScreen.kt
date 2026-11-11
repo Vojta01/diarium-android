@@ -51,8 +51,10 @@ import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.DraftRecord
 import cz.digitalnivedomi.diarium.core.data.EntryBaseline
 import cz.digitalnivedomi.diarium.core.data.EntryMoveCandidate
+import cz.digitalnivedomi.diarium.core.data.EntryMoveCapability
 import cz.digitalnivedomi.diarium.core.data.EntryMoveConflictException
 import cz.digitalnivedomi.diarium.core.data.EntryMoveRequest
+import cz.digitalnivedomi.diarium.core.data.EntryMoveUnavailableException
 import cz.digitalnivedomi.diarium.core.data.GeneratedReflectionDraftException
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
@@ -177,6 +179,8 @@ fun CheckInScreen(
     var movePickerOpen by remember(ownerId) { mutableStateOf(false) }
     var moveCandidate by remember(ownerId) { mutableStateOf<EntryMoveCandidate?>(null) }
     var moveInProgress by remember(ownerId) { mutableStateOf(false) }
+    var moveCapability by remember(ownerId) { mutableStateOf<EntryMoveCapability?>(null) }
+    var moveCapabilityLoading by remember(ownerId) { mutableStateOf(ownerId != null && entriesRepo != null) }
     var pendingMoveRecovery by remember(ownerId, state.date) { mutableStateOf<EntryMoveRequest?>(null) }
     var moveRecoveryError by remember(ownerId, state.date) { mutableStateOf<String?>(null) }
     var moveRecoveryLoading by remember(ownerId, state.date) { mutableStateOf(ownerId != null) }
@@ -201,6 +205,45 @@ fun CheckInScreen(
             moveRecoveryLoading = false
         }
     }
+
+    suspend fun refreshMoveCapabilityFor(owner: String, repo: EntriesRepository) {
+        if (ownerId != owner || repo.currentUserId() != owner) return
+        moveCapabilityLoading = true
+        try {
+            val result = repo.checkAtomicDateMoveCapability()
+            if (ownerId == owner && repo.currentUserId() == owner) {
+                moveCapability = result
+            }
+        } finally {
+            if (ownerId == owner) moveCapabilityLoading = false
+        }
+    }
+
+    fun refreshMoveCapability() {
+        val repo = entriesRepo ?: return
+        val owner = ownerId ?: return
+        if (moveCapabilityLoading) return
+        scope.launch { refreshMoveCapabilityFor(owner, repo) }
+    }
+
+    LaunchedEffect(ownerId, entriesRepo) {
+        val repo = entriesRepo
+        val owner = ownerId
+        if (repo == null || owner == null) {
+            moveCapability = EntryMoveCapability(
+                available = false,
+                reason = "Přesun vypnutý: přihlášený účet nelze ověřit.",
+            )
+            moveCapabilityLoading = false
+            return@LaunchedEffect
+        }
+        refreshMoveCapabilityFor(owner, repo)
+    }
+
+    // Re-check on foreground return so a temporary outage or a later server rollout
+    // does not leave a stale disabled state. A visible retry action handles an
+    // in-place reconnect while the app remains open.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refreshMoveCapability() }
 
     /**
      * Flushes the pending debounced draft — leaving the screen (a tab switch) or the
@@ -796,6 +839,14 @@ fun CheckInScreen(
         scope.launch {
             var candidate: EntryMoveCandidate? = null
             try {
+                val capability = repo.checkAtomicDateMoveCapability()
+                if (!capability.available) {
+                    if (repo.currentUserId() == owner && ownerId == owner) {
+                        moveCapability = capability
+                        holder.markError(capability.reason, snapshot.date)
+                    }
+                    return@launch
+                }
                 val draftStore = drafts?.takeIf { it.ownerId == owner }
                     ?: throw IllegalStateException("Místní návrhy nelze ověřit; přesun nebyl odeslán.")
                 if (draftStore.loadRecord(snapshot.date) != null || draftStore.loadRecord(targetDate) != null) {
@@ -865,6 +916,12 @@ fun CheckInScreen(
                     }
                 } else {
                     val failure = result.exceptionOrNull()
+                    if (failure is EntryMoveUnavailableException) {
+                        moveCapability = EntryMoveCapability(
+                            available = false,
+                            reason = failure.message ?: "Přesun vypnutý: serverová podpora není ověřena.",
+                        )
+                    }
                     holder.markError(failure?.message ?: "Přesun se nezdařil.", candidate.sourceDate)
                     val pending = repo.pendingMoveForDate(candidate.sourceDate)
                     if (ownerId == owner && repo.currentUserId() == owner) {
@@ -880,6 +937,12 @@ fun CheckInScreen(
                 throw cancelled
             } catch (failure: Exception) {
                 if (ownerId == owner && repo.currentUserId() == owner) {
+                    if (failure is EntryMoveUnavailableException) {
+                        moveCapability = EntryMoveCapability(
+                            available = false,
+                            reason = failure.message ?: "Přesun vypnutý: serverová podpora není ověřena.",
+                        )
+                    }
                     holder.markError(failure.message ?: "Přesun se nezdařil.", candidate.sourceDate)
                     pendingMoveRecovery = repo.pendingMoveForDate(candidate.sourceDate).getOrNull()
                 }
@@ -918,6 +981,12 @@ fun CheckInScreen(
                     }
                 } else {
                     val failure = result.exceptionOrNull()
+                    if (failure is EntryMoveUnavailableException) {
+                        moveCapability = EntryMoveCapability(
+                            available = false,
+                            reason = failure.message ?: "Přesun vypnutý: serverová podpora není ověřena.",
+                        )
+                    }
                     holder.markError(failure?.message ?: "Přesun stále čeká na potvrzení.", holder.date)
                     val pending = repo.pendingMoveForDate(holder.date)
                     if (ownerId == owner && repo.currentUserId() == owner) {
@@ -1413,8 +1482,13 @@ fun CheckInScreen(
         pendingMoveRecovery?.let { request ->
             PendingEntryMovePanel(
                 request = request,
-                retryEnabled = !moveInProgress && !moveRecoveryLoading,
+                retryEnabled = !moveInProgress && !moveRecoveryLoading && !moveCapabilityLoading &&
+                    moveCapability?.available == true,
+                retryCapabilityLoading = moveCapabilityLoading,
+                retryBlockedReason = moveCapability?.reason
+                    ?: "Serverová podpora přesunu zatím nebyla ověřena.",
                 onRetry = { retryMove(request) },
+                onRefreshCapability = ::refreshMoveCapability,
             )
             Spacer(Modifier.height(48.dp))
             return@Column
@@ -1502,8 +1576,11 @@ fun CheckInScreen(
                     scales = scales,
                     editEnabled = !moveInProgress && !moveRecoveryLoading,
                     moveEnabled = !busy && !state.reflectionLoading &&
-                        entriesRepo?.supportsAtomicDateMove == true && ownerId != null &&
+                        !moveCapabilityLoading && moveCapability?.available == true && ownerId != null &&
                         pendingMoveRecovery == null && moveRecoveryError == null,
+                    moveCapability = moveCapability,
+                    moveCapabilityLoading = moveCapabilityLoading,
+                    onRefreshMoveCapability = ::refreshMoveCapability,
                     onEdit = { holder.startEditing() },
                     onMoveDate = {
                         moveCandidate = null
@@ -1813,6 +1890,9 @@ private fun StoredDayView(
     scales: List<Scale>,
     editEnabled: Boolean = true,
     moveEnabled: Boolean,
+    moveCapability: EntryMoveCapability?,
+    moveCapabilityLoading: Boolean,
+    onRefreshMoveCapability: () -> Unit,
     onEdit: () -> Unit,
     onMoveDate: () -> Unit,
 ) {
@@ -1845,10 +1925,30 @@ private fun StoredDayView(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Přesun ověří obě verze na serveru. Při nejistém výsledku zůstane požadavek i místní kopie zachovaná.",
+            text = when {
+                moveCapabilityLoading -> "Ověřuji dostupnost serverové metody přesunu…"
+                moveCapability != null -> moveCapability.reason
+                else -> "Přesun vypnutý: podporu serveru se nepodařilo ověřit."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
         )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "Ověření potvrzuje pouze dostupnost serverového RPC; nekoordinuje tento přesun se staršími klienty ani jinými přímými zápisy.",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+        )
+        if (!moveCapabilityLoading && moveCapability?.available != true) {
+            Spacer(Modifier.height(8.dp))
+            SecondaryButton(
+                text = "🔄 Znovu ověřit podporu serveru",
+                modifier = Modifier.fillMaxWidth(),
+                enabled = true,
+                testTag = "checkin_move_capability_retry",
+                onClick = onRefreshMoveCapability,
+            )
+        }
     }
 }
 
@@ -1880,7 +1980,10 @@ private fun MoveRecoveryErrorPanel(message: String) {
 private fun PendingEntryMovePanel(
     request: EntryMoveRequest,
     retryEnabled: Boolean,
+    retryCapabilityLoading: Boolean,
+    retryBlockedReason: String,
     onRetry: () -> Unit,
+    onRefreshCapability: () -> Unit,
 ) {
     val source = request.sourceSnapshot.entry
     val target = request.targetSnapshot?.entry
@@ -1895,6 +1998,12 @@ private fun PendingEntryMovePanel(
         Text(
             text = "Požadavek ${request.requestId} zůstává uložený pro tento účet. Opakování použije stejné ID i stejné verze obou dnů; nevytvoří nový přesun.",
             style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "Požadavek se nemaže ani neposílá znovu, dokud serverová podpora není ověřena. Výsledek neznámého požadavku nelze bezpečně zrušit z aplikace.",
+            style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
         )
         Spacer(Modifier.height(10.dp))
@@ -1920,8 +2029,33 @@ private fun PendingEntryMovePanel(
             color = TextSecondary,
         )
         Spacer(Modifier.height(12.dp))
+        if (!retryEnabled) {
+            Text(
+                text = if (retryCapabilityLoading) {
+                    "Ověřuji dostupnost serverové metody; požadavek zůstává zachovaný."
+                } else {
+                    retryBlockedReason
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            if (!retryCapabilityLoading) {
+                Spacer(Modifier.height(8.dp))
+                SecondaryButton(
+                    text = "🔄 Znovu ověřit podporu serveru",
+                    modifier = Modifier.fillMaxWidth(),
+                    testTag = "checkin_move_capability_retry",
+                    onClick = onRefreshCapability,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
         SecondaryButton(
-            text = if (retryEnabled) "🔄 Zopakovat stejný přesun" else "⏳ Ověřuji přesun…",
+            text = when {
+                retryEnabled -> "🔄 Zopakovat stejný přesun"
+                retryCapabilityLoading -> "⏳ Ověřuji serverovou podporu…"
+                else -> "🔒 Opakování přesunu vypnuto"
+            },
             modifier = Modifier.fillMaxWidth(),
             enabled = retryEnabled,
             testTag = "checkin_move_retry",
