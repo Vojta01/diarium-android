@@ -7,7 +7,9 @@ import cz.digitalnivedomi.diarium.auth.SessionStore
 import cz.digitalnivedomi.diarium.core.stats.DayAppUsage
 import cz.digitalnivedomi.diarium.core.stats.DayUsage
 import cz.digitalnivedomi.diarium.stats.UsageStatsSource
+import cz.digitalnivedomi.diarium.sync.UsageSyncAttempt
 import cz.digitalnivedomi.diarium.sync.UsageSyncConsentStore
+import cz.digitalnivedomi.diarium.sync.UsageSyncWorker
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -84,6 +86,10 @@ class UsageSyncConditionalWriteTest {
         }
 
         assertEquals(UsagePushOutcome.SENT, repository.pushDay(OWNER, DATE))
+        assertEquals(
+            UsageSyncRequestState.Absent,
+            UsageSyncRequestStore(context).read(OWNER, DATE),
+        )
 
         val read = requests.single { it.method == "GET" && it.url.contains("/entries?") }
         val query = read.url.substringAfter('?').split('&').associate { component ->
@@ -262,6 +268,10 @@ class UsageSyncConditionalWriteTest {
         }
 
         assertEquals(UsagePushOutcome.SENT, recreated.pushDay(OWNER, DATE))
+        assertEquals(
+            UsageSyncRequestState.Absent,
+            UsageSyncRequestStore(context).read(OWNER, DATE),
+        )
 
         val writes = requests.filter { it.url.endsWith("/rpc/save_daily_entry_v2") }
         assertEquals(2, writes.size)
@@ -272,6 +282,62 @@ class UsageSyncConditionalWriteTest {
         )
         assertTrue(requests.none { it.url.endsWith("/rpc/save_daily_entry") })
     }
+
+    @Test
+    fun `invalid replay markers retry and preserve the exact durable request`() = runBlocking {
+        val invalidReceipts = listOf(
+            "missing" to savedReceipt().toString(),
+            "null" to savedReceipt().put("replayed", JSONObject.NULL).toString(),
+            "string false" to savedReceipt().put("replayed", "false").toString(),
+            "string true" to savedReceipt().put("replayed", "true").toString(),
+            "number" to savedReceipt().put("replayed", 1).toString(),
+            "object" to savedReceipt().put("replayed", JSONObject().put("synthetic", true)).toString(),
+            "malformed JSON" to "{synthetic malformed receipt",
+        )
+
+        for ((label, receiptBody) in invalidReceipts) {
+            context.getSharedPreferences(UsageSyncRequestStore.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().clear().commit()
+            requests.clear()
+            var baselineReads = 0
+            val repository = repository { request ->
+                requests += request
+                when {
+                    request.method == "GET" && request.url.contains("/entries?") -> {
+                        baselineReads++
+                        val revision = if (baselineReads == 1) 7 else 8
+                        HttpResponse(
+                            200,
+                            JSONArray().put(JSONObject().put("id", ROW_ID).put("revision", revision)).toString(),
+                        )
+                    }
+                    request.url.endsWith("/rpc/save_daily_entry_v2") -> HttpResponse(200, receiptBody)
+                    else -> HttpResponse(500, "unexpected synthetic endpoint")
+                }
+            }
+
+            assertEquals(
+                "$label marker is unknown to the worker and must retry",
+                UsageSyncAttempt.RETRY,
+                UsageSyncWorker.runUsageSync(OWNER, listOf(DATE), repository::pushDay),
+            )
+
+            val stored = UsageSyncRequestStore(context).read(OWNER, DATE) as? UsageSyncRequestState.Present
+            assertTrue("$label marker must preserve the queued request", stored != null)
+            val writes = requests.filter { it.url.endsWith("/rpc/save_daily_entry_v2") }
+            assertEquals("$label marker must not silently advance to another write", 1, writes.size)
+            assertEquals("$label marker must not authorize a historical row read", 1, baselineReads)
+            assertEquals("$label marker must retain the exact dispatched request", writes.single().body, stored?.request?.requestBodyJson)
+            assertTrue("$label marker must not invoke a legacy write or destructive path", requests.none {
+                it.url.endsWith("/rpc/save_daily_entry") || it.method == "PATCH" || it.method == "DELETE"
+            })
+        }
+    }
+
+    private fun savedReceipt(): JSONObject = JSONObject()
+        .put("status", "saved")
+        .put("entry_id", ROW_ID)
+        .put("revision", 8)
 
     private fun repository(
         usage: UsageStatsSource = object : UsageStatsSource {
