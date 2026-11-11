@@ -3,7 +3,9 @@ package cz.digitalnivedomi.diarium.core.data
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -22,6 +24,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -110,6 +113,7 @@ class LegacyRecoveryStorageIntegrationTest {
         assertEquals(2, inventory.draftCount)
         assertEquals(2, inventory.pendingSaveCount)
         assertEquals(2, inventory.malformedCount)
+        assertEquals(2, inventory.unsupportedCount)
         assertEquals(
             setOf(
                 LegacyProfileField.NAME,
@@ -196,6 +200,139 @@ class LegacyRecoveryStorageIntegrationTest {
         assertFalse("a read-only scan must not create encrypted prefs", secretFile.exists())
     }
 
+    @Test
+    fun `real recovery writer copies only to owner drafts and preserves originals across restart`() = runBlocking {
+        val baseContext = ApplicationProvider.getApplicationContext<Context>()
+        val root = File.createTempFile("manual-recovery-test", ".tmp").apply {
+            delete()
+            mkdirs()
+        }
+        val context = SyntheticContext(baseContext, root)
+        val draftFile = datastoreFile(context, LegacyRecoveryScanner.DRAFTS_DATASTORE_NAME)
+        val date = "2026-10-20"
+        val conflictDate = "2026-10-21"
+        val draftRaw = """{"mood":4,"note":"synthetic-recovery-fixture"}"""
+        val conflictRaw = """{"mood":3,"note":"synthetic-conflict-fixture"}"""
+        val currentOwner: String? = OWNER_A
+        val draftId = LegacyRecoveryRecordId(LegacyRecoveryType.DRAFT, date)
+        val conflictId = LegacyRecoveryRecordId(LegacyRecoveryType.DRAFT, conflictDate)
+        val existingTarget = DiaryEntry(mood = 1, note = "synthetic-existing-account-draft")
+
+        withPreferencesDataStore(draftFile) { dataStore ->
+            seedPreferences(dataStore) { prefs ->
+                prefs[stringPreferencesKey(DraftStore.legacyKey(date))] = draftRaw
+                prefs[stringPreferencesKey(DraftStore.legacyKey(conflictDate))] = conflictRaw
+            }
+            val targetA = DraftStore(dataStore, OWNER_A)
+            targetA.save(conflictDate, existingTarget)
+            val coordinator = localRecoveryCoordinator(context, dataStore) { currentOwner }
+            val inventory = coordinator.scan() as LegacyRecoveryScanResult.Ready
+            val inventoryIds = inventory.inventory.records.map { "${it.type}:${it.date}:${it.status}" }.toSet()
+            assertEquals(setOf("DRAFT:$date:PREVIEWABLE", "DRAFT:$conflictDate:PREVIEWABLE"), inventoryIds)
+
+            val attestation = (coordinator.authorize(
+                draftId,
+                OWNER_A,
+                ownershipConfirmed = true,
+                localPrivacyConfirmed = true,
+            ) as LegacyRecoveryAuthorizationResult.Granted).attestation
+            val preview = coordinator.preview(attestation) as LegacyRecoveryPreviewResult.Ready
+            assertEquals("synthetic-recovery-fixture", preview.contents.entry.note)
+            assertEquals(LegacyRecoveryCopyResult.COPIED, coordinator.copy(attestation))
+            val imported = targetA.loadRecord(date)
+            assertEquals(DiaryEntry(mood = 4, note = "synthetic-recovery-fixture"), imported?.entry)
+            assertEquals(draftId, imported?.legacyRecoveryOrigin)
+            assertNull(imported?.pendingSaveRequestId)
+            assertEquals(existingTarget, targetA.loadRecord(conflictDate)?.entry)
+            assertNull(DraftStore(dataStore, OWNER_B).loadRecord(date))
+            assertTrue(PendingSaveStore.from(context, OWNER_A).peekAll().isEmpty())
+            val recoveryStorage = localRecoveryStorage(context, dataStore)
+            assertEquals(draftRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
+            assertEquals(conflictRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(conflictDate)])
+        }
+
+        // Re-open a fresh DataStore instance from disk to model a process restart.
+        withPreferencesDataStore(draftFile) { dataStore ->
+            val targetA = DraftStore(dataStore, OWNER_A)
+            val recoveryStorage = localRecoveryStorage(context, dataStore)
+            val restarted = localRecoveryCoordinator(context, dataStore) { currentOwner }
+            val restartedAttestation = (restarted.authorize(
+                draftId,
+                OWNER_A,
+                ownershipConfirmed = true,
+                localPrivacyConfirmed = true,
+            ) as LegacyRecoveryAuthorizationResult.Granted).attestation
+            assertTrue(restarted.preview(restartedAttestation) is LegacyRecoveryPreviewResult.Ready)
+            assertEquals(LegacyRecoveryCopyResult.ALREADY_COPIED, restarted.copy(restartedAttestation))
+            assertEquals(
+                LegacyRecoveryFinalizeResult.CONFIRMATION_REQUIRED,
+                restarted.confirmNoConflictAndRemoveOriginal(restartedAttestation, confirmedNoConflict = false),
+            )
+            assertEquals(
+                LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED,
+                restarted.confirmNoConflictAndRemoveOriginal(restartedAttestation, confirmedNoConflict = true),
+            )
+            assertEquals("synthetic-recovery-fixture", targetA.loadRecord(date)?.entry?.note)
+            assertEquals(draftId, targetA.loadRecord(date)?.legacyRecoveryOrigin)
+            assertNull(recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(date)])
+
+            val conflictAttestation = (restarted.authorize(
+                conflictId,
+                OWNER_A,
+                ownershipConfirmed = true,
+                localPrivacyConfirmed = true,
+            ) as LegacyRecoveryAuthorizationResult.Granted).attestation
+            assertTrue(restarted.preview(conflictAttestation) is LegacyRecoveryPreviewResult.Ready)
+            assertEquals(LegacyRecoveryCopyResult.TARGET_CONFLICT, restarted.copy(conflictAttestation))
+            assertEquals(existingTarget, targetA.loadRecord(conflictDate)?.entry)
+            assertEquals(conflictRaw, recoveryStorage.readDraftPreferences()[DraftStore.legacyKey(conflictDate)])
+            assertEquals("synthetic-recovery-fixture", targetA.loadRecord(date)?.entry?.note)
+        }
+    }
+
+    @Test
+    fun `real queued-save recovery creates only a local draft and deletes queue only after confirmation`() = runBlocking {
+        val baseContext = ApplicationProvider.getApplicationContext<Context>()
+        val root = File.createTempFile("manual-pending-recovery-test", ".tmp").apply {
+            delete()
+            mkdirs()
+        }
+        val context = SyntheticContext(baseContext, root)
+        val draftFile = datastoreFile(context, LegacyRecoveryScanner.DRAFTS_DATASTORE_NAME)
+        val date = "2026-10-22"
+        val pendingRaw = """{"queuedAt":12,"entry":{"mood":3,"note":"synthetic-pending-fixture"}}"""
+        withPreferencesDataStore(draftFile) { dataStore ->
+            val pendingPrefs = context.getSharedPreferences(PendingSaveStore.PREFS_NAME, Context.MODE_PRIVATE)
+            assertTrue(pendingPrefs.edit().putString(date, pendingRaw).commit())
+            val coordinator = localRecoveryCoordinator(context, dataStore) { OWNER_A }
+            val inventory = coordinator.scan() as LegacyRecoveryScanResult.Ready
+            val inventoryIds = inventory.inventory.records.map { "${it.type}:${it.date}:${it.status}" }
+            assertEquals(listOf("PENDING_SAVE:$date:PREVIEWABLE"), inventoryIds)
+            val id = inventory.inventory.records.single {
+                it.type == LegacyRecoveryType.PENDING_SAVE && it.date == date
+            }.id
+            val attestation = (coordinator.authorize(
+                id,
+                OWNER_A,
+                ownershipConfirmed = true,
+                localPrivacyConfirmed = true,
+            ) as LegacyRecoveryAuthorizationResult.Granted).attestation
+            assertEquals("synthetic-pending-fixture", (coordinator.preview(attestation) as LegacyRecoveryPreviewResult.Ready).contents.entry.note)
+            assertEquals(LegacyRecoveryCopyResult.COPIED, coordinator.copy(attestation))
+            val targetA = DraftStore(dataStore, OWNER_A)
+            assertEquals(DiaryEntry(mood = 3, note = "synthetic-pending-fixture"), targetA.loadRecord(date)?.entry)
+            assertNull(DraftStore(dataStore, OWNER_B).loadRecord(date))
+            assertEquals(pendingRaw, pendingPrefs.getString(date, null))
+            assertTrue(PendingSaveStore.from(context, OWNER_A).peekAll().isEmpty())
+            assertEquals(
+                LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED,
+                coordinator.confirmNoConflictAndRemoveOriginal(attestation, confirmedNoConflict = true),
+            )
+            assertNull(pendingPrefs.getString(date, null))
+            assertEquals("synthetic-pending-fixture", targetA.loadRecord(date)?.entry?.note)
+        }
+    }
+
     private class SyntheticContext(
         private val base: Context,
         private val root: File,
@@ -218,6 +355,47 @@ class LegacyRecoveryStorageIntegrationTest {
 
         override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
             throw IllegalStateException("synthetic encrypted-preferences read failure")
+    }
+
+    private fun localRecoveryStorage(
+        context: Context,
+        dataStore: DataStore<Preferences>,
+    ): PreferenceLegacyRecoveryStorage = PreferenceLegacyRecoveryStorage(
+        drafts = DraftStore(dataStore, ownerId = null),
+        pendingSaves = PendingSaveStore.from(context, ownerId = null),
+        profile = ProfileStore.forDataStore(dataStore, ownerId = null),
+        secrets = EncryptedSecretSlot(context),
+    )
+
+    private fun localRecoveryCoordinator(
+        context: Context,
+        dataStore: DataStore<Preferences>,
+        verifiedOwnerId: () -> String?,
+    ): LegacyRecoveryCoordinator = LegacyRecoveryCoordinator(
+        scanner = LegacyRecoveryScanner(localRecoveryStorage(context, dataStore)),
+        writer = PreferenceLegacyRecoveryWriter(context) { ownerId -> DraftStore(dataStore, ownerId) },
+        verifiedOwnerId = verifiedOwnerId,
+    )
+
+    private suspend fun <T> withPreferencesDataStore(
+        file: File,
+        block: suspend (DataStore<Preferences>) -> T,
+    ): T {
+        file.parentFile?.mkdirs()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val store = PreferenceDataStoreFactory.create(scope = scope, produceFile = { file })
+        return try {
+            block(store)
+        } finally {
+            scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    private suspend fun seedPreferences(
+        dataStore: DataStore<Preferences>,
+        seed: (androidx.datastore.preferences.core.MutablePreferences) -> Unit,
+    ) {
+        dataStore.edit { preferences -> seed(preferences) }
     }
 
     private suspend fun seedPreferences(
@@ -247,5 +425,6 @@ class LegacyRecoveryStorageIntegrationTest {
 
     private companion object {
         const val OWNER_A = "synthetic-owner-a"
+        const val OWNER_B = "synthetic-owner-b"
     }
 }

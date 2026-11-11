@@ -58,6 +58,9 @@ object Routes {
      * kicks off and then re-reads.
      */
     const val REPORTS = "reports"
+
+    /** Owner-attested, local-only recovery of legacy drafts and queued saves. */
+    const val LEGACY_RECOVERY = "legacy_recovery"
 }
 
 /** Routes that get a tab in the bottom bar, in display order. */

@@ -116,18 +116,24 @@ class LegacyRecoveryScannerTest {
         val unsafePath = "/data/user/0/app/files/private.jpg"
         val source = MemoryRecoveryStorage().apply {
             drafts["diarium_draft_2026-10-07"] = JSONObject()
-                .put("mood", 4)
-                .put("sleepQuality", 3)
-                .put("stress", 2)
-                .put("activities", JSONArray().put("private activity"))
-                .put("habits", JSONObject().put("private habit", true))
-                .put("gratitude", JSONArray().put("one").put("").put("three"))
-                .put("note", secretLikeText)
-                .put("photoPath", unsafePath)
+                .put("entry", JSONObject()
+                    .put("mood", 4)
+                    .put("sleepQuality", 3)
+                    .put("stress", 2)
+                    .put("activities", JSONArray().put("private activity"))
+                    .put("habits", JSONObject().put("private habit", true))
+                    .put("gratitude", JSONArray().put("one").put("").put("three"))
+                    .put("note", secretLikeText)
+                    .put("photoPath", unsafePath))
+                .toString()
+            drafts["diarium_draft_2026-10-14"] = JSONObject()
                 .put("apiKey", apiKey)
                 .toString()
             pendingSaves["2026-10-08"] = JSONObject()
                 .put("entry", JSONObject().put("mood", 1).put("note", "another private note"))
+                .toString()
+            pendingSaves["2026-10-15"] = JSONObject()
+                .put("entry", JSONObject().put("mood", 1))
                 .put("access_token", "do-not-return")
                 .toString()
             aiSecretPresent = true
@@ -135,10 +141,15 @@ class LegacyRecoveryScannerTest {
         val scanner = LegacyRecoveryScanner(source)
         val inventory = scanner.scan()
 
-        val draftId = inventory.records.single { it.type == LegacyRecoveryType.DRAFT }.id
-        val pendingId = inventory.records.single { it.type == LegacyRecoveryType.PENDING_SAVE }.id
+        val draftId = inventory.records.single { it.type == LegacyRecoveryType.DRAFT && it.date == "2026-10-07" }.id
+        val pendingId = inventory.records.single { it.type == LegacyRecoveryType.PENDING_SAVE && it.date == "2026-10-08" }.id
+        val unsupportedIds = inventory.records.filter { it.status == LegacyRecoveryRecordStatus.UNSUPPORTED }.map { it.id }
         val preview = scanner.preview(draftId)
         val pendingPreview = scanner.preview(pendingId)
+
+        assertEquals(2, inventory.unsupportedCount)
+        assertEquals(2, unsupportedIds.size)
+        assertTrue(unsupportedIds.all { scanner.preview(it) == null })
 
         assertNotNull(preview)
         assertEquals(4, preview?.mood)

@@ -35,6 +35,8 @@ data class DraftRecord(
     val pendingSaveRequestId: String? = null,
     /** AI text explicitly included in that request; ordinary server text is not persisted. */
     val pendingAiReflection: String? = null,
+    /** Local recovery origin, used only to make retries idempotent and cleanup verifiable. */
+    val legacyRecoveryOrigin: LegacyRecoveryRecordId? = null,
 ) {
     fun conflictsWith(
         remoteExists: Boolean,
@@ -185,6 +187,151 @@ class DraftStore(
             }
             .associate { (key, value) -> key.name to value }
 
+    /**
+     * Copy a manually attested legacy record into this owner's draft namespace.
+     * The DataStore edit is an atomic compare-and-set: an existing target is never
+     * replaced, and draft-origin bytes must still match the inspected source.
+     */
+    internal suspend fun importLegacyRecoveryIfAbsent(
+        date: String,
+        entry: DiaryEntry,
+        origin: LegacyRecoveryRecordId,
+        sourceRaw: String,
+        sourceStillUnchanged: () -> Boolean = { true },
+    ): LegacyRecoveryCopyResult {
+        val owner = ownerId?.takeIf { it.isNotBlank() }
+            ?: return LegacyRecoveryCopyResult.OWNER_UNAVAILABLE
+        if (origin.date != date || !isCanonicalDate(date)) return LegacyRecoveryCopyResult.RECORD_NOT_RECOVERABLE
+        val mutation = mutationState(owner, date)
+        var outcome = LegacyRecoveryCopyResult.FAILED
+        mutation.mutex.withLock {
+            val targetKey = stringPreferencesKey(key(owner, date))
+            dataStore.edit { prefs ->
+                val sourceKey = stringPreferencesKey(legacyKey(date))
+                val sourceValue = prefs.asMap().entries
+                    .firstOrNull { it.key.name == sourceKey.name }
+                    ?.value
+                if (origin.type == LegacyRecoveryType.DRAFT && sourceValue != sourceRaw) {
+                    outcome = LegacyRecoveryCopyResult.SOURCE_CHANGED
+                    return@edit
+                }
+                if (origin.type == LegacyRecoveryType.PENDING_SAVE && !runCatching(sourceStillUnchanged).getOrDefault(false)) {
+                    outcome = LegacyRecoveryCopyResult.SOURCE_CHANGED
+                    return@edit
+                }
+                val existingPreference = prefs.asMap().entries
+                    .firstOrNull { it.key.name == targetKey.name }
+                    ?.value
+                if (existingPreference != null) {
+                    val existingRaw = existingPreference as? String
+                    val existing = existingRaw?.let { runCatching { decode(owner, date, it) }.getOrNull() }
+                    outcome = if (
+                        existing != null &&
+                        existing.legacyRecoveryOrigin == origin &&
+                        sameUserEntry(existing.entry, entry)
+                    ) {
+                        LegacyRecoveryCopyResult.ALREADY_COPIED
+                    } else {
+                        LegacyRecoveryCopyResult.TARGET_CONFLICT
+                    }
+                    return@edit
+                }
+                prefs[targetKey] = encode(
+                    owner = owner,
+                    entry = entry,
+                    baselineUpdatedAt = null,
+                    baselineExists = null,
+                    baselineId = null,
+                    baselineRevision = null,
+                    pendingSaveRequestId = null,
+                    pendingAiReflection = null,
+                    legacyRecoveryOrigin = origin,
+                )
+                outcome = LegacyRecoveryCopyResult.COPIED
+            }
+        }
+        return outcome
+    }
+
+    /**
+     * Remove a draft-origin source in the same DataStore transaction that verifies
+     * the copied target. The caller invokes this only after explicit user confirmation.
+     */
+    internal suspend fun confirmAndRemoveLegacyDraftSource(
+        date: String,
+        origin: LegacyRecoveryRecordId,
+        sourceRaw: String,
+        expectedEntry: DiaryEntry,
+    ): LegacyRecoveryFinalizeResult {
+        val owner = ownerId?.takeIf { it.isNotBlank() }
+            ?: return LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE
+        if (origin.type != LegacyRecoveryType.DRAFT || origin.date != date) {
+            return LegacyRecoveryFinalizeResult.RECORD_NOT_RECOVERABLE
+        }
+        val mutation = mutationState(owner, date)
+        var outcome = LegacyRecoveryFinalizeResult.FAILED
+        mutation.mutex.withLock {
+            val targetKey = stringPreferencesKey(key(owner, date))
+            val sourceKey = stringPreferencesKey(legacyKey(date))
+            dataStore.edit { prefs ->
+                val currentRaw = prefs.asMap().entries
+                    .firstOrNull { it.key.name == targetKey.name }
+                    ?.value as? String
+                val current = currentRaw?.let { runCatching { decode(owner, date, it) }.getOrNull() }
+                if (current == null || current.legacyRecoveryOrigin != origin || !sameUserEntry(current.entry, expectedEntry)) {
+                    outcome = LegacyRecoveryFinalizeResult.TARGET_CHANGED
+                    return@edit
+                }
+                val sourceValue = prefs.asMap().entries
+                    .firstOrNull { it.key.name == sourceKey.name }
+                    ?.value
+                if (sourceValue != sourceRaw) {
+                    outcome = LegacyRecoveryFinalizeResult.SOURCE_CHANGED
+                    return@edit
+                }
+                prefs.remove(sourceKey)
+                outcome = LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED
+            }
+        }
+        return outcome
+    }
+
+    /**
+     * For a pending-save origin, serialize source cleanup with normal draft writes
+     * and remove the outbox record only after the target still matches this copy.
+     */
+    internal suspend fun confirmAndRemoveLegacyPendingSource(
+        date: String,
+        origin: LegacyRecoveryRecordId,
+        expectedEntry: DiaryEntry,
+        removeSourceIfUnchanged: () -> Boolean,
+    ): LegacyRecoveryFinalizeResult {
+        val owner = ownerId?.takeIf { it.isNotBlank() }
+            ?: return LegacyRecoveryFinalizeResult.OWNER_UNAVAILABLE
+        if (origin.type != LegacyRecoveryType.PENDING_SAVE || origin.date != date) {
+            return LegacyRecoveryFinalizeResult.RECORD_NOT_RECOVERABLE
+        }
+        val mutation = mutationState(owner, date)
+        return mutation.mutex.withLock {
+            val raw = try {
+                dataStore.data.first()[stringPreferencesKey(key(owner, date))]
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                return@withLock LegacyRecoveryFinalizeResult.FAILED
+            } ?: return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
+            val current = runCatching { decode(owner, date, raw) }.getOrNull()
+                ?: return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
+            if (current.legacyRecoveryOrigin != origin || !sameUserEntry(current.entry, expectedEntry)) {
+                return@withLock LegacyRecoveryFinalizeResult.TARGET_CHANGED
+            }
+            if (!runCatching(removeSourceIfUnchanged).getOrDefault(false)) {
+                return@withLock LegacyRecoveryFinalizeResult.SOURCE_CHANGED
+            }
+            LegacyRecoveryFinalizeResult.ORIGINAL_REMOVED
+        }
+    }
+
     /** Convenience for callers that do not need conflict metadata. */
     suspend fun load(date: String): DiaryEntry? = loadRecord(date)?.entry
 
@@ -222,6 +369,7 @@ class DraftStore(
                         current.baselineRevision,
                         null,
                         current.pendingAiReflection,
+                        current.legacyRecoveryOrigin,
                     )
                     cleared = true
                 }
@@ -290,6 +438,7 @@ class DraftStore(
                 baselineRowRevision,
                 requestId,
                 reflection,
+                prior?.legacyRecoveryOrigin,
             )
         }
     }
@@ -307,6 +456,7 @@ class DraftStore(
         baselineRevision: Long?,
         pendingSaveRequestId: String?,
         pendingAiReflection: String?,
+        legacyRecoveryOrigin: LegacyRecoveryRecordId? = null,
     ): String = JSONObject()
         .put("ownerId", owner)
         .put("entry", entry.toJson())
@@ -317,6 +467,12 @@ class DraftStore(
             baselineRevision?.let { put("baselineRevision", it) }
             pendingSaveRequestId?.let { put("pendingSaveRequestId", it) }
             pendingAiReflection?.let { put("pendingAiReflection", it) }
+            legacyRecoveryOrigin?.let { origin ->
+                put(
+                    "legacyRecoverySource",
+                    JSONObject().put("type", origin.type.name).put("date", origin.date),
+                )
+            }
         }
         .toString()
 
@@ -347,6 +503,7 @@ class DraftStore(
                 },
                 pendingSaveRequestId = json.optString("pendingSaveRequestId").takeIf { it.isNotBlank() },
                 pendingAiReflection = pendingAiReflection,
+                legacyRecoveryOrigin = decodeLegacyRecoveryOrigin(json.optJSONObject("legacyRecoverySource")),
             )
         } catch (failure: DraftStoreReadException) {
             throw failure
@@ -368,6 +525,17 @@ class DraftStore(
         fun from(context: Context, ownerId: String?): DraftStore =
             DraftStore(context.draftDataStore, ownerId?.takeIf { it.isNotBlank() })
     }
+}
+
+private fun isCanonicalDate(value: String): Boolean =
+    runCatching { java.time.LocalDate.parse(value).toString() == value }.getOrDefault(false)
+
+private fun decodeLegacyRecoveryOrigin(json: JSONObject?): LegacyRecoveryRecordId? {
+    if (json == null) return null
+    val type = runCatching { LegacyRecoveryType.valueOf(json.optString("type")) }.getOrNull() ?: return null
+    val date = json.optString("date")
+    if (!isCanonicalDate(date)) return null
+    return LegacyRecoveryRecordId(type, date)
 }
 
 private val Context.draftDataStore by preferencesDataStore(name = "diarium_drafts")

@@ -69,6 +69,7 @@ enum class LegacyRecoveryType {
 enum class LegacyRecoveryRecordStatus {
     PREVIEWABLE,
     MALFORMED,
+    UNSUPPORTED,
 }
 
 enum class LegacyProfileField {
@@ -79,10 +80,17 @@ enum class LegacyProfileField {
 }
 
 /** A safe identifier built from the record type and a validated calendar date. */
-data class LegacyRecoveryRecordId internal constructor(
+class LegacyRecoveryRecordId internal constructor(
     val type: LegacyRecoveryType,
     val date: String,
-)
+) {
+    override fun equals(other: Any?): Boolean =
+        other is LegacyRecoveryRecordId && type == other.type && date == other.date
+
+    override fun hashCode(): Int = 31 * type.hashCode() + date.hashCode()
+
+    override fun toString(): String = "LegacyRecoveryRecordId(type=$type, date=$date)"
+}
 
 data class LegacyRecoveryRecord(
     val id: LegacyRecoveryRecordId,
@@ -92,7 +100,7 @@ data class LegacyRecoveryRecord(
     val date: String get() = id.date
 }
 
-/** Constraints carried with inventory results for any future manual-recovery UI. */
+/** Constraints carried with inventory results for the manual-recovery UI. */
 class LegacyRecoveryRequirements private constructor(
     val authenticatedDestinationRequired: Boolean,
     val explicitConfirmationRequired: Boolean,
@@ -120,6 +128,7 @@ data class LegacyRecoveryInventory(
     val draftCount: Int get() = records.count { it.type == LegacyRecoveryType.DRAFT }
     val pendingSaveCount: Int get() = records.count { it.type == LegacyRecoveryType.PENDING_SAVE }
     val malformedCount: Int get() = records.count { it.status == LegacyRecoveryRecordStatus.MALFORMED }
+    val unsupportedCount: Int get() = records.count { it.status == LegacyRecoveryRecordStatus.UNSUPPORTED }
     val legacyAiSecretPresent: Boolean?
         get() = when (legacyAiSecretStatus) {
             LegacySecretPresence.PRESENT -> true
@@ -145,10 +154,23 @@ data class LegacyEntryPreview(
     val scaleValueCount: Int,
 )
 
+/** Sensitive diary payload. Keep it out of logs and expose it only after attestation. */
+class LegacyRecoveryPayload internal constructor(
+    internal val sourceRaw: String,
+    val entry: DiaryEntry,
+    internal val safePreview: LegacyEntryPreview,
+)
+
+/** An authorized, on-device view of one selected legacy entry. */
+class LegacyRecoveryContents internal constructor(
+    val id: LegacyRecoveryRecordId,
+    val entry: DiaryEntry,
+)
+
 /**
  * Inventories ownerless, date-keyed legacy records without changing them. A scan
- * returns only type/date/status and counts. Call [preview] separately after an
- * explicit caller action to get a text-free summary for one valid entry.
+ * returns only type/date/status and counts. The coordinator exposes a selected
+ * record's summary or contents only after explicit attestation.
  *
  * This scanner does not inspect the shared entry cache: cache data is not an
  * authoritative recovery source. It has no restore/replay/delete operation.
@@ -182,7 +204,14 @@ class LegacyRecoveryScanner(private val storage: LegacyRecoveryStorage) {
      * Explicit read-only preview request for one scanner-issued id. Only validated
      * local preferences are read; no stored path is ever interpreted as a file.
      */
-    suspend fun preview(id: LegacyRecoveryRecordId): LegacyEntryPreview? {
+    internal suspend fun preview(id: LegacyRecoveryRecordId): LegacyEntryPreview? =
+        readPayload(id)?.safePreview
+
+    /**
+     * Returns diary fields only for the manual, attested recovery path. The raw
+     * source string is retained privately so a later copy can detect source changes.
+     */
+    internal suspend fun readPayload(id: LegacyRecoveryRecordId): LegacyRecoveryPayload? {
         val date = validLegacyDate(id.date) ?: return null
         val key = when (id.type) {
             LegacyRecoveryType.DRAFT -> LEGACY_DRAFT_PREFIX + date
@@ -192,31 +221,104 @@ class LegacyRecoveryScanner(private val storage: LegacyRecoveryStorage) {
             LegacyRecoveryType.DRAFT -> storage.readDraftPreferences()
             LegacyRecoveryType.PENDING_SAVE -> storage.readPendingSavePreferences()
         }
-        val payload = entryPayload(preferences[key], id.type) ?: return null
-        return payload.toSafePreview()
+        val raw = preferences[key] as? String ?: return null
+        val parsed = parseEntry(raw, id.type) as? EntryParse.Supported ?: return null
+        return LegacyRecoveryPayload(raw, parsed.entry, parsed.json.toSafePreview())
     }
 
     private fun record(type: LegacyRecoveryType, date: String, raw: Any?): LegacyRecoveryRecord {
-        val status = if (entryPayload(raw, type) == null) {
-            LegacyRecoveryRecordStatus.MALFORMED
-        } else {
-            LegacyRecoveryRecordStatus.PREVIEWABLE
+        val status = when (parseEntry(raw, type)) {
+            is EntryParse.Supported -> LegacyRecoveryRecordStatus.PREVIEWABLE
+            EntryParse.Malformed -> LegacyRecoveryRecordStatus.MALFORMED
+            EntryParse.Unsupported -> LegacyRecoveryRecordStatus.UNSUPPORTED
         }
         return LegacyRecoveryRecord(LegacyRecoveryRecordId(type, date), status)
     }
 
-    private fun entryPayload(raw: Any?, type: LegacyRecoveryType): JSONObject? {
-        val text = raw as? String ?: return null
+    private fun parseEntry(raw: Any?, type: LegacyRecoveryType): EntryParse {
+        val text = raw as? String ?: return EntryParse.Malformed
         val root = try {
             JSONObject(text)
         } catch (_: Exception) {
-            return null
+            return EntryParse.Malformed
         }
-        val candidate = when (type) {
-            LegacyRecoveryType.DRAFT -> root.optJSONObject("entry") ?: root.optJSONObject("data") ?: root
-            LegacyRecoveryType.PENDING_SAVE -> root.optJSONObject("entry") ?: return null
+        val candidate: JSONObject
+        val wrapped: Boolean
+        when (type) {
+            LegacyRecoveryType.DRAFT -> when {
+                root.has("entry") -> {
+                    candidate = root.optJSONObject("entry") ?: return EntryParse.Malformed
+                    wrapped = true
+                }
+                root.has("data") -> {
+                    candidate = root.optJSONObject("data") ?: return EntryParse.Malformed
+                    wrapped = true
+                }
+                else -> {
+                    candidate = root
+                    wrapped = false
+                }
+            }
+            LegacyRecoveryType.PENDING_SAVE -> {
+                candidate = root.optJSONObject("entry") ?: return EntryParse.Malformed
+                wrapped = true
+            }
         }
-        return candidate.takeIf { entryFields.any(it::has) }
+        if (wrapped) {
+            val allowedEnvelopeFields = when (type) {
+                LegacyRecoveryType.DRAFT -> draftEnvelopeFields
+                LegacyRecoveryType.PENDING_SAVE -> pendingSaveEnvelopeFields
+            }
+            if (root.keys().asSequence().any { it !in allowedEnvelopeFields }) return EntryParse.Unsupported
+        }
+        val keys = candidate.keys().asSequence().toSet()
+        if (keys.isEmpty()) return EntryParse.Malformed
+        if (keys.any { it !in entryFields } || !hasSupportedFieldTypes(candidate)) {
+            return EntryParse.Unsupported
+        }
+        return EntryParse.Supported(candidate, DiaryEntry.fromJson(candidate))
+    }
+
+    private fun hasSupportedFieldTypes(json: JSONObject): Boolean {
+        for (field in listOf("mood", "sleepQuality", "stress")) {
+            if (json.has(field) && !json.opt(field).isIntegerInRange(0..5)) return false
+        }
+        for (field in listOf("moodEmoji", "note")) {
+            if (json.has(field) && json.opt(field) !is String) return false
+        }
+        for (field in listOf("photoPath", "photoPathToDelete")) {
+            if (json.has(field) && json.opt(field) !is String && json.opt(field) != JSONObject.NULL) return false
+        }
+        if (json.has("clearPhoto") && json.opt("clearPhoto") !is Boolean) return false
+        for (field in listOf("activities", "weather", "clearedScaleIds", "gratitude")) {
+            if (!json.has(field)) continue
+            val values = json.optJSONArray(field) ?: return false
+            if ((0 until values.length()).any { values.opt(it) !is String }) return false
+            if (field == "gratitude" && values.length() > DiaryEntry.GRATITUDE_SLOTS) return false
+        }
+        if (json.has("habits")) {
+            val habits = json.optJSONObject("habits") ?: return false
+            if (habits.keys().asSequence().any { habits.opt(it) !is Boolean }) return false
+        }
+        if (json.has("scaleValues")) {
+            val scales = json.optJSONObject("scaleValues") ?: return false
+            if (scales.keys().asSequence().any { !scales.opt(it).isIntegerInRange(Int.MIN_VALUE..Int.MAX_VALUE) }) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun Any?.isIntegerInRange(range: IntRange): Boolean {
+        val number = this as? Number ?: return false
+        val value = number.toDouble()
+        return value.isFinite() && value == value.toLong().toDouble() && value.toLong() in range.first.toLong()..range.last.toLong()
+    }
+
+    private sealed interface EntryParse {
+        data class Supported(val json: JSONObject, val entry: DiaryEntry) : EntryParse
+        data object Malformed : EntryParse
+        data object Unsupported : EntryParse
     }
 
     private fun JSONObject.toSafePreview(): LegacyEntryPreview {
@@ -262,6 +364,24 @@ class LegacyRecoveryScanner(private val storage: LegacyRecoveryStorage) {
         const val AI_SECRETS_PREFS_NAME = AiKeyStore.FILE_NAME
         const val LEGACY_AI_SECRET_KEY = AiKeyStore.KEY
 
+        private val draftEnvelopeFields = setOf(
+            "entry",
+            "data",
+            "updatedAt",
+            "baselineUpdatedAt",
+            "baselineExists",
+            "baselineId",
+            "baselineRevision",
+        )
+        private val pendingSaveEnvelopeFields = setOf(
+            "entry",
+            "queuedAt",
+            "transactionId",
+            "baselineUpdatedAt",
+            "baselineExists",
+            "baselineId",
+            "baselineRevision",
+        )
         private val entryFields = setOf(
             "mood",
             "moodEmoji",

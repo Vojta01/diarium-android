@@ -82,6 +82,8 @@ import cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache
 import cz.digitalnivedomi.diarium.ui.nav.ShellMotion
 import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsDeps
 import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsScreen
+import cz.digitalnivedomi.diarium.ui.settings.LegacyRecoveryDeps
+import cz.digitalnivedomi.diarium.ui.settings.LegacyRecoveryScreen
 import cz.digitalnivedomi.diarium.ui.stats.StatsRoute
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
@@ -424,6 +426,13 @@ private fun AuthenticatedScaffold(
                             ExportScreen(deps = deps)
                         }
                     }
+                    subScreen(Routes.LEGACY_RECOVERY) {
+                        val context = LocalContext.current
+                        val deps = remember(context) { LegacyRecoveryDeps.forContext(context) }
+                        SubScreenChrome(title = "Obnova starších záznamů", onBack = { navController.popBackStack() }) {
+                            LegacyRecoveryScreen(deps = deps)
+                        }
+                    }
                     subScreen(Routes.REPORTS) {
                         val context = LocalContext.current
                         val deps = remember(context) { ReportsDeps.forContext(context) }
@@ -594,6 +603,26 @@ internal fun SettingsScreen(onSignOut: () -> Unit, onOpen: (String) -> Unit, aiD
                 title = "Export do CSV",
                 hint = "Všechny zápisy do souboru, bez nových oprávnění",
                 onClick = { onOpen(Routes.EXPORT) },
+            )
+        }
+        GlassCard(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = "Obnova starších záznamů",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary,
+            )
+            VSpace(4)
+            Text(
+                text = "Ručně zkontrolovat staré koncepty a čekající uložení z tohoto zařízení. Bez automatického přiřazení nebo odeslání.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = TextSecondary,
+            )
+            VSpace(6)
+            SubScreenEntry(
+                emoji = "🛟",
+                title = "Obnova místních záznamů",
+                hint = "Výslovné potvrzení vlastníka, pouze lokální kopie",
+                onClick = { onOpen(Routes.LEGACY_RECOVERY) },
             )
         }
         GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {

@@ -54,6 +54,15 @@ class SessionStore(
     /** Resolve the local owner pin, preferring a server-verified callback id. */
     fun userSubject(): String? = readSession()?.let(::usableUserSubject)
 
+    /** Resolve the locally retained, server-verified owner used for offline recovery gates. */
+    fun verifiedUserSubject(): String? {
+        val session = readSession() ?: return null
+        val verified = session.optString("verified_user_id")
+            .takeIf { it.isNotBlank() && it != "null" }
+            ?: return null
+        return verified.takeIf { usableUserSubject(session) == it }
+    }
+
     fun accessToken(): String? {
         val s = sessionJson() ?: return null
         return try {

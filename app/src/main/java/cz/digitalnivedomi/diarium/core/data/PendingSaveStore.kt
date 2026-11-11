@@ -360,6 +360,19 @@ class PendingSaveStore private constructor(
     internal fun legacyRecoverySnapshot(): Map<String, Any?> =
         prefs.all.filterKeys { key -> LEGACY_DATE.matches(key) }
 
+    /** Read one legacy source value without decoding or changing it. */
+    internal fun legacyRecoveryValue(date: String): Any? =
+        if (isValidIsoDate(date) && LEGACY_DATE.matches(date)) prefs.all[date] else null
+
+    /** Remove only the exact legacy source reviewed by the user. */
+    internal fun removeLegacyRecoveryValueIfUnchanged(date: String, expectedRaw: String): Boolean {
+        if (!isValidIsoDate(date) || !LEGACY_DATE.matches(date)) return false
+        synchronized(OUTBOX_LOCK) {
+            if (prefs.all[date] != expectedRaw) return false
+            return prefs.edit().remove(date).commit()
+        }
+    }
+
     private fun read(date: String): PendingSave? {
         val owner = ownerId ?: return null
         val raw = try {
