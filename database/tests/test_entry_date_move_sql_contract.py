@@ -123,6 +123,18 @@ class EntryDateMoveSqlContractTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", self.workflow)
         self.assertIn("image: postgres:16", self.workflow)
         self.assertIn("diarium_test_cas_move_candidate", self.workflow)
+        self.assertIn("postgres_host_auth_method: trust", self.workflow)
+        self.assertNotIn("postgres_password:", self.workflow)
+        for key, database in (
+            ("local_test_database_url", "diarium_test_cas_move_candidate"),
+            ("non_test_guard_database_url", "postgres"),
+        ):
+            match = re.search(rf"(?m)^\s*{key}:\s*(\S+)$", self.workflow)
+            self.assertIsNotNone(match)
+            self.assertEqual(
+                match.group(1),
+                f"postgresql://postgres@127.0.0.1:5432/{database}",
+            )
         self.assertNotIn("workflow_dispatch", self.workflow)
         self.assertNotIn("${{ runner.temp }}", self.workflow)
         self.assertNotIn("secrets.", self.workflow)
