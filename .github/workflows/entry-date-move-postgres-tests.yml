@@ -1,0 +1,50 @@
+name: Diarium integrated SQL candidate (PostgreSQL 16)
+
+on:
+  push:
+    branches:
+      - ci/sql-cas-move-production-candidate-20261111
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-16:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: diarium_test_cas_move_candidate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d diarium_test_cas_move_candidate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      LOCAL_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/diarium_test_cas_move_candidate
+      NON_TEST_GUARD_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Checkout candidate source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes postgresql-client
+      - name: Confirm ephemeral server is PostgreSQL 16
+        run: |
+          server_version_num="$(psql "$LOCAL_TEST_DATABASE_URL" -X -qAt -v ON_ERROR_STOP=1 -c 'SHOW server_version_num')"
+          python3 -c 'import sys; value = int(sys.argv[1]); assert 160000 <= value < 170000, f"Expected PostgreSQL 16, got {value}"' "$server_version_num"
+      - name: Run integrated migration, rollback, compatibility, grants, and races
+        run: bash database/tests/run_candidate_postgres_tests.sh
