@@ -114,6 +114,7 @@ class ProductionCandidateSafetyContractTests(unittest.TestCase):
             self.assertIn(path, coverage)
         self.assertGreaterEqual(cas_runner.count("save_daily_entry_v2_2026-11-10.sql"), 2)
         self.assertIn("beta5_compatibility.sql", cas_runner)
+        self.assertIn("f|f|f|f|f", cas_runner)
         self.assertIn("Failure rollback left unexpected candidate state", cas_runner)
 
     def test_operator_plan_requires_explicit_transaction_and_backup_metadata(self):

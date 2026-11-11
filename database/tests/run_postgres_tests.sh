@@ -39,7 +39,7 @@ SELECT concat_ws('|',
            WHERE tgrelid = 'public.entries'::pg_catalog.regclass
              AND tgname = 'trg_entries_revision_v2' AND NOT tgisinternal)
 );")"
-if [[ "$rollback_state" != 'false|false|false|false|false' ]]; then
+if [[ "$rollback_state" != 'f|f|f|f|f' ]]; then
   printf 'Failure rollback left unexpected candidate state: %s\n' "$rollback_state" >&2
   exit 1
 fi
