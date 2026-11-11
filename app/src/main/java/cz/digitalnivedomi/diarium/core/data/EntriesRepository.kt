@@ -1672,7 +1672,7 @@ class EntriesRepository(
 
         private const val POSTGREST_OPENAPI_MEDIA_TYPE = "application/openapi+json"
         private const val MOVE_RPC_PATH = "/rpc/move_daily_entry_v1"
-        private const val MOVE_CAPABILITY_PATH = "rpc/android_move_capability_v1"
+        private const val MOVE_CAPABILITY_PATH = "/rpc/android_move_capability_v1"
         private const val MOVE_CAPABILITY_CONTRACT = "diarium.android.move-capability.v1"
         private const val MOVE_CAPABILITY_UNVERIFIED =
             "Přesun vypnutý: podporu serveru se nepodařilo ověřit. Zkontroluj připojení nebo nasazení; nový požadavek nevznikl."
