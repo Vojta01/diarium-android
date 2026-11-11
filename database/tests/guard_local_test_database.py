@@ -19,20 +19,25 @@ SAFE_PSQL_ENVIRONMENT = {
     # Prevent libpq from reading a caller's default or ambient password file.
     "PGPASSFILE": os.devnull,
 }
-REDIRECTING_PSQL_OPTIONS = {
-    "--dbname",
-    "--host",
-    "--hostaddr",
-    "--port",
-    "--service",
-    "--servicefile",
-    "--username",
-}
-REDIRECTING_PSQL_SHORT_OPTIONS = {"-d", "-h", "-p", "-U"}
+PSQL_FLAG_OPTIONS = {"1", "A", "q", "t", "X"}
+PSQL_VALUE_OPTIONS = {"c", "f", "v"}
+PSQL_VARIABLE_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*\Z")
 
 
 class GuardRefusal(ValueError):
     """A safe, non-secret-bearing reason that a target must be refused."""
+
+
+class PsqlExecutionError(RuntimeError):
+    """A psql failure with a safe message and the original exit status."""
+
+    def __init__(self, returncode: int):
+        self.returncode = returncode
+        super().__init__(f"psql exited with status {returncode}.")
+
+
+class PsqlStartError(RuntimeError):
+    """A safe error raised when the psql executable cannot be started."""
 
 
 def validate_local_database_url(raw: str, *, expected_database: str | None = None) -> str:
@@ -65,6 +70,8 @@ def validate_local_database_url(raw: str, *, expected_database: str | None = Non
         raise GuardRefusal("Refusing: database URI must name exactly one database.")
     database = unquote(parsed.path[1:])
     if expected_database is not None:
+        if expected_database != "postgres" and not TEST_DATABASE.fullmatch(expected_database):
+            raise GuardRefusal("Refusing: expected database must be an exact disposable test name or the postgres probe.")
         if database != expected_database:
             raise GuardRefusal("Refusing: migration guard requires its exact disposable database.")
     elif not TEST_DATABASE.fullmatch(database):
@@ -73,16 +80,37 @@ def validate_local_database_url(raw: str, *, expected_database: str | None = Non
 
 
 def validate_psql_arguments(arguments: list[str]) -> None:
-    """Reject psql flags that can replace the validated connection target."""
-    for argument in arguments:
-        if argument in REDIRECTING_PSQL_OPTIONS or argument in REDIRECTING_PSQL_SHORT_OPTIONS:
-            raise GuardRefusal("Refusing: psql connection override options are unsupported.")
-        if argument.startswith("--"):
-            option = argument.partition("=")[0]
-            if option in REDIRECTING_PSQL_OPTIONS:
-                raise GuardRefusal("Refusing: psql connection override options are unsupported.")
-        elif len(argument) > 2 and argument[:2] in REDIRECTING_PSQL_SHORT_OPTIONS:
-            raise GuardRefusal("Refusing: psql connection override options are unsupported.")
+    """Accept only the psql options required by the test harness callers."""
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--" or argument.startswith("--") or argument == "-" or not argument.startswith("-"):
+            raise GuardRefusal("Refusing: unsupported psql argument or positional connection override.")
+
+        options = argument[1:]
+        offset = 0
+        while offset < len(options):
+            option = options[offset]
+            if option in PSQL_FLAG_OPTIONS:
+                offset += 1
+                continue
+            if option not in PSQL_VALUE_OPTIONS:
+                raise GuardRefusal("Refusing: unsupported psql option; only the test-harness allowlist is accepted.")
+
+            value = options[offset + 1:]
+            if not value:
+                index += 1
+                if index >= len(arguments):
+                    raise GuardRefusal("Refusing: psql option is missing its required value.")
+                value = arguments[index]
+            if not value:
+                raise GuardRefusal("Refusing: psql option value must not be empty.")
+            if option == "v" and not PSQL_VARIABLE_ASSIGNMENT.fullmatch(value):
+                raise GuardRefusal("Refusing: psql variable options must use NAME=VALUE form.")
+            # c/f/v consume the rest of a short-option token or the next argv
+            # element. Never reinterpret the value as another psql option.
+            break
+        index += 1
 
 
 def psql_command_for_url(
@@ -105,6 +133,25 @@ def sanitized_psql_environment() -> dict[str, str]:
     return dict(SAFE_PSQL_ENVIRONMENT)
 
 
+def _redact_psql_output(output: str, raw_url: str) -> str:
+    """Remove the supplied URL and URI credentials from captured psql text."""
+    if not output:
+        return output
+    redacted = output.replace(raw_url, "[database URL redacted]")
+    try:
+        parsed = urlparse(raw_url)
+    except ValueError:
+        return redacted
+
+    authority = raw_url.partition("://")[2].partition("/")[0]
+    userinfo = authority.rpartition("@")[0] if "@" in authority else ""
+    secrets = {userinfo, parsed.username or "", parsed.password or ""}
+    secrets.update(unquote(secret) for secret in tuple(secrets) if secret)
+    for secret in sorted((secret for secret in secrets if secret), key=len, reverse=True):
+        redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
 def run_psql_for_url(
     raw: str,
     arguments: list[str],
@@ -112,30 +159,44 @@ def run_psql_for_url(
     expected_database: str | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run psql for an explicitly validated local URL with a clean environment."""
+    """Run psql safely without returning credential-bearing argv or diagnostics."""
     command = psql_command_for_url(raw, arguments, expected_database=expected_database)
-    return subprocess.run(
-        command,
-        env=sanitized_psql_environment(),
-        text=True,
-        capture_output=True,
-        check=check,
+    try:
+        completed = subprocess.run(
+            command,
+            env=sanitized_psql_environment(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        raise PsqlStartError("Refusing: PostgreSQL client could not be started.") from None
+
+    result = subprocess.CompletedProcess(
+        args="psql",
+        returncode=completed.returncode,
+        stdout=_redact_psql_output(completed.stdout, raw),
+        stderr=_redact_psql_output(completed.stderr, raw),
     )
+    if check and result.returncode != 0:
+        raise PsqlExecutionError(result.returncode)
+    return result
 
 
 def _main(arguments: list[str]) -> int:
     if arguments and arguments[0] == "--exec":
         raw = os.environ.get("LOCAL_TEST_DATABASE_URL", "")
         try:
-            command = psql_command_for_url(raw, arguments[1:])
-            os.execve(command[0], command, sanitized_psql_environment())
+            result = run_psql_for_url(raw, arguments[1:], check=False)
         except GuardRefusal as error:
             print(str(error), file=sys.stderr)
             return 1
-        except OSError:
-            print("Refusing: PostgreSQL client could not be started.", file=sys.stderr)
+        except PsqlStartError as error:
+            print(str(error), file=sys.stderr)
             return 1
-        return 1
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        return result.returncode
 
     if arguments:
         print("Usage: guard_local_test_database.py [--exec psql-options...]", file=sys.stderr)

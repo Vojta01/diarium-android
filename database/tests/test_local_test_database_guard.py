@@ -48,9 +48,13 @@ class LocalTestDatabaseGuardTests(unittest.TestCase):
         fake.write_text(
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
+            "from pathlib import Path\n"
             f"capture = {str(self.capture)!r}\n"
             "with open(capture, 'a', encoding='utf-8') as stream:\n"
-            "    stream.write(json.dumps({'args': sys.argv[1:], 'env': dict(os.environ)}) + '\\n')\n",
+            "    stream.write(json.dumps({'args': sys.argv[1:], 'env': dict(os.environ)}) + '\\n')\n"
+            "if Path(capture).with_suffix('.fail').exists():\n"
+            "    print('fake psql failure: ' + ' '.join(sys.argv[1:]), file=sys.stderr)\n"
+            "    raise SystemExit(23)\n",
             encoding="utf-8",
         )
         fake.chmod(0o700)
@@ -87,7 +91,10 @@ class LocalTestDatabaseGuardTests(unittest.TestCase):
         self.assertNotIn("fake-inherited-password-never-print", output)
 
     def test_inherited_libpq_redirection_environment_is_not_passed_to_psql(self):
-        result = self.run_guard(("-X", "-c", "SELECT 1"))
+        result = self.run_guard((
+            "-X", "-1", "-qAt", "-v", "ON_ERROR_STOP=1",
+            "-v", "expected_database=diarium_test_guard", "-c", "SELECT 1",
+        ))
         self.assertEqual(0, result.returncode, result.stderr)
         calls = self.captured_calls()
         self.assertEqual(1, len(calls))
@@ -95,6 +102,13 @@ class LocalTestDatabaseGuardTests(unittest.TestCase):
         self.assertEqual(SAFE_ENV, calls[0]["env"])
         self.assertIn("--no-password", calls[0]["args"])
         self.assert_no_credentials_in_output(result)
+
+        file_result = self.run_guard(("-X", "-f", "/dev/null"))
+        self.assertEqual(0, file_result.returncode, file_result.stderr)
+        calls = self.captured_calls()
+        self.assertEqual(2, len(calls))
+        self.assertIn("-f", calls[1]["args"])
+        self.assertEqual(SAFE_ENV, calls[1]["env"])
 
     def test_hostaddr_and_service_uri_query_options_are_rejected_before_psql(self):
         hostile_urls = (
@@ -132,6 +146,73 @@ class LocalTestDatabaseGuardTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual([], self.captured_calls())
                 self.assert_no_credentials_in_output(result)
+
+    def test_connection_override_bundles_long_abbreviations_and_positional_targets_are_rejected(self):
+        hostile_arguments = (
+            ("-Xh203.0.113.44",),
+            ("-Xdproduction",),
+            ("--dbna=production",),
+            ("--", "production"),
+            ("production",),
+        )
+        for arguments in hostile_arguments:
+            with self.subTest(arguments=arguments):
+                result = self.run_guard(arguments)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual([], self.captured_calls())
+                self.assert_no_credentials_in_output(result)
+
+    def test_expected_database_cannot_create_an_arbitrary_database_allowlist(self):
+        code = (
+            "import os; from guard_local_test_database import validate_local_database_url; "
+            "print(validate_local_database_url(os.environ['LOCAL_TEST_DATABASE_URL'], "
+            "expected_database='production'))"
+        )
+        environment = self.base_environment(
+            LOCAL_TEST_DATABASE_URL="postgresql://fake_user:fake-pass@127.0.0.1:5432/production",
+            PYTHONPATH=str(TESTS_DIR),
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code], env=environment, capture_output=True,
+            text=True, timeout=10, check=False,
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assert_no_credentials_in_output(result)
+
+    def test_psql_failure_redacts_url_and_credentials_while_preserving_status(self):
+        self.capture.with_suffix(".fail").touch()
+        url = "postgresql://fake_user:fake-pass@127.0.0.1:5432/diarium_test_guard"
+        code = """
+import os
+from guard_local_test_database import run_psql_for_url
+try:
+    run_psql_for_url(os.environ['LOCAL_TEST_DATABASE_URL'], ['-X', '-c', 'SELECT 1'])
+except Exception as error:
+    print(f'safe_error={error}')
+    print(f'status={getattr(error, "returncode", None)}')
+else:
+    raise SystemExit('expected psql failure')
+"""
+        environment = self.base_environment(
+            LOCAL_TEST_DATABASE_URL=url,
+            PYTHONPATH=str(TESTS_DIR),
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code], env=environment, capture_output=True,
+            text=True, timeout=10, check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("status=23", result.stdout)
+        self.assertNotIn("fake-pass", result.stdout + result.stderr)
+        self.assertNotIn(url, result.stdout + result.stderr)
+
+        exec_result = self.run_guard(
+            ("-X", "-c", "SELECT 1"), LOCAL_TEST_DATABASE_URL=url,
+        )
+        self.assertEqual(23, exec_result.returncode)
+        self.assertNotIn("fake-pass", exec_result.stdout + exec_result.stderr)
+        self.assertNotIn(url, exec_result.stdout + exec_result.stderr)
 
     def test_every_shell_runner_with_psql_sources_the_guard(self):
         for script in TESTS_DIR.rglob("*.sh"):

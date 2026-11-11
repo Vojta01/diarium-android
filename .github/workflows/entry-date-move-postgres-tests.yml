@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - ci/sql-cas-move-production-candidate-20261111
+      - ci/sql-cas-move-production-atomic-20261111
 
 permissions:
   contents: read
