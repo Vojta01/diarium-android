@@ -355,6 +355,7 @@ class CheckInRecoveredDraftRebaseTest {
             restartedScope?.coroutineContext?.get(Job)?.cancelAndJoin()
             fixture.close()
         }
+        Unit
     }
 
     private fun show(fixture: Fixture, includeLiveSession: Boolean = false) {
