@@ -896,6 +896,12 @@ class EntriesRepositoryWriteTest {
                 .put("revision", 1)
                 .put("replayed", 1)
                 .toString(),
+            "object" to JSONObject()
+                .put("status", "saved")
+                .put("entry_id", ROW_ID)
+                .put("revision", 1)
+                .put("replayed", JSONObject().put("synthetic", true))
+                .toString(),
             "malformed JSON" to "{broken synthetic response",
         )
 
