@@ -161,6 +161,31 @@ class EntriesRepositoryDateMoveTest {
     }
 
     @Test
+    fun `historical replay with a changed target retains request and cache snapshots`() = runTest {
+        val cache = cacheStore("replay-changed-target")
+        cache.upsertRows(listOf(sourceRow))
+        timeoutFirstMoveResponse = true
+        val repo = repository(cache = cache)
+        val first = repo.move(EntriesRepository.fromRow(sourceRow), SOURCE_DATE, TARGET_DATE)
+        assertTrue(first.exceptionOrNull() is EntryMoveUnknownException)
+        val pendingBefore = EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE)
+        assertNotNull(pendingBefore)
+        val cachedBefore = cache.readRange(SOURCE_DATE, SOURCE_DATE)?.single()?.entry
+
+        serverRows[TARGET_DATE] = targetRow(TARGET_DATE, TARGET_ID, "later target", PHOTO_TARGET)
+        val retried = repo.retryPendingMove(pendingBefore!!.requestId)
+
+        val conflict = retried.exceptionOrNull() as? EntryMoveConflictException
+        assertNotNull("a stale historical receipt must be rejected as a conflict", conflict)
+        assertEquals("replayed_target_changed", conflict?.reason)
+        assertEquals(pendingBefore, EntryMoveStore(moveFile, OWNER_ID).pendingForDate(SOURCE_DATE))
+        assertEquals(cachedBefore, cache.readRange(SOURCE_DATE, SOURCE_DATE)?.single()?.entry)
+        assertEquals(listOf(SOURCE_DATE), cache.readRange(SOURCE_DATE, TARGET_DATE)?.map { it.date })
+        assertEquals("later target", serverRows[TARGET_DATE]?.getString("note"))
+        assertNoBlindWriteOrStorageDelete()
+    }
+
+    @Test
     fun `invalid move replay markers leave request and local state untouched`() = runTest {
         val missingMarker = Any()
         val malformedBodyMarker = Any()
