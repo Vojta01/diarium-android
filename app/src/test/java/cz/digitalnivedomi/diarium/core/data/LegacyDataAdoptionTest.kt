@@ -109,7 +109,7 @@ class LegacyDataAdoptionTest {
         val profile = ProfileStore.forDataStore(harness.dataStore, "account-a").load()
         assertEquals("Vojta", profile.name)
         assertEquals(1990, profile.birthYear)
-        assertEquals("sk-legacy-key", harness.slot.values["deepseek_api_key_v2_account-a"])
+        assertEquals("sk-legacy-key", harness.slot.values["account-a"])
         assertEquals("sk-legacy-key", harness.slot.legacy)
     }
 
@@ -130,7 +130,7 @@ class LegacyDataAdoptionTest {
         val store = ProfileStore.forDataStore(harness.dataStore, "account-a")
         store.saveName("Nové jméno")
         store.saveBirthYear(2001)
-        harness.slot.values["deepseek_api_key_v2_account-a"] = "sk-new-key"
+        harness.slot.values["account-a"] = "sk-new-key"
 
         val result = harness.adoption("account-a").adopt()
 
@@ -138,7 +138,7 @@ class LegacyDataAdoptionTest {
         val profile = store.load()
         assertEquals("Nové jméno", profile.name)
         assertEquals(2001, profile.birthYear)
-        assertEquals("sk-new-key", harness.slot.values["deepseek_api_key_v2_account-a"])
+        assertEquals("sk-new-key", harness.slot.values["account-a"])
     }
 
     @Test
@@ -147,7 +147,7 @@ class LegacyDataAdoptionTest {
         val result = harness.adoption(owner = null).adopt()
 
         assertTrue(result is LegacyAdoptionResult.OwnerUnavailable)
-        assertNull(harness.slot.values["deepseek_api_key_v2_"])
+        assertTrue(harness.slot.values.isEmpty())
         val profile = ProfileStore.forDataStore(harness.dataStore, null).load()
         assertEquals("", profile.name)
     }
@@ -198,9 +198,9 @@ class LegacyDataAdoptionTest {
     fun `a blank legacy name is not adopted`() = withHarness { harness ->
         seedLegacy(harness, name = "   ", birthYear = null, key = null)
 
-        val result = harness.adoption("account-a").adopt() as LegacyAdoptionResult.Adopted
+        val result = harness.adoption("account-a").adopt()
 
-        assertEquals(0, result.profileFields)
+        assertTrue(result is LegacyAdoptionResult.NothingToAdopt)
         assertEquals("", ProfileStore.forDataStore(harness.dataStore, "account-a").load().name)
     }
 
