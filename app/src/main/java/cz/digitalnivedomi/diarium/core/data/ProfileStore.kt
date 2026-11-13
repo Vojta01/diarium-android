@@ -41,6 +41,8 @@ data class ProfileData(
  * Profile persistence over Preferences DataStore. Every account reads and writes
  * only keys in its own namespace; ownerless builds are read-only defaults.
  */
+data class LegacyProfileValues(val name: String?, val birthYear: Int?)
+
 class ProfileStore private constructor(
     private val dataStore: DataStore<Preferences>,
     private val ownerId: String?,
@@ -57,6 +59,38 @@ class ProfileStore private constructor(
             .map { it.name }
             .filter { it in LEGACY_KEY_NAMES }
             .toSet()
+
+    /** Legacy ownerless values, read only for an explicit one-time adoption. */
+    suspend fun legacyProfileValues(): LegacyProfileValues {
+        val prefs = dataStore.data.first()
+        return LegacyProfileValues(
+            name = prefs[stringPreferencesKey("user_name")]?.trim()?.takeIf { it.isNotBlank() },
+            birthYear = prefs[intPreferencesKey("birth_year")],
+        )
+    }
+
+    /**
+     * Copies legacy ownerless name and birth year into this account. It fills
+     * only empty fields, never clears anything and never adopts AI consent or
+     * the guide flag: consent must be given again by the signed-in account.
+     * Returns how many profile fields were written.
+     */
+    suspend fun adoptLegacyProfile(): Int {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return 0
+        val prefs = dataStore.data.first()
+        val legacyName = prefs[stringPreferencesKey("user_name")]?.trim()?.takeIf { it.isNotBlank() }
+        val legacyYear = prefs[intPreferencesKey("birth_year")]
+        val nameKey = stringPreferencesKey(key(owner, "name"))
+        val yearKey = intPreferencesKey(key(owner, "birth_year"))
+        val writeName = prefs[nameKey].isNullOrBlank() && legacyName != null
+        val writeYear = prefs[yearKey] == null && legacyYear != null
+        if (!writeName && !writeYear) return 0
+        dataStore.edit { mutable ->
+            if (writeName) mutable[nameKey] = legacyName!!
+            if (writeYear) mutable[yearKey] = legacyYear!!
+        }
+        return (if (writeName) 1 else 0) + (if (writeYear) 1 else 0)
+    }
 
     suspend fun saveName(name: String) {
         val owner = ownerId?.takeIf { it.isNotBlank() } ?: return
