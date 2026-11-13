@@ -31,8 +31,11 @@ versionCode `2000106`. Compared with `2.0.0-beta5` (`2000105`).
 
 ### Changed
 
-- **Screen time sync uses conditional saves.** A replay marker is validated
-  strictly; an unreadable marker keeps the request instead of clearing it.
+- **Screen time sync uses conditional saves.** A conflicting server row is
+  reported instead of overwritten. Known limitation in this build: the replay
+  marker is read leniently (`optBoolean("replayed", false)`), so an unreadable
+  marker can clear the durable request. A stricter check is prepared for the
+  next build.
 - **Photo handling.** Removing a photo from an entry clears the reference and
   keeps the stored file.
 - **Date-move UI is server-gated.** Without the capability the action is hidden.
