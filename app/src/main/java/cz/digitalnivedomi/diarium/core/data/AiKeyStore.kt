@@ -29,6 +29,12 @@ interface SecretSlot {
 
     /** Presence-only legacy inspection; an implementation without a safe probe is UNKNOWN. */
     fun legacyValueStatus(): LegacySecretPresence = LegacySecretPresence.UNKNOWN
+
+    /**
+     * Reads the ownerless legacy value for an explicit, user-confirmed adoption.
+     * Implementations that cannot read it return null; nothing is deleted.
+     */
+    fun readLegacy(): String? = null
 }
 
 /**
@@ -79,6 +85,25 @@ class AiKeyStore(private val slot: SecretSlot, private val ownerId: String?) {
     /** Removes only this account's key. Ownerless legacy bytes are never touched. */
     fun clear() {
         ownerId?.takeIf { it.isNotBlank() }?.let(slot::erase)
+    }
+
+    /** The ownerless legacy key, read only for an explicit adoption. Never logged or shown. */
+    fun legacyKeyOrNull(): String? =
+        runCatching { slot.readLegacy()?.trim()?.takeIf { it.isNotBlank() } }.getOrNull()
+
+    /**
+     * Copies the ownerless legacy key into this account after an explicit user
+     * confirmation. It never overwrites an existing key, never runs without a
+     * verified account and never deletes the legacy value.
+     */
+    fun adoptLegacyKey(): Boolean {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return false
+        if (key() != null) return false
+        val legacy = legacyKeyOrNull() ?: return false
+        return runCatching {
+            slot.write(owner, legacy)
+            true
+        }.getOrDefault(false)
     }
 
     companion object {
@@ -165,6 +190,19 @@ class EncryptedSecretSlot(context: Context) : SecretSlot {
         } catch (_: Exception) {
             LegacySecretPresence.UNKNOWN
         }
+    }
+
+    /**
+     * Reads the ownerless legacy key for an explicit adoption. The file must
+     * already exist, so a read never creates Keystore material by itself.
+     */
+    override fun readLegacy(): String? {
+        val backingFile = File(
+            File(appContext.applicationInfo.dataDir, "shared_prefs"),
+            "${AiKeyStore.FILE_NAME}.xml",
+        )
+        if (!backingFile.isFile) return null
+        return runCatching { prefs.getString(AiKeyStore.KEY, null) }.getOrNull()
     }
 
 }

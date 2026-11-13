@@ -9,10 +9,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text as MaterialText
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.runtime.Composable
@@ -25,6 +27,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import cz.digitalnivedomi.diarium.core.data.LegacyAdoptionAvailability
+import cz.digitalnivedomi.diarium.core.data.LegacyAdoptionResult
 import cz.digitalnivedomi.diarium.core.data.LegacyProfileField
 import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryAttestation
 import cz.digitalnivedomi.diarium.core.data.LegacyRecoveryAuthorizationResult
@@ -64,6 +68,10 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
     var operationMessage by remember { mutableStateOf<String?>(null) }
     var copied by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var adoptionAvailability by remember { mutableStateOf<LegacyAdoptionAvailability?>(null) }
+    var adoptionConfirm by remember { mutableStateOf(false) }
+    var adoptionMessage by remember { mutableStateOf<String?>(null) }
+    var adoptionBusy by remember { mutableStateOf(false) }
 
     fun clearSelection() {
         selectedId = null
@@ -80,7 +88,33 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
             busy = true
             clearSelection()
             scanResult = deps.coordinator.scan()
+            adoptionAvailability = deps.adoption.availability()
             busy = false
+        }
+    }
+
+    fun adopt() {
+        scope.launch {
+            adoptionBusy = true
+            adoptionMessage = when (val result = deps.adoption.adopt()) {
+                is LegacyAdoptionResult.Adopted -> {
+                    val parts = buildList {
+                        if (result.profileFields > 0) add("profil")
+                        if (result.keyAdopted) add("AI klíč")
+                    }
+                    "Převzato: ${parts.joinToString(" a ")}. Původní data zůstala v telefonu."
+                }
+                LegacyAdoptionResult.NothingToAdopt ->
+                    "Nic k převzetí. Účet už hodnoty má, nebo stará data nejsou dostupná."
+                LegacyAdoptionResult.OwnerUnavailable ->
+                    "Převzetí je uzamčené. Není k dispozici ověřený účet."
+                LegacyAdoptionResult.OwnerChanged ->
+                    "Účet se během převzetí změnil. Nic nebylo převzato."
+                LegacyAdoptionResult.ReadFailed ->
+                    "Místní úložiště se nepodařilo přečíst. Nic nebylo změněno."
+            }
+            adoptionAvailability = deps.adoption.availability()
+            adoptionBusy = false
         }
     }
 
@@ -106,6 +140,36 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
             text = "Staré místní koncepty a čekající uložení lze obnovit jen ručně. Původní data zůstávají v tomto telefonu; kopii lze samostatně uložit přes bezpečné v2 porovnání (CAS). Tato obrazovka původní data nemaže.",
         )
 
+        LegacyAdoptionCard(
+            availability = adoptionAvailability,
+            message = adoptionMessage,
+            busy = adoptionBusy,
+            onAdopt = { adoptionConfirm = true },
+        )
+
+        if (adoptionConfirm) {
+            AlertDialog(
+                onDismissRequest = { adoptionConfirm = false },
+                title = { Text("Převzít stará data?") },
+                text = {
+                    Text(
+                        "Převzetí zkopíruje jméno, rok narození a DeepSeek API klíč z beta5 do tohoto účtu. " +
+                            "Vyplní se jen prázdné položky. Původní data zůstanou v telefonu. " +
+                            "Souhlas s AI se nepřevádí.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        adoptionConfirm = false
+                        adopt()
+                    }) { Text("Převzít") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { adoptionConfirm = false }) { Text("Zrušit") }
+                },
+            )
+        }
+
         when (val result = scanResult) {
             null -> Text("Načítám pouze přehled místních záznamů…", color = TextSecondary)
             LegacyRecoveryScanResult.OwnerUnavailable -> RecoveryWarning(
@@ -123,7 +187,7 @@ fun LegacyRecoveryScreen(deps: LegacyRecoveryDeps) {
                     "Ověřený účet: ${result.ownerId}. Starý záznam nemá uloženého vlastníka. Před zobrazením i kopií musíš výslovně potvrdit, že vybraný záznam patří právě tomuto účtu.",
                 )
                 InventorySummary(result.inventory)
-                UnsupportedLegacyData(result.inventory.profileFieldsPresent, result.inventory.legacyAiSecretStatus)
+                UnsupportedLegacyData(result.inventory.profileFieldsPresent)
                 if (result.inventory.records.isEmpty()) {
                     Text("Obnovitelné staré koncepty ani čekající uložení nebyly nalezeny.", color = TextSecondary)
                 } else {
@@ -300,32 +364,62 @@ private fun InventorySummary(inventory: LegacyRecoveryInventory) {
 }
 
 @Composable
-private fun UnsupportedLegacyData(fields: Set<LegacyProfileField>, secret: LegacySecretPresence) {
-    if (fields.isEmpty() && secret == LegacySecretPresence.ABSENT) return
+private fun UnsupportedLegacyData(fields: Set<LegacyProfileField>) {
+    val remaining = fields.filter { it == LegacyProfileField.AI_ENABLED || it == LegacyProfileField.ONBOARDING_DONE }.toSet()
+    if (remaining.isEmpty()) return
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         Text("Nepřenášená data", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
         VSpace(Spacing.tight)
-        if (fields.isNotEmpty()) {
-            val names = fields.sortedBy { it.ordinal }.joinToString { field ->
-                when (field) {
-                    LegacyProfileField.NAME -> "jméno"
-                    LegacyProfileField.BIRTH_YEAR -> "rok narození"
-                    LegacyProfileField.AI_ENABLED -> "souhlas s AI"
-                    LegacyProfileField.ONBOARDING_DONE -> "průvodce"
+        val names = remaining.sortedBy { it.ordinal }.joinToString { field ->
+            when (field) {
+                LegacyProfileField.AI_ENABLED -> "souhlas s AI"
+                LegacyProfileField.ONBOARDING_DONE -> "průvodce"
+                else -> ""
+            }
+        }
+        Text(
+            "Staré položky ($names) se nepřevádějí. Souhlas s AI musíš zapnout znovu v tomto účtu. Původní hodnoty zůstávají beze změny.",
+            color = TextSecondary,
+        )
+    }
+}
+
+@Composable
+private fun LegacyAdoptionCard(
+    availability: LegacyAdoptionAvailability?,
+    message: String?,
+    busy: Boolean,
+    onAdopt: () -> Unit,
+) {
+    GlassCard(modifier = Modifier.fillMaxWidth()) {
+        Text("Profil a AI klíč z beta5", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+        VSpace(Spacing.tight)
+        when {
+            availability == null -> Text("Zjišťuji stará data…", color = TextSecondary)
+            !availability.hasAnything ->
+                Text("Žádná stará profilová data ani AI klíč nebyly nalezeny.", color = TextSecondary)
+            else -> {
+                Text("V telefonu zůstaly tyto hodnoty z beta5:", color = TextSecondary)
+                VSpace(Spacing.tight)
+                availability.name?.let { Text("• Jméno: nalezeno", color = TextPrimary) }
+                availability.birthYear?.let { Text("• Rok narození: nalezen", color = TextPrimary) }
+                if (availability.keyPresent) {
+                    Text("• DeepSeek API klíč: nalezen (hodnota se nezobrazuje)", color = TextPrimary)
+                }
+                VSpace(Spacing.tight)
+                Text(
+                    "Převzetí vyplní jen prázdné položky tohoto účtu. Původní data zůstanou v telefonu.",
+                    color = TextSecondary,
+                )
+                VSpace(Spacing.section)
+                OutlinedButton(onClick = onAdopt, enabled = !busy) {
+                    Text(if (busy) "Převádím…" else "Převzít do tohoto účtu")
                 }
             }
-            Text("Staré profilové položky ($names) nejsou podporované. Zůstávají beze změny.", color = TextSecondary)
         }
-        when (secret) {
-            LegacySecretPresence.PRESENT -> Text(
-                "Starý AI klíč byl pouze zjištěn. Jeho hodnota se nečte ani nezobrazuje a klíč se nepřenáší; zůstává beze změny.",
-                color = TextSecondary,
-            )
-            LegacySecretPresence.UNKNOWN -> Text(
-                "Stav starého AI klíče nelze bezpečně ověřit. Hodnota se nezobrazuje ani nepřenáší.",
-                color = TextSecondary,
-            )
-            LegacySecretPresence.ABSENT -> Unit
+        message?.let {
+            VSpace(Spacing.tight)
+            Text(it, color = TextSecondary)
         }
     }
 }
