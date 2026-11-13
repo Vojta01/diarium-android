@@ -55,9 +55,9 @@ STABLE
 SECURITY INVOKER
 SET search_path = ''
 AS $auth_jwt$
-  SELECT pg_catalog.coalesce(
-    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claim', true), ''),
-    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claims', true), ''),
+  SELECT coalesce(
+    nullif(pg_catalog.current_setting('request.jwt.claim', true), ''),
+    nullif(pg_catalog.current_setting('request.jwt.claims', true), ''),
     '{}'
   )::jsonb
 $auth_jwt$;
@@ -69,8 +69,8 @@ STABLE
 SECURITY INVOKER
 SET search_path = ''
 AS $auth_uid$
-  SELECT pg_catalog.coalesce(
-    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claim.sub', true), ''),
+  SELECT coalesce(
+    nullif(pg_catalog.current_setting('request.jwt.claim.sub', true), ''),
     public.diarium_auth_jwt() ->> 'sub'
   )::uuid
 $auth_uid$;
