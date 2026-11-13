@@ -2,11 +2,11 @@
 
 A native Android diary for daily mood check-ins, habits, screen time, and reflections.
 
-## Install beta 6
+## Install beta 7
 
-**[Download the beta 6 APK (2.0.0-beta6)](https://github.com/Vojta01/diarium-android/releases/tag/v2.0.0-beta6)** (`diarium-2.0.0-beta6.apk`, also mirrored as `diarium.apk` on the `apk` branch). The direct APK identifies itself as `cz.digitalnivedomi.diarium`, version `2.0.0-beta6`, versionCode `2000106`, and is signed with the same release key as beta 5, so it updates in place without losing data.
+**[Download the beta 7 APK (2.0.0-beta7)](https://github.com/Vojta01/diarium-android/releases/tag/v2.0.0-beta7)** (`diarium-2.0.0-beta7.apk`, also mirrored as `diarium.apk` on the `apk` branch). The direct APK identifies itself as `cz.digitalnivedomi.diarium`, version `2.0.0-beta7`, versionCode `2000107`, and is signed with the same release key as beta 5, so it updates in place without losing data.
 
-See [CHANGELOG.md](CHANGELOG.md) for what changed since beta 5.
+See [CHANGELOG.md](CHANGELOG.md) for what changed since beta 6.
 
 1. Download and open the APK on your Android device. If prompted, allow your browser or file manager to install apps from this source.
 2. Sign in with Google.
