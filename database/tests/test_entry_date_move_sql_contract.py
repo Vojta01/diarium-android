@@ -101,8 +101,8 @@ class EntryDateMoveSqlContractTests(unittest.TestCase):
         self.assertIn("'stale_target'", same_date)
 
     def test_owner_checks_rls_and_grants_are_narrow(self):
-        self.assertIn("auth.uid()", self.code)
-        self.assertIn("auth.jwt()", self.code)
+        self.assertIn("public.diarium_auth_uid()", self.code)
+        self.assertIn("public.diarium_auth_jwt()", self.code)
         self.assertIn("v_actor", self.code)
         self.assertIn("security definer", self.code)
         self.assertRegex(self.code, r"set\s+search_path\s*=\s*''")
@@ -111,7 +111,7 @@ class EntryDateMoveSqlContractTests(unittest.TestCase):
         self.assertIn("grant execute on function", self.code)
         self.assertRegex(self.code, r"grant\s+execute\s+on\s+function[^;]+to\s+authenticated")
         self.assertRegex(self.code, r"revoke\s+all\s+on\s+function[^;]+from\s+service_role")
-        self.assertIn("user_id = auth.uid()", self.code)
+        self.assertIn("user_id = public.diarium_auth_uid()", self.code)
 
     def test_workflow_is_branch_scoped_secret_free_and_uses_ephemeral_postgres(self):
         self.assertIn("on:", self.workflow)

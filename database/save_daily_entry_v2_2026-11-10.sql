@@ -16,8 +16,8 @@
 -- transaction which applies all three migrations. The test database-name guard
 -- is retained for disposable CI fixtures.
 --
--- Prerequisites: current entries/scales/scale_entries schemas; auth.uid(),
--- auth.jwt(); Supabase API roles; PostgreSQL 11+; and pgcrypto installed/exposed
+-- Prerequisites: current entries/scales/scale_entries schemas; public.diarium_auth_uid(),
+-- public.diarium_auth_jwt(); Supabase API roles; PostgreSQL 11+; and pgcrypto installed/exposed
 -- as extensions.digest(bytea,text). Set lock_timeout to a low value; this file
 -- also sets a transaction-local 5-second lock_timeout. Never use production
 -- data in CI.
@@ -52,6 +52,41 @@ BEGIN
   PERFORM pg_catalog.set_config('lock_timeout', '5s', true);
 END;
 $candidate_operator_guard$;
+
+-- Supabase's postgres role cannot grant USAGE on the auth schema, so the
+-- candidate's owner roles cannot call auth.uid()/auth.jwt() directly. These
+-- helpers read the same request GUCs without requiring access to that schema.
+CREATE OR REPLACE FUNCTION public.diarium_auth_jwt()
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = ''
+AS $auth_jwt$
+  SELECT pg_catalog.coalesce(
+    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claim', true), ''),
+    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claims', true), ''),
+    '{}'
+  )::jsonb
+$auth_jwt$;
+
+CREATE OR REPLACE FUNCTION public.diarium_auth_uid()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = ''
+AS $auth_uid$
+  SELECT pg_catalog.coalesce(
+    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claim.sub', true), ''),
+    public.diarium_auth_jwt() ->> 'sub'
+  )::uuid
+$auth_uid$;
+
+REVOKE ALL ON FUNCTION public.diarium_auth_jwt() FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public.diarium_auth_uid() FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.diarium_auth_jwt() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.diarium_auth_uid() TO anon, authenticated, service_role;
 
 -- Fail early when this is not the expected current Diarium schema.
 DO $preflight$
@@ -110,9 +145,9 @@ BEGIN
     RAISE EXCEPTION 'public.scale_entries requires UNIQUE (user_id, scale_id, date)';
   END IF;
 
-  IF pg_catalog.to_regprocedure('auth.uid()') IS NULL
-     OR pg_catalog.to_regprocedure('auth.jwt()') IS NULL THEN
-    RAISE EXCEPTION 'save_daily_entry_v2 requires auth.uid() and auth.jwt()';
+  IF pg_catalog.to_regprocedure('public.diarium_auth_uid()') IS NULL
+     OR pg_catalog.to_regprocedure('public.diarium_auth_jwt()') IS NULL THEN
+    RAISE EXCEPTION 'save_daily_entry_v2 requires public.diarium_auth_uid() and public.diarium_auth_jwt()';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'anon')
      OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'authenticated')
@@ -380,8 +415,8 @@ DROP POLICY IF EXISTS entry_save_v2_receipt_owner ON public.entry_save_v2_receip
 CREATE POLICY entry_save_v2_receipt_owner
   ON public.entry_save_v2_receipts
   FOR ALL TO diarium_entry_sync_owner
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = public.diarium_auth_uid())
+  WITH CHECK (user_id = public.diarium_auth_uid());
 REVOKE ALL ON TABLE public.entry_save_v2_receipts FROM PUBLIC, anon, authenticated, service_role;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.entry_save_v2_receipts TO diarium_entry_sync_owner;
 
@@ -390,12 +425,12 @@ GRANT SELECT, INSERT, UPDATE ON TABLE public.entry_save_v2_receipts TO diarium_e
 GRANT CREATE ON SCHEMA public TO diarium_entry_sync_owner;
 
 -- The definer is not a table owner and is NOBYPASSRLS. These narrow policies
--- let it act only for auth.uid(); the function also fixes v_uid to that actor
+-- let it act only for public.diarium_auth_uid(); the function also fixes v_uid to that actor
 -- and filters every entry/mirror operation by owner. Do not grant this role to
 -- an API role or use it as a login.
 GRANT USAGE ON SCHEMA public, auth, extensions TO diarium_entry_sync_owner;
-GRANT EXECUTE ON FUNCTION auth.uid() TO diarium_entry_sync_owner;
-GRANT EXECUTE ON FUNCTION auth.jwt() TO diarium_entry_sync_owner;
+GRANT EXECUTE ON FUNCTION public.diarium_auth_uid() TO diarium_entry_sync_owner;
+GRANT EXECUTE ON FUNCTION public.diarium_auth_jwt() TO diarium_entry_sync_owner;
 GRANT EXECUTE ON FUNCTION extensions.digest(bytea, text) TO diarium_entry_sync_owner;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.entries TO diarium_entry_sync_owner;
 GRANT SELECT ON TABLE public.scales TO diarium_entry_sync_owner;
@@ -405,19 +440,19 @@ DROP POLICY IF EXISTS entries_v2_sync_owner ON public.entries;
 CREATE POLICY entries_v2_sync_owner
   ON public.entries
   FOR ALL TO diarium_entry_sync_owner
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = public.diarium_auth_uid())
+  WITH CHECK (user_id = public.diarium_auth_uid());
 DROP POLICY IF EXISTS scales_v2_sync_owner ON public.scales;
 CREATE POLICY scales_v2_sync_owner
   ON public.scales
   FOR SELECT TO diarium_entry_sync_owner
-  USING (user_id = auth.uid());
+  USING (user_id = public.diarium_auth_uid());
 DROP POLICY IF EXISTS scale_entries_v2_sync_owner ON public.scale_entries;
 CREATE POLICY scale_entries_v2_sync_owner
   ON public.scale_entries
   FOR ALL TO diarium_entry_sync_owner
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = public.diarium_auth_uid())
+  WITH CHECK (user_id = public.diarium_auth_uid());
 
 CREATE OR REPLACE FUNCTION public.save_daily_entry_v2(
   p_payload jsonb,
@@ -485,11 +520,11 @@ DECLARE
   v_clear_scale_id text;
 BEGIN
   ---------------------------------------------------------------------------
-  -- Authentication and input contract. A null auth.uid() or service-role JWT
+  -- Authentication and input contract. A null public.diarium_auth_uid() or service-role JWT
   -- is never treated as a trusted server call. The v2 RPC is client-auth only.
   ---------------------------------------------------------------------------
-  v_actor := auth.uid();
-  IF v_actor IS NULL OR auth.jwt() ->> 'role' IS DISTINCT FROM 'authenticated' THEN
+  v_actor := public.diarium_auth_uid();
+  IF v_actor IS NULL OR public.diarium_auth_jwt() ->> 'role' IS DISTINCT FROM 'authenticated' THEN
     RAISE EXCEPTION 'save_daily_entry_v2 requires an authenticated user JWT'
       USING ERRCODE = '42501';
   END IF;

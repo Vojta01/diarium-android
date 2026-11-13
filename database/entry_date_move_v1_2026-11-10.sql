@@ -2,7 +2,7 @@
 -- This file is a migration fragment, not a safe standalone entry point. Apply it
 -- only through database/apply_conditional_save_move_candidate.sh with the other
 -- two candidate files in its explicit transaction.
--- Requires the candidate's entries.revision trigger, auth.uid()/auth.jwt(),
+-- Requires the candidate's entries.revision trigger, public.diarium_auth_uid()/public.diarium_auth_jwt(),
 -- extensions.digest(), unique entry/scale keys, and Supabase API roles.
 -- Adds a separate RPC and receipt table; beta5 save_daily_entry and CAS v2 are
 -- untouched. SQL moves only the photo_path pointer; Storage cleanup is outside
@@ -45,6 +45,41 @@ BEGIN
 END;
 $candidate_operator_guard$;
 
+-- Supabase's postgres role cannot grant USAGE on the auth schema, so the
+-- candidate's owner roles cannot call auth.uid()/auth.jwt() directly. These
+-- helpers read the same request GUCs without requiring access to that schema.
+CREATE OR REPLACE FUNCTION public.diarium_auth_jwt()
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = ''
+AS $auth_jwt$
+  SELECT pg_catalog.coalesce(
+    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claim', true), ''),
+    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claims', true), ''),
+    '{}'
+  )::jsonb
+$auth_jwt$;
+
+CREATE OR REPLACE FUNCTION public.diarium_auth_uid()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = ''
+AS $auth_uid$
+  SELECT pg_catalog.coalesce(
+    pg_catalog.nullif(pg_catalog.current_setting('request.jwt.claim.sub', true), ''),
+    public.diarium_auth_jwt() ->> 'sub'
+  )::uuid
+$auth_uid$;
+
+REVOKE ALL ON FUNCTION public.diarium_auth_jwt() FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public.diarium_auth_uid() FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.diarium_auth_jwt() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.diarium_auth_uid() TO anon, authenticated, service_role;
+
 DO $preflight$
 DECLARE
   v_revision_type oid;
@@ -53,8 +88,8 @@ BEGIN
      OR pg_catalog.to_regclass('public.scale_entries') IS NULL
      OR pg_catalog.to_regclass('public.scales') IS NULL
      OR pg_catalog.to_regprocedure('public.save_daily_entry_v2(jsonb,boolean,uuid,bigint,uuid)') IS NULL
-     OR pg_catalog.to_regprocedure('auth.uid()') IS NULL
-     OR pg_catalog.to_regprocedure('auth.jwt()') IS NULL
+     OR pg_catalog.to_regprocedure('public.diarium_auth_uid()') IS NULL
+     OR pg_catalog.to_regprocedure('public.diarium_auth_jwt()') IS NULL
      OR pg_catalog.to_regprocedure('extensions.digest(bytea,text)') IS NULL THEN
     RAISE EXCEPTION 'date-move foundation requires the CAS fixture and save_daily_entry_v2';
   END IF;
@@ -200,14 +235,14 @@ DROP POLICY IF EXISTS entry_move_v1_receipt_owner ON public.entry_move_v1_receip
 CREATE POLICY entry_move_v1_receipt_owner
   ON public.entry_move_v1_receipts
   FOR ALL TO diarium_entry_move_owner
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = public.diarium_auth_uid())
+  WITH CHECK (user_id = public.diarium_auth_uid());
 REVOKE ALL ON TABLE public.entry_move_v1_receipts FROM PUBLIC, anon, authenticated, service_role;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.entry_move_v1_receipts TO diarium_entry_move_owner;
 
 GRANT USAGE ON SCHEMA public, auth, extensions TO diarium_entry_move_owner;
-GRANT EXECUTE ON FUNCTION auth.uid() TO diarium_entry_move_owner;
-GRANT EXECUTE ON FUNCTION auth.jwt() TO diarium_entry_move_owner;
+GRANT EXECUTE ON FUNCTION public.diarium_auth_uid() TO diarium_entry_move_owner;
+GRANT EXECUTE ON FUNCTION public.diarium_auth_jwt() TO diarium_entry_move_owner;
 GRANT EXECUTE ON FUNCTION extensions.digest(bytea, text) TO diarium_entry_move_owner;
 GRANT SELECT, UPDATE, DELETE ON TABLE public.entries TO diarium_entry_move_owner;
 GRANT SELECT, UPDATE, DELETE ON TABLE public.scale_entries TO diarium_entry_move_owner;
@@ -216,14 +251,14 @@ DROP POLICY IF EXISTS entries_v1_move_owner ON public.entries;
 CREATE POLICY entries_v1_move_owner
   ON public.entries
   FOR ALL TO diarium_entry_move_owner
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = public.diarium_auth_uid())
+  WITH CHECK (user_id = public.diarium_auth_uid());
 DROP POLICY IF EXISTS scale_entries_v1_move_owner ON public.scale_entries;
 CREATE POLICY scale_entries_v1_move_owner
   ON public.scale_entries
   FOR ALL TO diarium_entry_move_owner
-  USING (user_id = auth.uid())
-  WITH CHECK (user_id = auth.uid());
+  USING (user_id = public.diarium_auth_uid())
+  WITH CHECK (user_id = public.diarium_auth_uid());
 
 CREATE OR REPLACE FUNCTION public.move_daily_entry_v1(
   p_source_date date,
@@ -258,8 +293,8 @@ DECLARE
   v_inserted boolean := false;
   v_scale_rows_moved bigint := 0;
 BEGIN
-  v_actor := auth.uid();
-  IF v_actor IS NULL OR auth.jwt() ->> 'role' IS DISTINCT FROM 'authenticated' THEN
+  v_actor := public.diarium_auth_uid();
+  IF v_actor IS NULL OR public.diarium_auth_jwt() ->> 'role' IS DISTINCT FROM 'authenticated' THEN
     RAISE EXCEPTION 'move_daily_entry_v1 requires an authenticated user JWT'
       USING ERRCODE = '42501';
   END IF;
@@ -574,4 +609,4 @@ REVOKE ALL ON FUNCTION public.move_daily_entry_v1(date, uuid, bigint, date, bool
 GRANT EXECUTE ON FUNCTION public.move_daily_entry_v1(date, uuid, bigint, date, boolean, uuid, bigint, boolean, uuid) TO authenticated;
 
 COMMENT ON FUNCTION public.move_daily_entry_v1(date, uuid, bigint, date, boolean, uuid, bigint, boolean, uuid) IS
-  'Test-only atomic date move: authenticates via auth.uid(), checks source and destination CAS tokens, locks both date keys deterministically, moves scale rows and preserves the photo_path pointer, and replays immutable request receipts. An overwritten target photo is only returned as an actor-bound pending candidate when different from the moved photo; callers must independently verify storage ownership and all references, retain on ambiguity, and never treat the candidate as delete authorization. This SQL never deletes Storage. Existing direct legacy writers do not share all locks and must be retired before claiming global cross-device serialization.';
+  'Test-only atomic date move: authenticates via public.diarium_auth_uid(), checks source and destination CAS tokens, locks both date keys deterministically, moves scale rows and preserves the photo_path pointer, and replays immutable request receipts. An overwritten target photo is only returned as an actor-bound pending candidate when different from the moved photo; callers must independently verify storage ownership and all references, retain on ambiguity, and never treat the candidate as delete authorization. This SQL never deletes Storage. Existing direct legacy writers do not share all locks and must be retired before claiming global cross-device serialization.';

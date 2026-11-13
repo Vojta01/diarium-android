@@ -57,8 +57,15 @@ class ConditionalSaveSqlContractTests(unittest.TestCase):
     def test_auth_is_explicit_and_service_role_is_not_enabled(self):
         self.assertIn("security definer", self.lower)
         self.assertRegex(self.lower, r"set\s+search_path\s*=\s*''")
-        self.assertIn("auth.uid()", self.lower)
-        self.assertIn("auth.jwt()", self.lower)
+        self.assertIn("public.diarium_auth_uid()", self.lower)
+        self.assertIn("public.diarium_auth_jwt()", self.lower)
+        # the owner role cannot read the auth schema on Supabase
+        code_only = "\n".join(
+            line for line in self.lower.splitlines()
+            if not line.lstrip().startswith("--")
+        )
+        self.assertNotIn("auth.uid()", code_only)
+        self.assertNotIn("auth.jwt()", code_only)
         self.assertRegex(self.lower, r"grant\s+execute\s+on\s+function[^;]+to\s+authenticated")
         self.assertRegex(self.lower, r"revoke\s+all\s+on\s+function[^;]+from\s+service_role")
         self.assertIn("'authenticated'", self.lower)

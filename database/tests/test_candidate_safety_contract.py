@@ -69,7 +69,7 @@ class ProductionCandidateSafetyContractTests(unittest.TestCase):
             "grant select, update, delete on table public.scale_entries to diarium_entry_move_owner",
             "grant usage on schema public, auth, extensions to diarium_entry_move_owner",
             "nobypassrls",
-            "user_id = auth.uid()",
+            "user_id = public.diarium_auth_uid()",
             "revoke all on function public.move_daily_entry_v1",
         ):
             self.assertIn(required, sql)
