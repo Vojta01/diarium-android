@@ -3,6 +3,37 @@
 All notable changes to the Diarium Android app. The web app has its own
 changelog in the `diarium` repository.
 
+## 2.0.0-beta7 — 2026-11-13
+
+versionCode `2000107`. Compared with `2.0.0-beta6` (`2000106`).
+
+### Added
+
+- **Adoption of beta5 profile data and the beta5 AI key.** The old-data screen
+  now offers the name, the birth year and the DeepSeek API key that the phone
+  still holds from beta5. Adoption runs only after explicit confirmation, fills
+  only empty fields and never deletes the original values.
+- **The key never leaves the phone.** The adopted key is written to the
+  encrypted per-account slot. It is never sent to the server and never shown on
+  screen.
+
+### Changed
+
+- **AI consent is not adopted.** The signed-in account must switch AI on again.
+  Consent cannot be inherited from an ownerless beta5 value.
+- **The guide flag is not adopted.** A new account still walks through the
+  first-run guide once.
+
+### Fixed
+
+- The old-data screen no longer says that name, birth year and the AI key
+  cannot be transferred. It lists what is available and offers the transfer.
+
+### Verified
+
+- Complete app unit-test suite: `1181` tests, `0` failures, plus `buildSrc`
+  tests, on GitHub Actions.
+
 ## 2.0.0-beta6 — 2026-11-12
 
 versionCode `2000106`. Compared with `2.0.0-beta5` (`2000105`).
