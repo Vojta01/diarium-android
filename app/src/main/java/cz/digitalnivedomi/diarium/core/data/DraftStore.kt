@@ -332,6 +332,54 @@ class DraftStore(
     /** Convenience for callers that do not need conflict metadata. */
     suspend fun load(date: String): DiaryEntry? = loadRecord(date)?.entry
 
+    /**
+     * Rebases an ordinary local draft onto the current server copy so that the
+     * next save can pass the conditional v2 comparison. It changes only the
+     * stored baseline token; the entry text and the server row stay untouched.
+     */
+    internal suspend fun rebaseDraft(
+        date: String,
+        expectedRecord: DraftRecord,
+        remote: StoredEntrySnapshot?,
+    ): DraftRecord? {
+        val owner = ownerId?.takeIf { it.isNotBlank() } ?: return null
+        if (expectedRecord.ownerId != owner || expectedRecord.date != date) return null
+        if (expectedRecord.legacyRecoveryOrigin != null) return null
+        if (remote != null && (remote.id.isNullOrBlank() || remote.revision == null)) return null
+
+        val mutation = mutationState(owner, date)
+        var rebased: DraftRecord? = null
+        mutation.mutex.withLock {
+            val targetKey = stringPreferencesKey(key(owner, date))
+            dataStore.edit { prefs ->
+                val current = prefs[targetKey]?.let { decode(owner, date, it) } ?: return@edit
+                if (current != expectedRecord) return@edit
+                if (current.legacyRecoveryOrigin != null) return@edit
+                val updated = current.copy(
+                    baselineUpdatedAt = remote?.updatedAt,
+                    baselineExists = remote != null,
+                    baselineId = remote?.id,
+                    baselineRevision = remote?.revision,
+                    pendingSaveRequestId = null,
+                )
+                prefs[targetKey] = encode(
+                    owner = owner,
+                    entry = updated.entry,
+                    baselineUpdatedAt = updated.baselineUpdatedAt,
+                    baselineExists = updated.baselineExists,
+                    baselineId = updated.baselineId,
+                    baselineRevision = updated.baselineRevision,
+                    pendingSaveRequestId = null,
+                    pendingAiReflection = updated.pendingAiReflection,
+                    legacyRecoveryOrigin = updated.legacyRecoveryOrigin,
+                    legacyRecoverySourceHash = updated.legacyRecoverySourceHash,
+                )
+                rebased = updated
+            }
+        }
+        return rebased
+    }
+
     suspend fun clear(date: String) {
         val owner = ownerId?.takeIf { it.isNotBlank() } ?: return
         val mutation = mutationState(owner, date)

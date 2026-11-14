@@ -3,6 +3,26 @@
 All notable changes to the Diarium Android app. The web app has its own
 changelog in the `diarium` repository.
 
+## 2.0.0-beta8 — 2026-11-14
+
+versionCode `2000108`. Compared with `2.0.0-beta7` (`2000107`).
+
+### Fixed
+
+- **A conflicted local draft can now be saved.** When the server copy changed
+  after editing started, the screen only offered "review both copies" and the
+  save stayed blocked. The panel now offers **"Připravit místní kopii k uložení"**
+  for every draft, not only for legacy recovered drafts. After that the normal
+  **Uložit** replaces the server copy with the local one through the conditional
+  v2 comparison.
+- **Yesterday's entry no longer disappears.** The blocked draft for 13 November
+  2026 can be prepared and saved, so the entry reaches the server.
+
+### Changed
+
+- The conflict panel states that saving replaces the server copy. The owner
+  attestation checkbox stays only for legacy recovered drafts.
+
 ## 2.0.0-beta7 — 2026-11-13
 
 versionCode `2000107`. Compared with `2.0.0-beta6` (`2000106`).

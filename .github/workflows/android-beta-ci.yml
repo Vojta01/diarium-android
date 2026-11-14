@@ -1,16 +1,17 @@
-name: Android beta7 legacy adoption CI
+name: Android beta CI
 
 on:
   push:
     branches:
       - ci/android-beta7-legacy-adoption
+      - ci/android-beta8-conflict-resolution
 
 permissions:
   contents: read
 
 jobs:
   android-unit-tests:
-    if: github.ref == 'refs/heads/ci/android-beta7-legacy-adoption'
+    if: startsWith(github.ref, 'refs/heads/ci/android-beta')
     name: Android unit tests (no APK or release)
     runs-on: ubuntu-latest
     timeout-minutes: 45

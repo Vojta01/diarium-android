@@ -301,6 +301,67 @@ class DraftStoreTest {
     }
 
     @Test
+    fun `an ordinary draft rebases onto the current server revision`() = runBlocking {
+        val handle = newStore(tempFile())
+        val date = "2026-11-13"
+        val entry = DiaryEntry(mood = 2, note = "včerejší zápis")
+        handle.store.save(
+            date,
+            entry,
+            baselineExists = true,
+            baselineId = ROW_ID,
+            baselineRevision = 5,
+        )
+        val stale = handle.store.loadRecord(date)!!
+        val remote = StoredEntrySnapshot(
+            entry = DiaryEntry.EMPTY,
+            updatedAt = "2026-11-14T06:59:15Z",
+            id = OTHER_ROW_ID,
+            revision = 6,
+        )
+
+        val rebased = handle.store.rebaseDraft(date, stale, remote)
+
+        assertEquals(entry, rebased?.entry)
+        assertEquals(true, rebased?.baselineExists)
+        assertEquals(OTHER_ROW_ID, rebased?.baselineId)
+        assertEquals(6L, rebased?.baselineRevision)
+        assertEquals("2026-11-14T06:59:15Z", rebased?.baselineUpdatedAt)
+        assertEquals(6L, handle.store.loadRecord(date)?.baselineRevision)
+        handle.close()
+    }
+
+    @Test
+    fun `rebasing an ordinary draft refuses a record that changed after review`() = runBlocking {
+        val handle = newStore(tempFile())
+        val date = "2026-11-12"
+        val entry = DiaryEntry(mood = 3)
+        handle.store.save(date, entry, baselineExists = true, baselineId = ROW_ID, baselineRevision = 4)
+        val stale = handle.store.loadRecord(date)!!
+        val remote = StoredEntrySnapshot(entry = DiaryEntry.EMPTY, updatedAt = null, id = ROW_ID, revision = 9)
+
+        handle.store.save(date, entry.copy(note = "novější úprava"), baselineRevision = 4)
+
+        assertNull(handle.store.rebaseDraft(date, stale, remote))
+        assertEquals(4L, handle.store.loadRecord(date)?.baselineRevision)
+        handle.close()
+    }
+
+    @Test
+    fun `rebasing an ordinary draft needs a usable remote identity`() = runBlocking {
+        val handle = newStore(tempFile())
+        val date = "2026-11-11"
+        handle.store.save(date, DiaryEntry(mood = 4), baselineExists = false)
+        val record = handle.store.loadRecord(date)!!
+
+        assertNull(handle.store.rebaseDraft(date, record, StoredEntrySnapshot(DiaryEntry.EMPTY, null)))
+        assertNull(handle.store.rebaseDraft(date, record, StoredEntrySnapshot(DiaryEntry.EMPTY, null, id = ROW_ID)))
+        assertTrue(handle.store.rebaseDraft(date, record, null) != null)
+        assertEquals(false, handle.store.loadRecord(date)?.baselineExists)
+        handle.close()
+    }
+
+    @Test
     fun `request id is part of conditional draft cleanup identity`() = runBlocking {
         val handle = newStore(tempFile())
         val entry = DiaryEntry(mood = 4, note = "retry safely")

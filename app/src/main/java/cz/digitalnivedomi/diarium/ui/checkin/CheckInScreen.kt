@@ -487,9 +487,10 @@ fun CheckInScreen(
         val owner = ownerId ?: return
         val repository = entriesRepo ?: return
         val store = drafts?.takeIf { it.ownerId == owner } ?: return
-        if (recoveredRebaseInProgress || !recoveredOwnerAttested || !recoveredLocalReviewed ||
+        val legacy = recovery.record.legacyRecoveryOrigin != null
+        if (recoveredRebaseInProgress || !recoveredLocalReviewed ||
             draftRecoveryChoice != DraftRecoveryChoice.LOCAL || recovery.remoteError != null ||
-            recovery.record.legacyRecoveryOrigin == null
+            (legacy && !recoveredOwnerAttested)
         ) return
         recoveredRebaseInProgress = true
         scope.launch {
@@ -520,7 +521,11 @@ fun CheckInScreen(
                     blockRecoveredRebase(recovery, "Místní návrh se změnil. Znovu načti a prohlédni obě kopie.")
                     return@launch
                 }
-                val rebased = store.rebaseLegacyRecovery(recovery.record.date, recovery.record, remote)
+                val rebased = if (legacy) {
+                    store.rebaseLegacyRecovery(recovery.record.date, recovery.record, remote)
+                } else {
+                    store.rebaseDraft(recovery.record.date, recovery.record, remote)
+                }
                 if (rebased == null) {
                     blockRecoveredRebase(recovery, "Původní místní záznam se změnil nebo jej nelze ověřit. Nic nebylo přepsáno.")
                     return@launch
@@ -1497,7 +1502,8 @@ fun CheckInScreen(
                 localReviewed = recoveredLocalReviewed,
                 rebaseInProgress = recoveredRebaseInProgress,
                 canRebase = canChooseCopy && ownerId != null && entriesRepo != null &&
-                    drafts?.ownerId == ownerId && recoveredOwnerAttested && recoveredLocalReviewed &&
+                    drafts?.ownerId == ownerId && recoveredLocalReviewed &&
+                    (recovery.record.legacyRecoveryOrigin == null || recoveredOwnerAttested) &&
                     draftRecoveryChoice == DraftRecoveryChoice.LOCAL && !recoveredRebaseInProgress,
                 onOwnerAttestedChanged = { recoveredOwnerAttested = it },
                 onLocalReviewedChanged = { recoveredLocalReviewed = it },
@@ -2311,8 +2317,9 @@ private fun DraftRecoveryPanel(
                 testTag = "checkin_review_server",
                 onClick = onReviewServer,
             )
-            if (recovery.record.legacyRecoveryOrigin != null) {
-                Spacer(Modifier.height(8.dp))
+            val legacyDraft = recovery.record.legacyRecoveryOrigin != null
+            Spacer(Modifier.height(8.dp))
+            if (legacyDraft) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(
                         checked = ownerAttested,
@@ -2326,32 +2333,32 @@ private fun DraftRecoveryPanel(
                         color = TextSecondary,
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = localReviewed,
-                        onCheckedChange = { if (canChooseCopy && choice == DraftRecoveryChoice.LOCAL && !rebaseInProgress) onLocalReviewedChanged(it) },
-                        enabled = canChooseCopy && choice == DraftRecoveryChoice.LOCAL && !rebaseInProgress,
-                        modifier = Modifier.testTag("checkin_rebase_confirmation"),
-                    )
-                    Text(
-                        "Prohlédl(a) jsem místní kopii a chci ji ručně připravit k uložení.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                    )
-                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = localReviewed,
+                    onCheckedChange = { if (canChooseCopy && choice == DraftRecoveryChoice.LOCAL && !rebaseInProgress) onLocalReviewedChanged(it) },
+                    enabled = canChooseCopy && choice == DraftRecoveryChoice.LOCAL && !rebaseInProgress,
+                    modifier = Modifier.testTag("checkin_rebase_confirmation"),
+                )
                 Text(
-                    "Příprava znovu načte účetní serverovou revizi; sama nic neodešle ani nesmaže. Potom můžeš samostatně stisknout Uložit, které použije podmíněné v2 porovnání.",
+                    "Prohlédl(a) jsem místní kopii a chci ji uložit na server.",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                 )
-                SecondaryButton(
-                    text = if (rebaseInProgress) "Ověřuji aktuální serverovou verzi…" else "Připravit místní kopii k bezpečnému uložení",
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = canRebase,
-                    testTag = "checkin_rebase_recovered_draft",
-                    onClick = onRebase,
-                )
             }
+            Text(
+                "Příprava znovu načte serverovou revizi a nic neodešle. Potom stiskni Uložit. Uložení nahradí serverovou kopii touto místní.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            SecondaryButton(
+                text = if (rebaseInProgress) "Ověřuji aktuální serverovou verzi…" else "Připravit místní kopii k uložení",
+                modifier = Modifier.fillMaxWidth(),
+                enabled = canRebase,
+                testTag = "checkin_rebase_recovered_draft",
+                onClick = onRebase,
+            )
         }
         RecoveryCopyPreview("Návrh v tomto telefonu", recovery.record.entry)
         if (recovery.remote != null) {
