@@ -80,7 +80,7 @@ class UsageSyncRepository internal constructor(
                 is BaselineRead.Found -> {
                     val payload = UsageSyncPayload.build(ownerId, date, usage)
                     val payloadJson = payload.toString()
-                    if (requestStore.readConfirmedHash(ownerId, date) == sha256(payloadJson)) {
+                    if (requestStore.readConfirmedHash(ownerId, date) == usagePayloadHash(payloadJson)) {
                         return UsagePushOutcome.UNCHANGED
                     }
                     request = UsageSyncRequest.create(ownerId, date, payloadJson, baseline.baseline)
@@ -190,7 +190,7 @@ class UsageSyncRepository internal constructor(
                             throw IOException("Conditional screen-time receipt did not match its baseline")
                         }
                         clearConfirmedRequest(request)
-                        requestStore.writeConfirmedHash(ownerId, date, sha256(request.phonePayloadJson))
+                        requestStore.writeConfirmedHash(ownerId, date, usagePayloadHash(request.phonePayloadJson))
                         return UsagePushOutcome.SENT
                     }
                     // An idempotency receipt is historical; only a matching current
@@ -204,7 +204,7 @@ class UsageSyncRepository internal constructor(
                         is BaselineRead.Found -> {
                             if (current.baseline.id == entryId && current.baseline.revision == revision) {
                                 clearConfirmedRequest(request)
-                                requestStore.writeConfirmedHash(ownerId, date, sha256(request.phonePayloadJson))
+                                requestStore.writeConfirmedHash(ownerId, date, usagePayloadHash(request.phonePayloadJson))
                                 return UsagePushOutcome.SENT
                             }
                             val replacement = request.withNewBaseline(current.baseline)
@@ -450,7 +450,7 @@ object UsageSyncPayload {
 }
 
 /** Stable fingerprint of a phone payload; only equality matters, never the value. */
-internal fun sha256(value: String): String =
+internal fun usagePayloadHash(value: String): String =
     MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
