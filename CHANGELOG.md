@@ -3,6 +3,30 @@
 All notable changes to the Diarium Android app. The web app has its own
 changelog in the `diarium` repository.
 
+## 2.0.0-beta9 — 2026-11-14
+
+versionCode `2000109`. Compared with `2.0.0-beta8` (`2000108`).
+
+### Fixed
+
+- **Screen-time sync no longer bumps the diary revision.** The database
+  trigger now increases `entries.revision` only when diary content changes
+  (mood, note, gratitude, activities, habits, sleep, stress, weather, photo,
+  scales, AI reflection). An update of `phone_screen_time`, `phone_unlocks` or
+  `phone_top_apps` keeps the revision, so it cannot make a draft look stale.
+- **Unchanged phone data is not sent again.** The app stores a fingerprint of
+  the last confirmed payload for each day and skips the network write when the
+  payload is identical.
+
+### Changed
+
+- Saving the same content twice is not a new version. The revision stays.
+
+### Verified
+
+- Revision contract test on PostgreSQL 16 and 17.
+- Complete app unit-test suite and `buildSrc` tests on GitHub Actions.
+
 ## 2.0.0-beta8 — 2026-11-14
 
 versionCode `2000108`. Compared with `2.0.0-beta7` (`2000107`).

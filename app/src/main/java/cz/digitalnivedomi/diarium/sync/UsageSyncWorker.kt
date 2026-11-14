@@ -99,6 +99,7 @@ class UsageSyncWorker(
                     UsagePushOutcome.CONSENT_DISABLED -> return UsageSyncAttempt.SUCCESS
 
                     UsagePushOutcome.SENT,
+                    UsagePushOutcome.UNCHANGED,
                     UsagePushOutcome.EMPTY_DAY,
                     UsagePushOutcome.NO_DIARY_ENTRY -> Unit
                 }

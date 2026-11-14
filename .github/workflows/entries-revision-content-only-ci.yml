@@ -1,0 +1,66 @@
+name: Entries revision content-only CI
+
+on:
+  push:
+    branches:
+      - ci/android-beta9-usage-conflicts
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-contract:
+    if: github.ref == 'refs/heads/ci/android-beta9-usage-conflicts'
+    name: Revision contract on PostgreSQL ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['16', '17']
+    services:
+      postgres:
+        image: postgres:${{ matrix.version }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: diarium_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Apply the migration
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d diarium_test -v ON_ERROR_STOP=1 -f database/entries_revision_content_only_2026-11-14.sql
+
+      - name: Run the revision contract test
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d diarium_test -v ON_ERROR_STOP=1 -f database/tests/entries_revision_content_only_test.sql
+
+      - name: Apply the rollback and prove the old contract returns
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d diarium_test -v ON_ERROR_STOP=1 -f database/rollback_entries_revision_content_only_2026-11-14.sql
+          psql -h localhost -U postgres -d diarium_test -v ON_ERROR_STOP=1 <<'SQL'
+          UPDATE public.entries SET phone_screen_time = 999 WHERE date = '2026-11-13';
+          DO $$
+          DECLARE v_revision bigint;
+          BEGIN
+            SELECT revision INTO v_revision FROM public.entries WHERE date = '2026-11-13';
+            IF v_revision <> 5 THEN
+              RAISE EXCEPTION 'rollback must bump revision on any update, got %', v_revision;
+            END IF;
+          END;
+          $$;
+          SQL

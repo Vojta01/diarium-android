@@ -223,6 +223,18 @@ internal class UsageSyncRequestStore(context: Context) {
 
     private fun storageKey(ownerId: String, date: String): String = ownerPrefix(ownerId) + date
 
+    /** Fingerprint of the last payload the server confirmed for this day. */
+    fun readConfirmedHash(ownerId: String, date: String): String? = synchronized(STORE_LOCK) {
+        prefs.getString(confirmedKey(ownerId, date), null)
+    }
+
+    fun writeConfirmedHash(ownerId: String, date: String, hash: String) = synchronized(STORE_LOCK) {
+        prefs.edit().putString(confirmedKey(ownerId, date), hash).apply()
+    }
+
+    private fun confirmedKey(ownerId: String, date: String): String =
+        ownerPrefix(ownerId) + "confirmed/" + date
+
     private fun ownerPrefix(ownerId: String): String =
         "v1/${Base64.encodeToString(ownerId.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)}/"
 

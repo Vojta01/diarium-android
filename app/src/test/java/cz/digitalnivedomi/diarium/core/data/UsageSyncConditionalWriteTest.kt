@@ -273,6 +273,41 @@ class UsageSyncConditionalWriteTest {
         assertTrue(requests.none { it.url.endsWith("/rpc/save_daily_entry") })
     }
 
+    @Test
+    fun `an unchanged phone payload is not sent twice`() = runBlocking {
+        var revision = 7L
+        val repository = repository { request ->
+            requests += request
+            when {
+                request.method == "GET" && request.url.contains("/entries?") -> HttpResponse(
+                    200,
+                    JSONArray().put(JSONObject().put("id", ROW_ID).put("revision", revision)).toString(),
+                )
+                request.url.endsWith("/rpc/save_daily_entry_v2") -> {
+                    revision += 1
+                    HttpResponse(
+                        200,
+                        JSONObject()
+                            .put("status", "saved")
+                            .put("entry_id", ROW_ID)
+                            .put("revision", revision)
+                            .put("replayed", false)
+                            .toString(),
+                    )
+                }
+                else -> HttpResponse(200, "{}")
+            }
+        }
+
+        assertEquals(UsagePushOutcome.SENT, repository.pushDay(OWNER, DATE))
+        assertEquals(1, requests.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
+
+        assertEquals(UsagePushOutcome.UNCHANGED, repository.pushDay(OWNER, DATE))
+
+        assertEquals(1, requests.count { it.url.endsWith("/rpc/save_daily_entry_v2") })
+        assertEquals(2, requests.count { it.method == "GET" })
+    }
+
     private fun repository(
         usage: UsageStatsSource = object : UsageStatsSource {
             override fun hasUsageAccess(): Boolean = true

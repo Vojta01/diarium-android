@@ -5,6 +5,7 @@ on:
     branches:
       - ci/android-beta7-legacy-adoption
       - ci/android-beta8-conflict-resolution
+      - ci/android-beta9-usage-conflicts
 
 permissions:
   contents: read

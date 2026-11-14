@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.security.MessageDigest
 import java.time.LocalDate
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -78,7 +79,11 @@ class UsageSyncRepository internal constructor(
                 BaselineRead.Missing -> return UsagePushOutcome.NO_DIARY_ENTRY
                 is BaselineRead.Found -> {
                     val payload = UsageSyncPayload.build(ownerId, date, usage)
-                    request = UsageSyncRequest.create(ownerId, date, payload.toString(), baseline.baseline)
+                    val payloadJson = payload.toString()
+                    if (requestStore.readConfirmedHash(ownerId, date) == sha256(payloadJson)) {
+                        return UsagePushOutcome.UNCHANGED
+                    }
+                    request = UsageSyncRequest.create(ownerId, date, payloadJson, baseline.baseline)
                     persistRequest(ownerId, request!!, expected = null)?.let { return it }
                 }
             }
@@ -185,6 +190,7 @@ class UsageSyncRepository internal constructor(
                             throw IOException("Conditional screen-time receipt did not match its baseline")
                         }
                         clearConfirmedRequest(request)
+                        requestStore.writeConfirmedHash(ownerId, date, sha256(request.phonePayloadJson))
                         return UsagePushOutcome.SENT
                     }
                     // An idempotency receipt is historical; only a matching current
@@ -198,6 +204,7 @@ class UsageSyncRepository internal constructor(
                         is BaselineRead.Found -> {
                             if (current.baseline.id == entryId && current.baseline.revision == revision) {
                                 clearConfirmedRequest(request)
+                                requestStore.writeConfirmedHash(ownerId, date, sha256(request.phonePayloadJson))
                                 return UsagePushOutcome.SENT
                             }
                             val replacement = request.withNewBaseline(current.baseline)
@@ -358,6 +365,8 @@ class UsageSyncRepository internal constructor(
 enum class UsagePushOutcome {
     /** The conditional v2 RPC accepted the day's phone usage. */
     SENT,
+    /** The payload equals the last confirmed send, so nothing was written. */
+    UNCHANGED,
     /** The day captured nothing (screen off / phone unused) — nothing to push. */
     EMPTY_DAY,
     /** There is no diary row to update; screen-time sync never creates one. */
@@ -439,3 +448,9 @@ object UsageSyncPayload {
         }
     }
 }
+
+/** Stable fingerprint of a phone payload; only equality matters, never the value. */
+internal fun sha256(value: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
