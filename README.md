@@ -1,8 +1,8 @@
 # Diarium Android — buildy
 
-Nejnovější: **2.0.0-beta8**
+Nejnovější: **2.0.0-beta9**
 
-* `diarium-2.0.0-beta8.apk` — tato verze (odkaz pro stažení)
+* `diarium-2.0.0-beta9.apk` — tato verze (odkaz pro stažení)
 * `diarium.apk` — vždy nejnovější (GitHub u raw odkazů cachuje, proto mají
   jednotlivé verze vlastní soubor)
 
