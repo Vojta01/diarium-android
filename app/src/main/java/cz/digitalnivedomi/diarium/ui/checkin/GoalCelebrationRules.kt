@@ -1,6 +1,24 @@
 package cz.digitalnivedomi.diarium.ui.checkin
 
 import cz.digitalnivedomi.diarium.core.data.GoalProgress
+import cz.digitalnivedomi.diarium.core.data.normalizeFrequency
+
+/** Visual weight of a newly met goal celebration. */
+internal enum class GoalCelebrationStyle {
+    COMPACT,
+    FULL_SCREEN,
+}
+
+/**
+ * Picks one celebration for a save. A monthly goal is the rarer event, so any
+ * monthly goal escalates the whole save to the full-screen treatment. Daily and
+ * weekly goals share the compact one. An empty list has nothing to celebrate.
+ */
+internal fun goalCelebrationStyle(goals: List<GoalProgress>): GoalCelebrationStyle? {
+    if (goals.isEmpty()) return null
+    val hasMonthly = goals.any { normalizeFrequency(it.goal.frequency) == "monthly" }
+    return if (hasMonthly) GoalCelebrationStyle.FULL_SCREEN else GoalCelebrationStyle.COMPACT
+}
 
 /**
  * Which goals the just-saved check-in pushed over their target.

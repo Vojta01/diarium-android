@@ -98,4 +98,95 @@ class GoalCelebrationRulesTest {
         val after = listOf(progress(count = 0, id = "a"), progress(count = 3, id = "fresh"))
         assertTrue(newlyMetGoals(before, after).isEmpty())
     }
+
+    // ── celebration style ───────────────────────────────────────────────────
+    // Daily and weekly goals earn the compact inline celebration; a monthly goal
+    // is rare enough to justify the full-screen one. There is no third tier, and
+    // the classifier never depends on how many goals flipped.
+
+    @Test
+    fun `no newly met goals has no celebration`() {
+        assertEquals(null, goalCelebrationStyle(emptyList()))
+    }
+
+    @Test
+    fun `a daily goal is compact`() {
+        assertEquals(
+            GoalCelebrationStyle.COMPACT,
+            goalCelebrationStyle(listOf(progress(count = 3, frequency = "daily"))),
+        )
+    }
+
+    @Test
+    fun `a weekly goal is compact`() {
+        assertEquals(
+            GoalCelebrationStyle.COMPACT,
+            goalCelebrationStyle(listOf(progress(count = 3, frequency = "weekly"))),
+        )
+    }
+
+    @Test
+    fun `a monthly goal is full screen`() {
+        assertEquals(
+            GoalCelebrationStyle.FULL_SCREEN,
+            goalCelebrationStyle(listOf(progress(count = 3, frequency = "monthly"))),
+        )
+    }
+
+    @Test
+    fun `czech aliases normalize like their english frequency`() {
+        assertEquals(
+            GoalCelebrationStyle.COMPACT,
+            goalCelebrationStyle(listOf(progress(count = 3, frequency = "denně"))),
+        )
+        assertEquals(
+            GoalCelebrationStyle.COMPACT,
+            goalCelebrationStyle(listOf(progress(count = 3, frequency = "týdně"))),
+        )
+        assertEquals(
+            GoalCelebrationStyle.FULL_SCREEN,
+            goalCelebrationStyle(listOf(progress(count = 3, frequency = "měsíčně"))),
+        )
+    }
+
+    @Test
+    fun `an unknown frequency falls back to compact`() {
+        // normalizeFrequency maps anything unrecognized to weekly, so the
+        // celebration must inherit that instead of inventing a third style.
+        assertEquals(
+            GoalCelebrationStyle.COMPACT,
+            goalCelebrationStyle(listOf(progress(count = 3, frequency = "quarterly"))),
+        )
+        assertEquals(
+            GoalCelebrationStyle.COMPACT,
+            goalCelebrationStyle(listOf(progress(count = 3, frequency = ""))),
+        )
+    }
+
+    @Test
+    fun `monthly among weekly goals escalates to full screen`() {
+        val newlyMet = listOf(
+            progress(count = 3, id = "week", frequency = "weekly"),
+            progress(count = 3, id = "month", frequency = "monthly"),
+        )
+        assertEquals(GoalCelebrationStyle.FULL_SCREEN, goalCelebrationStyle(newlyMet))
+    }
+
+    @Test
+    fun `style is derived from the transition result`() {
+        val before = listOf(
+            progress(count = 2, id = "daily", frequency = "daily"),
+            progress(count = 2, id = "monthly", frequency = "monthly"),
+        )
+        val after = listOf(
+            progress(count = 3, id = "daily", frequency = "daily"),
+            progress(count = 3, id = "monthly", frequency = "monthly"),
+        )
+        assertEquals(
+            GoalCelebrationStyle.FULL_SCREEN,
+            goalCelebrationStyle(newlyMetGoals(before, after)),
+        )
+        assertTrue(newlyMetGoals(after, after).isEmpty())
+        assertEquals(null, goalCelebrationStyle(newlyMetGoals(after, after)))
+    }
 }
