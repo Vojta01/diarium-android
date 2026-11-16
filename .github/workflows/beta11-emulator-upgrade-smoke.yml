@@ -1,0 +1,52 @@
+name: Beta10 to beta11 signed APK upgrade smoke
+
+on:
+  push:
+    branches:
+      - test/beta11-upgrade-smoke-20261116
+
+permissions:
+  contents: read
+
+jobs:
+  beta10-to-beta11:
+    if: github.ref == 'refs/heads/test/beta11-upgrade-smoke-20261116'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact test branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify committed candidate SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_path='test-apk/diarium-beta11.apk'
+          sha_file='.github/beta11-candidate.sha256'
+          test -f "$sha_file"
+          test -f "$candidate_path"
+          candidate_sha="$(<"$sha_file")"
+          [[ "$candidate_sha" =~ ^[[:xdigit:]]{64}$ ]]
+          printf '%s  %s\n' "$candidate_sha" "$candidate_path" | sha256sum --check
+      - name: Prepare Android SDK tools
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install beta10 then in-place upgrade to beta11
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_2
+          script: bash .github/scripts/beta11-upgrade-smoke.sh
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta11-upgrade-smoke-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
