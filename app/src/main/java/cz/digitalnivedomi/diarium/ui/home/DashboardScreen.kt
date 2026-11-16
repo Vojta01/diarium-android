@@ -361,7 +361,7 @@ private fun DashboardContent(
             StaggeredItem(4) { GoalsCard(goals = goals, onOpen = onOpen) }
         }
         StaggeredItem(5) {
-            DigitalSummaryCard(data = data)
+            DigitalSummaryCard(data = data, onOpenMetric = onOpenStatistics)
         }
         val anchor = data.newestRecorded ?: data.newestEntry
         val todayShowsIt = !data.todayEntry?.aiReflection.isNullOrBlank()
@@ -1466,27 +1466,15 @@ private fun UsageCard(
     }
 }
 
-/** How many goals the dashboard card shows; the rest live behind the footer link. */
-private const val GOAL_CARD_LIMIT = 2
-
-/**
- * The fallback emoji on a goal row: a goal carries an activity key, not an icon, and
- * the pickers repository is not part of the dashboard's deps — so the target emoji
- * stands in rather than inventing a picture per activity.
- */
+/** One neutral target mark: goals carry an activity key, not an icon. */
 private const val GOAL_CARD_EMOJI = "🎯"
 
 /**
- * The goals card: up to [GOAL_CARD_LIMIT] goals, unmet first, each with the current
- * period's progress and how the previous period went.
- *
- * An empty list is a real answer ("this account has no active goals") and gets the
- * compact empty card with a way into the goals screen. A failed read never gets
- * here — it hides the card upstream, so "no goals" is never shown for a state the
- * app could not read.
+ * The goals card shows every active goal, unmet first, with the current period's
+ * progress and the previous period. The footer preserves the existing navigation.
  */
 @Composable
-private fun GoalsCard(goals: List<GoalProgress>, onOpen: (String) -> Unit) {
+internal fun GoalsCard(goals: List<GoalProgress>, onOpen: (String) -> Unit) {
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         SectionHeader("🎯 Cíle")
         VSpace(10)
@@ -1497,8 +1485,7 @@ private fun GoalsCard(goals: List<GoalProgress>, onOpen: (String) -> Unit) {
         } else {
             // Unmet first — a stable sort, so the repository's own order survives
             // inside each group. The card is a nudge, not a trophy case.
-            val shown = goals.sortedBy { it.targetMet }.take(GOAL_CARD_LIMIT)
-            shown.forEachIndexed { index, progress ->
+            goals.sortedBy { it.targetMet }.forEachIndexed { index, progress ->
                 if (index > 0) VSpace(14)
                 GoalProgressRow(progress)
             }
@@ -1512,59 +1499,53 @@ private fun GoalsCard(goals: List<GoalProgress>, onOpen: (String) -> Unit) {
 @Composable
 private fun GoalProgressRow(progress: GoalProgress) {
     val goal = progress.goal
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = GOAL_CARD_EMOJI,
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Spacer(Modifier.width(Spacing.small))
-        Text(
-            text = goal.name,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.titleSmall,
-            color = TextPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            text = "${progress.count}/${goal.targetCount} · ${progress.periodLabel}",
-            style = MaterialTheme.typography.labelSmall,
-            color = TextSecondary,
-        )
-        if (progress.targetMet) {
-            Spacer(Modifier.width(Spacing.tight))
+    Column(modifier = Modifier.fillMaxWidth().testTag("dashboard_goal_${goal.id}")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(text = GOAL_CARD_EMOJI, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.width(Spacing.small))
             Text(
-                text = "✓",
-                style = MaterialTheme.typography.labelLarge,
-                color = SuccessGreen,
+                text = goal.name,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
+            Text(
+                text = "${progress.count}/${goal.targetCount} · ${progress.periodLabel}",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+            if (progress.targetMet) {
+                Spacer(Modifier.width(Spacing.tight))
+                Text("✓", style = MaterialTheme.typography.labelLarge, color = SuccessGreen)
+            }
         }
-    }
-    VSpace(6)
-    // Thin bar in the same shape language as the top-apps rows; green once the
-    // period's target is met, indigo while it is still running.
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(6.dp)
-            .clip(RoundedCornerShape(3.dp))
-            .background(Color.White.copy(alpha = 0.07f)),
-    ) {
+        VSpace(6)
+        // Thin goal progress; no goal is omitted regardless of the list length.
         Box(
             modifier = Modifier
-                .fillMaxWidth(progress.fraction)
+                .fillMaxWidth()
                 .height(6.dp)
                 .clip(RoundedCornerShape(3.dp))
-                .background(SolidColor(if (progress.targetMet) SuccessGreen else Indigo)),
-        )
-    }
-    progress.previousMet?.let { met ->
-        VSpace(4)
-        Text(
-            text = if (met) "minule: ✓" else "minule: ✗",
-            style = MaterialTheme.typography.labelSmall,
-            color = if (met) SuccessGreen else TextTertiary,
-        )
+                .background(Color.White.copy(alpha = 0.07f)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(progress.fraction)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(SolidColor(if (progress.targetMet) SuccessGreen else Indigo)),
+            )
+        }
+        progress.previousMet?.let { met ->
+            VSpace(4)
+            Text(
+                text = if (met) "minule: ✓" else "minule: ✗",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (met) SuccessGreen else TextTertiary,
+            )
+        }
     }
 }
 

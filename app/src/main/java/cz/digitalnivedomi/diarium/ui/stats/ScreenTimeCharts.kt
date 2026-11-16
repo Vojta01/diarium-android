@@ -12,11 +12,13 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
 import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.animation.core.Animatable
@@ -36,6 +38,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,6 +72,9 @@ import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.temporal.ChronoUnit
 import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 
@@ -80,26 +90,13 @@ import kotlin.math.roundToInt
  * screen-time card keeps the range switch and the summary the web prints, and the
  * unlock card has its own bars, bands, average line and summary numbers.
  *
- * What the split deliberately did **not** change:
+ * A supplied inclusive range ends at the last completed day (today is excluded even
+ * when it is within the caller's bounds). Daily bars select a date; long ranges use
+ * calendar week/month totals and retain their source-day drill-down.
  *
- * - the window is still **anchored on the last day that actually has data**, not on
- *   today, so a phone that has not synced this morning shows the last full day instead
- *   of an empty chart (the web's `chartData` does the same);
- * - the screen-time bars keep the web's six time buckets, from "<30m" to "6h+", each
- *   with its own colour, and the dashed line still marks the average of the timed days;
- * - both cards print the same three numbers as the web (Průměr denně / Celkem / Nejvíc)
- *   over exactly the same days — [StatsMath.screenTimeSummary] for the time, and
- *   [ScreenTimeBars.unlockSummary], which uses the same denominators, for the count;
- * - the top apps are aggregated over the same window the bars show, and the part of
- *   the screen time no listed app accounts for stays visible as "Ostatní" rather than
- *   silently inflating the app shares.
- *
- * Deliberately native, unchanged: the switch between 7 and 30 days (the web's chart is
- * always 7), and tapping a bar opens that day's detail instead of a hover tooltip. The
- * two charts share one window and one selection, so a day tapped in either one opens
- * the same detail card and dims the same column in both — they read as two views of
- * one period, which is why the range switch lives on the first card only and the
- * second card's caption names the period it is showing.
+ * The caller supplies the global inclusive period. A tap reports a selected source date
+ * (or null to clear) and never opens check-in. Long periods aggregate into calendar
+ * weeks/months, with per-date drill-down retained inside each selected bucket.
  *
  * A day with no synced data draws no bar and reads "Žádná data" in the detail — it is
  * never drawn as zero screen time, and never as zero unlocks.
@@ -107,34 +104,49 @@ import kotlin.math.roundToInt
 @Composable
 fun ScreenTimeCharts(
     entries: List<StatsDay>, today: String, modifier: Modifier = Modifier,
-    /** Inclusive ISO-8601 range. Pass both bounds to follow the global selection. */
-    startDate: String? = null, endDate: String? = null,
-    /** Opens the shared day detail; null retains the backwards-compatible inline detail. */
-    onOpenDay: ((String) -> Unit)? = null,
+    /** Inclusive ISO-8601 global period; legacy callers default to the last 7 days. */
+    startDate: String = LocalDate.parse(today).minusDays((SCREEN_TIME_WEEK - 1).toLong()).toString(),
+    endDate: String = today,
+    /** Controlled selection; pass null to clear it. */
+    selectedDate: String? = null,
+    /** Select or clear a source date; this never opens check-in. */
+    onSelectDate: (String?) -> Unit = {},
+    /** @deprecated Compatibility only; never invoked by chart selection. Remove at integration. */
+    @Suppress("UNUSED_PARAMETER") onOpenDay: ((String) -> Unit)? = null,
 ) {
     var windowDays by remember { mutableStateOf(SCREEN_TIME_WEEK) }
-    var selectedDate by remember { mutableStateOf<String?>(null) }
+    var expandedBucketStart by remember { mutableStateOf<String?>(null) }
 
-    val explicitRange = startDate != null && endDate != null
-    val window = if (explicitRange) ScreenTimeDateRange.days(entries, startDate!!, endDate!!)
-        else StatsMath.screenTimeWindow(days = entries, windowDays = windowDays)
+    val explicitRange = true
+    // Contract: bars represent complete dates only, even if global bounds include today.
+    val effectiveEnd = completedScreenTimeEnd(startDate, endDate, today)
+    val window = if (effectiveEnd != null && startDate <= effectiveEnd)
+        ScreenTimeDateRange.days(entries, startDate, effectiveEnd) else emptyList()
     val effectiveDays = window.size.coerceAtLeast(1)
     val summary = inclusiveScreenTimeSummary(window)
     val unlocks = inclusiveUnlockSummary(window)
     val windowDates = window.map { it.date }.toSet()
     val windowEntries = entries.filter { it.date in windowDates }
-    val breakdown = StatsMath.topApps(windowEntries, limit = APP_LIST_LIMIT)
-
-    // One selection for both charts: tapping the same day again clears it.
-    val onSelectDate: (String) -> Unit = { date ->
-        selectedDate = if (selectedDate == date) null else date
-        onOpenDay?.invoke(date)
-    }
+    val selectedEntries = if (selectedDate == null) windowEntries else windowEntries.filter { it.date == selectedDate }
+    val selectedDay = selectedDate?.let { date -> window.firstOrNull { it.date == date } }
+    val selectedTotalSeconds = if (selectedDate == null) summary.totalSeconds else selectedDay?.seconds ?: 0
+    val breakdown = StatsMath.topApps(selectedEntries, limit = APP_LIST_LIMIT)
+    val buckets = screenTimeBuckets(window)
+    val aggregated = buckets.any { it.days.size > 1 }
 
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        if (aggregated) {
+            AggregatedDigitalCharts(
+                buckets = buckets,
+                selectedDate = selectedDate,
+                expandedBucketStart = expandedBucketStart,
+                onExpandBucket = { expandedBucketStart = if (expandedBucketStart == it) null else it },
+                onSelectDate = { date -> onSelectDate(if (selectedDate == date) null else date) },
+            )
+        } else {
         ScreenTimeCard(
             window = window,
             windowDays = effectiveDays,
@@ -142,11 +154,8 @@ fun ScreenTimeCharts(
             today = today,
             selectedDate = selectedDate,
             summary = summary,
-            onSelectRange = { days ->
-                windowDays = days
-                selectedDate = null
-            },
-            onSelectDate = onSelectDate,
+            onSelectRange = { /* Global period is owned by StatsScreen. */ },
+            onSelectDate = { date -> onSelectDate(if (selectedDate == date) null else date) },
         )
 
         UnlockCard(
@@ -156,21 +165,21 @@ fun ScreenTimeCharts(
             today = today,
             selectedDate = selectedDate,
             summary = unlocks,
-            onSelectDate = onSelectDate,
+            onSelectDate = { date -> onSelectDate(if (selectedDate == date) null else date) },
         )
+        }
 
-        val selected = window.firstOrNull { it.date == selectedDate }
-        if (selected != null) {
+        selectedDay?.let { selected ->
             SelectedDayCard(
                 day = selected,
                 entry = entries.firstOrNull { it.date == selected.date },
-                onClose = { selectedDate = null },
-                onOpenDay = onOpenDay?.let { open -> { open(selected.date) } },
+                onClose = { onSelectDate(null) },
+                onOpenDay = null,
             )
         }
 
         CoverageLabel(window = window)
-        TopAppsCard(breakdown = breakdown, windowDays = effectiveDays, totalSeconds = summary.totalSeconds)
+        TopAppsCard(breakdown = breakdown, windowDays = effectiveDays, totalSeconds = selectedTotalSeconds, selectedDate = selectedDate)
     }
 }
 
@@ -445,6 +454,16 @@ private fun BarChartTrack(
                         .weight(1f)
                         .fillMaxHeight()
                         .testTagOrEmpty(metric.testTag)
+                        .semantics {
+                            val metricName = if (metric == SCREEN_TIME_METRIC) {
+                                if (AppLanguage.isEnglish()) "Screen time" else "Čas na obrazovce"
+                            } else {
+                                if (AppLanguage.isEnglish()) "Unlocks" else "Odemknutí"
+                            }
+                            contentDescription = "$metricName, ${shortDateLabel(day.date)}, ${metric.labelOf(metric.valueOf(day))}"
+                            selected = selectedDate == day.date
+                            role = Role.Button
+                        }
                         .clickable {
                             if (selectedDate != day.date) haptics.selection()
                             onSelectDate(day.date)
@@ -632,6 +651,7 @@ private fun SelectedDayCard(day: ScreenTimeDay, entry: StatsDay?, onClose: () ->
                     seconds = Math.round(app.minutes * 60).toInt(),
                     share = if (seconds > 0) (app.minutes * 60) / seconds else 0.0,
                     dotColor = accentFor(app.app),
+                    percentageTestTag = "selected_day_app_share_${app.app}",
                 )
                 VSpace(8)
             }
@@ -660,11 +680,12 @@ private fun TopAppsCard(
     breakdown: TopAppsBreakdown?,
     windowDays: Int,
     totalSeconds: Int,
+    selectedDate: String? = null,
 ) {
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader("🏆 Nejčastější aplikace")
         VSpace(4)
-        SectionHint("Za posledních $windowDays dní, podle času na obrazovce.")
+        SectionHint(if (selectedDate == null) "Za posledních $windowDays dní, podle času na obrazovce." else "Aplikace dne ${shortDateLabel(selectedDate)} · klepni na vybraný den znovu pro celé období.")
 
         VSpace(12)
         if (breakdown == null || breakdown.apps.isEmpty()) {
@@ -703,7 +724,13 @@ private fun TopAppsCard(
 }
 
 @Composable
-private fun AppRow(name: String, seconds: Int, share: Double, dotColor: Color) {
+private fun AppRow(
+    name: String,
+    seconds: Int,
+    share: Double,
+    dotColor: Color,
+    percentageTestTag: String? = null,
+) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
@@ -732,9 +759,119 @@ private fun AppRow(name: String, seconds: Int, share: Double, dotColor: Color) {
             style = MaterialTheme.typography.labelSmall,
             color = TextTertiary,
             textAlign = TextAlign.End,
-            modifier = Modifier.width(38.dp),
+            modifier = Modifier.width(38.dp).testTagOrEmpty(percentageTestTag),
         )
     }
+}
+
+/** Exclude an unfinished current day when either supplied inclusive bound reaches today. */
+internal fun completedScreenTimeEnd(startDate: String, endDate: String, today: String): String? {
+    val start = runCatching { LocalDate.parse(startDate) }.getOrNull() ?: return null
+    val end = runCatching { LocalDate.parse(endDate) }.getOrNull() ?: return null
+    val current = runCatching { LocalDate.parse(today) }.getOrNull() ?: return null
+    if (start > end) return null
+    return if (end >= current) current.minusDays(1).toString() else end.toString()
+}
+
+/** A readable bucket whose [days] retain exact source dates for subsequent drill-down. */
+internal data class ScreenTimeChartBucket(
+    val startDate: String,
+    val endDate: String,
+    val label: String,
+    val days: List<ScreenTimeDay>,
+    val seconds: Int?,
+    val unlocks: Int?,
+) {
+    val screenTimeCoverage: Int get() = days.count { it.seconds != null }
+    val unlockCoverage: Int get() = days.count { it.unlocks != null }
+}
+
+/** Weekly buckets through 90 days, calendar-month buckets beyond; bounds stay inclusive. */
+internal fun screenTimeBuckets(days: List<ScreenTimeDay>): List<ScreenTimeChartBucket> {
+    if (days.isEmpty()) return emptyList()
+    val ordered = days.sortedBy { it.date }
+    val start = runCatching { LocalDate.parse(ordered.first().date) }.getOrNull() ?: return emptyList()
+    val end = runCatching { LocalDate.parse(ordered.last().date) }.getOrNull() ?: return emptyList()
+    val span = ChronoUnit.DAYS.between(start, end).toInt() + 1
+    // Short periods are genuinely daily: never collapse 7 or 30 dates into one bar.
+    // Calendar weeks keep the longer ~90-day view readable, then months take over.
+    val groups = if (span <= 30) ordered.map { listOf(it) } else if (span <= 90) {
+        ordered.groupBy { date ->
+            val d = LocalDate.parse(date.date)
+            d.minusDays((d.dayOfWeek.value - 1).toLong()).toString()
+        }.toSortedMap().values.toList()
+    } else {
+        ordered.groupBy { YearMonth.from(LocalDate.parse(it.date)).toString() }
+            .toSortedMap().values.toList()
+    }
+    return groups.map { group ->
+        val first = LocalDate.parse(group.first().date)
+        val last = LocalDate.parse(group.last().date)
+        val monthBucket = span > 90
+        ScreenTimeChartBucket(
+            startDate = group.first().date,
+            endDate = group.last().date,
+            label = if (monthBucket) DateTimeFormatter.ofPattern("LLLL yyyy", if (AppLanguage.isEnglish()) java.util.Locale.ENGLISH else java.util.Locale("cs", "CZ")).format(YearMonth.from(first))
+                else if (first == last) shortDateLabel(first.toString())
+                else "${shortDateLabel(first.toString())} – ${shortDateLabel(last.toString())}",
+            days = group,
+            seconds = group.mapNotNull { it.seconds }.takeIf { it.isNotEmpty() }?.sum(),
+            unlocks = group.mapNotNull { it.unlocks }.takeIf { it.isNotEmpty() }?.sum(),
+        )
+    }
+}
+
+@Composable
+private fun AggregatedDigitalCharts(
+    buckets: List<ScreenTimeChartBucket>,
+    selectedDate: String?,
+    expandedBucketStart: String?,
+    onExpandBucket: (String) -> Unit,
+    onSelectDate: (String) -> Unit,
+) {
+    @Composable fun metricCard(
+        title: String,
+        value: (ScreenTimeChartBucket) -> Int?,
+        dayValue: (ScreenTimeDay) -> Int?,
+        coverage: (ScreenTimeChartBucket) -> Int,
+        format: (Int?) -> String,
+        tag: String,
+    ) {
+        val max = buckets.mapNotNull(value).maxOrNull()?.coerceAtLeast(1) ?: 1
+        GlassCard(Modifier.fillMaxWidth(), accent = Indigo) {
+            SectionHeader(title)
+            VSpace(4)
+            SectionHint("Každý sloupec shrnuje přesně uvedené dny; chybějící synchronizace není nula. Klepni na období a vyber konkrétní den.")
+            VSpace(12)
+            buckets.forEach { bucket ->
+                val current = value(bucket)
+                Row(Modifier.fillMaxWidth().testTagOrEmpty("${tag}_${bucket.startDate}").clickable { onExpandBucket(bucket.startDate) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text(bucket.label, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(format(current), style = MaterialTheme.typography.labelMedium, color = if (current == null) TextTertiary else TextSecondary)
+                }
+                VSpace(4)
+                Box(Modifier.fillMaxWidth().height(7.dp).clip(CircleShape).background(Color.White.copy(alpha = .06f))) {
+                    if (current != null && current > 0) Box(Modifier.fillMaxWidth((current.toFloat() / max).coerceIn(.02f, 1f)).fillMaxHeight().clip(CircleShape).background(IndigoLight))
+                }
+                SectionHint("${coverage(bucket)}/${bucket.days.size} dní · ${shortDateLabel(bucket.startDate)} – ${shortDateLabel(bucket.endDate)}")
+                if (expandedBucketStart == bucket.startDate) {
+                    bucket.days.forEach { day ->
+                        val selected = selectedDate == day.date
+                        Text(
+                            text = "${shortDateLabel(day.date)} · ${format(dayValue(day))}",
+                            modifier = Modifier.fillMaxWidth().testTagOrEmpty("${tag}_day_${day.date}")
+                                .clickable { onSelectDate(day.date) }.padding(vertical = 6.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (selected) IndigoLight else TextSecondary,
+                        )
+                    }
+                }
+                VSpace(10)
+            }
+        }
+    }
+    metricCard("📱 Čas na obrazovce", { it.seconds }, { it.seconds }, { it.screenTimeCoverage }, { it?.let { seconds -> formatMinutes(seconds / 60) } ?: ScreenTimeSeries.NO_DATA }, "screen_time_bucket")
+    metricCard("🔓 Odemknutí", { it.unlocks }, { it.unlocks }, { it.unlockCoverage }, { it?.let(::unlockCountLabel) ?: ScreenTimeSeries.NO_DATA }, "screen_time_unlock_bucket")
 }
 
 private fun inclusiveScreenTimeSummary(window: List<ScreenTimeDay>): ScreenTimeSummary {

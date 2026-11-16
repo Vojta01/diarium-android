@@ -36,6 +36,13 @@ import cz.digitalnivedomi.diarium.ui.i18n.translate
 import java.time.LocalDate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.CancellationException
+import cz.digitalnivedomi.diarium.core.stats.HabitEligibility
+import cz.digitalnivedomi.diarium.core.stats.HabitOutcome
+import cz.digitalnivedomi.diarium.core.stats.habitOutcome
+import cz.digitalnivedomi.diarium.core.stats.sleepAnswerLabel
+import cz.digitalnivedomi.diarium.core.stats.stressAnswerLabel
+import cz.digitalnivedomi.diarium.core.stats.numericScaleAnswerLabel
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +67,12 @@ import cz.digitalnivedomi.diarium.core.stats.MonthMood
 import cz.digitalnivedomi.diarium.core.stats.StatsDay
 import cz.digitalnivedomi.diarium.core.stats.StatsExploration
 import cz.digitalnivedomi.diarium.core.stats.StatsMath
+import cz.digitalnivedomi.diarium.core.stats.AssociationStatus
+import cz.digitalnivedomi.diarium.core.stats.ActivityMoodDay
+import cz.digitalnivedomi.diarium.core.stats.BucketCadence
+import cz.digitalnivedomi.diarium.core.stats.DateRange
+import cz.digitalnivedomi.diarium.core.stats.DatedValue
+import cz.digitalnivedomi.diarium.core.stats.StatsTimeBuckets
 import cz.digitalnivedomi.diarium.ui.checkin.CheckInDates
 import cz.digitalnivedomi.diarium.ui.checkin.MOOD_CHOICES
 import cz.digitalnivedomi.diarium.ui.checkin.moodChoiceText
@@ -148,11 +161,41 @@ fun StatsScreen(
     }
     val data = state.data
     val repository = deps.stats
+    var goalsState by remember { mutableStateOf(GoalStatsLoadState()) }
+    var goalReload by remember { mutableStateOf(0) }
+    LaunchedEffect(deps.goals, goalReload, today) {
+        val goalRepository = deps.goals ?: run {
+            goalsState = goalsState.success(emptyList())
+            return@LaunchedEffect
+        }
+        goalsState = goalsState.begin()
+        try {
+            val loaded = goalRepository.loadProgress(today)
+                ?: error("Cíle se nepodařilo načíst.")
+            goalsState = goalsState.success(loaded)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            goalsState = goalsState.failure(failure.message ?: "Cíle se nepodařilo načíst.")
+        }
+    }
     var reloadTrigger by remember { mutableStateOf(0) }
     var firstResume by remember { mutableStateOf(true) }
     var selectedDay by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedDigitalDate by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(selectedDigitalDate, data?.today, state.range, state.customDays, state.appliedCustomStartDate, state.appliedCustomEndDate) {
+        val selected = selectedDigitalDate ?: return@LaunchedEffect
+        val loaded = data ?: return@LaunchedEffect
+        val applied = validateCustomDateRange(state.appliedCustomStartDate, state.appliedCustomEndDate, loaded.today)
+        val bounds = digitalStatsDateRange(
+            state.range, state.customDays, LocalDate.parse(loaded.today), applied, loaded.year,
+        )
+        selectedDigitalDate = bounds?.let { retainSelectedDateWithinBounds(selected, it.start, it.endInclusive) }
+    }
     var habitLabels by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var activeHabitKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var scaleLabels by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var scaleMinima by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var scaleMaxima by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var labelsLoaded by remember { mutableStateOf(false) }
     LifecycleResumeEffect(Unit) {
@@ -165,12 +208,19 @@ fun StatsScreen(
         val pickers = deps.pickers
         if (pickers != null) {
             try {
-                habitLabels = pickers.habits(includeHidden = true).associate { it.key to it.label }
+                val checkinDays = pickers.habits(includeHidden = true)
+                habitLabels = checkinDays.associate { it.key to it.label }
+                activeHabitKeys = checkinDays.filter { it.isActive }.map { it.key }.toSet()
                 val scales = pickers.scales()
                 scaleLabels = scales.associate { it.id to it.name }
+                scaleMinima = scales.associate { it.id to it.minValue }
                 scaleMaxima = scales.associate { it.id to it.maxValue }
             } catch (_: Exception) {
-                habitLabels = emptyMap(); scaleLabels = emptyMap(); scaleMaxima = emptyMap()
+                habitLabels = emptyMap()
+                activeHabitKeys = emptySet()
+                scaleLabels = emptyMap()
+                scaleMinima = emptyMap()
+                scaleMaxima = emptyMap()
             }
         }
         labelsLoaded = true
@@ -226,7 +276,7 @@ fun StatsScreen(
                 comparePrevious = state.comparePrevious,
                 onSelectRange = { value ->
                     if (value == StatsRange.CUSTOM && state.appliedCustomStartDate.isBlank()) {
-                        val end = today
+                        val end = data.moodAnchorDate() ?: today
                         val baseline = if (state.range == StatsRange.CUSTOM) StatsRange.MONTH else state.range
                         val count = baseline.dayCount(state.customDays, end)
                         val start = end.minusDays((count - 1).toLong()).toString()
@@ -242,9 +292,29 @@ fun StatsScreen(
                 onReload = { reloadTrigger++ },
                 onOpenCheckIn = onOpenCheckIn,
                 onOpenDay = { selectedDay = it },
-                habitLabels = habitLabels, scaleLabels = scaleLabels, scaleMaxima = scaleMaxima, labelsLoaded = labelsLoaded,
+                selectedDigitalDate = selectedDigitalDate,
+                onSelectDigitalDate = { selectedDigitalDate = it },
+                habitLabels = habitLabels,
+                activeHabitKeys = activeHabitKeys,
+                scaleLabels = scaleLabels,
+                scaleMinima = scaleMinima,
+                scaleMaxima = scaleMaxima,
+                labelsLoaded = labelsLoaded,
                 onOpenHistoryMonth = onOpenHistoryMonth,
             )
+                when {
+                    goalsState.goals == null && goalsState.errorMessage == null -> Unit
+                    goalsState.errorMessage != null -> GlassCard(Modifier.fillMaxWidth()) {
+                        SectionHeader("Cíle se nepodařilo načíst")
+                        SectionHint("${goalsState.errorMessage}. Poslední načtené cíle zůstávají zobrazené.")
+                        PrimaryButton(text = "Zkusit znovu", testTag = "stats_goals_retry") { goalReload++ }
+                    }
+                    goalsState.goals.isNullOrEmpty() -> GlassCard(Modifier.fillMaxWidth()) {
+                        SectionHeader("🎯 Cíle")
+                        SectionHint("Zatím nemáš žádné cíle.")
+                    }
+                    else -> goalsState.goals?.let { GoalsSection(it) }
+                }
             }
         }
 
@@ -461,6 +531,61 @@ private fun RangeSelector(range: StatsRange, onSelect: (StatsRange) -> Unit, ena
     }
 }
 
+internal fun selectedStatsDateRange(
+    range: StatsRange,
+    customDays: Int,
+    moodAnchor: LocalDate?,
+    today: LocalDate,
+    customRange: ValidatedStatsDateRange?,
+    year: Int,
+    capCustomToMoodAnchor: Boolean = true,
+): DateRange? {
+    if (range != StatsRange.CUSTOM && range != StatsRange.YEAR && moodAnchor == null) return null
+    val anchor = moodAnchor ?: today
+    if (range == StatsRange.CUSTOM) {
+        if (customRange == null || (capCustomToMoodAnchor && moodAnchor == null)) return null
+        val end = if (capCustomToMoodAnchor) minOf(customRange.endInclusive, anchor) else customRange.endInclusive
+        if (customRange.startInclusive <= end) return DateRange(customRange.startInclusive, end)
+        return null
+    }
+    if (range == StatsRange.YEAR) {
+        val start = LocalDate.of(year, 1, 1)
+        return DateRange(start, maxOf(start, minOf(LocalDate.of(year, 12, 31), anchor)))
+    }
+    val count = range.dayCount(customDays, anchor)
+    return DateRange(anchor.minusDays((count - 1).toLong()), anchor)
+}
+
+internal fun digitalComparisonWindow(digitalDates: DateRange): cz.digitalnivedomi.diarium.core.stats.StatsDateRange =
+    cz.digitalnivedomi.diarium.core.stats.StatsDateRange.between(digitalDates.start, digitalDates.endInclusive)
+
+/** Caption mirrors the digital chart's exact complete-day range, including no-range states. */
+internal fun digitalPeriodCaption(digitalDates: DateRange?): String = digitalDates?.let { bounds ->
+    "Digitální období: ${bounds.start} – ${bounds.endInclusive} · ${bounds.dayCount} dní"
+} ?: "Digitální období nedostupné: zvolený rozsah neobsahuje žádný dokončený den."
+
+internal fun digitalStatsDateRange(
+    range: StatsRange,
+    customDays: Int,
+    today: LocalDate,
+    customRange: ValidatedStatsDateRange?,
+    year: Int,
+): DateRange? {
+    val lastCompleteDate = today.minusDays(1)
+    if (range == StatsRange.CUSTOM) {
+        val applied = customRange ?: return null
+        val end = minOf(applied.endInclusive, lastCompleteDate)
+        if (applied.startInclusive <= end) return DateRange(applied.startInclusive, end)
+        return null
+    }
+    if (range == StatsRange.YEAR) {
+        val start = LocalDate.of(year, 1, 1)
+        return DateRange(start, maxOf(start, minOf(LocalDate.of(year, 12, 31), lastCompleteDate)))
+    }
+    val count = range.dayCount(customDays, lastCompleteDate)
+    return DateRange(lastCompleteDate.minusDays((count - 1).toLong()), lastCompleteDate)
+}
+
 @Composable
 private fun StatsContent(
     data: StatsData,
@@ -481,11 +606,28 @@ private fun StatsContent(
     onReload: () -> Unit,
     onOpenCheckIn: (String) -> Unit = {},
     onOpenDay: (String) -> Unit = {},
+    selectedDigitalDate: String?,
+    onSelectDigitalDate: (String?) -> Unit,
     onOpenHistoryMonth: (java.time.YearMonth) -> Unit = {},
-    habitLabels: Map<String, String>, scaleLabels: Map<String, String>, scaleMaxima: Map<String, Int>, labelsLoaded: Boolean,
+    habitLabels: Map<String, String>,
+    activeHabitKeys: Set<String>,
+    scaleLabels: Map<String, String>,
+    scaleMinima: Map<String, Int>,
+    scaleMaxima: Map<String, Int>,
+    labelsLoaded: Boolean,
 ) {
+    // Statistics only use complete calendar days. Keep one end date for every category;
+    // the latest mood day may be older when a day has not yet been checked in.
+    val moodAnchor = data.moodAnchorDate()
+    val anchor = moodAnchor ?: LocalDate.parse(data.today)
     val appliedRange = validateCustomDateRange(appliedCustomStartDate, appliedCustomEndDate, data.today)
-    val days = if (range == StatsRange.CUSTOM && appliedRange != null) data.days.filter { it.date >= appliedRange.startInclusive.toString() && it.date <= appliedRange.endInclusive.toString() } else data.forRange(range, customDays)
+    val categoryAnchor = if (category == StatsCategory.MOOD) moodAnchor else moodAnchor ?: LocalDate.parse(data.today)
+    val selectedDates = selectedStatsDateRange(
+        range, customDays, categoryAnchor, LocalDate.parse(data.today), appliedRange, data.year,
+        capCustomToMoodAnchor = category == StatsCategory.MOOD,
+    )
+    val digitalDates = digitalStatsDateRange(range, customDays, LocalDate.parse(data.today), appliedRange, data.year)
+    val days = data.days.filter { day -> runCatching { LocalDate.parse(day.date) }.getOrNull()?.let { selectedDates?.contains(it) == true } == true }
     val previous = if (range == StatsRange.CUSTOM && appliedRange != null) {
         val count = appliedRange.dayCount
         val prevEnd = appliedRange.startInclusive.minusDays(1)
@@ -497,26 +639,53 @@ private fun StatsContent(
         StatsCategorySelector(category = category, onSelect = onSelectCategory)
         if (category == StatsCategory.YEAR) {
             SectionHint("Rok zobrazuje celý kalendářní rok; globální období a srovnání se na tuto kategorii nevztahují.")
+        } else if (category == StatsCategory.MOOD && moodAnchor == null) {
+            SectionHint("Rozsah nálady není dostupný: zatím není žádný zaznamenaný check-in s odpovědí na náladu. Datum dneška se nepoužívá jako náhradní záznam.")
         } else {
-            PeriodCaption(data, range, customDays, days, appliedRange)
+            if (category == StatsCategory.DIGITAL) {
+                SectionHint(translate(digitalPeriodCaption(digitalDates)))
+            } else {
+                PeriodCaption(
+                    data, range, customDays, days,
+                    customRange = if (category == StatsCategory.MOOD && range == StatsRange.CUSTOM) {
+                        selectedDates?.let { ValidatedStatsDateRange(it.start, it.endInclusive) }
+                    } else appliedRange,
+                    anchor = anchor,
+                )
+            }
             CompareControl(comparePrevious, enabled = true, onChange = onCompare)
         }
         if (range == StatsRange.CUSTOM && category != StatsCategory.YEAR) CustomDateRangeControl(customStartDate, customEndDate, customRangeError, onEditCustomRange, onApplyCustomRange)
         if (range == StatsRange.CUSTOM && appliedRange == null) {
             SectionHint("Nejdřív zadej a použij platné vlastní období.")
         } else {
-            if (comparePrevious && category != StatsCategory.YEAR) ComparisonCard(
+            if (comparePrevious && category != StatsCategory.YEAR && !(category == StatsCategory.MOOD && selectedDates == null) && !(category == StatsCategory.DIGITAL && digitalDates == null)) ComparisonCard(
                 data = data,
-                current = days,
+                current = if (category == StatsCategory.DIGITAL) digitalDates?.let { bounds -> data.days.filter { day ->
+                    runCatching { LocalDate.parse(day.date) }.getOrNull()?.let(bounds::contains) == true
+                } }.orEmpty() else days,
                 category = category,
-                currentRange = comparisonWindow(range, appliedRange, LocalDate.parse(data.today), customDays),
+                // Digital comparison must use the exact dates shown by the digital chart,
+                // not the potentially stale mood anchor or the incomplete current day.
+                currentRange = when {
+                    category == StatsCategory.DIGITAL -> digitalComparisonWindow(requireNotNull(digitalDates))
+                    category == StatsCategory.MOOD && range == StatsRange.CUSTOM -> {
+                        val bounds = requireNotNull(selectedDates)
+                        cz.digitalnivedomi.diarium.core.stats.StatsDateRange.between(bounds.start, bounds.endInclusive)
+                    }
+                    else -> comparisonWindow(range, appliedRange, anchor, customDays)
+                },
             )
             when (category) {
-                StatsCategory.MOOD -> MoodCategory(data, days, range, onReload, onOpenCheckIn, onOpenDay,
-                    startDate = appliedRange?.startInclusive ?: LocalDate.parse(data.today).minusDays((range.dayCount(customDays, LocalDate.parse(data.today)) - 1).toLong()),
-                    endDate = appliedRange?.endInclusive ?: LocalDate.parse(data.today))
-                StatsCategory.HABITS -> HabitsCategory(days, habitLabels, scaleLabels, scaleMaxima, labelsLoaded)
-                StatsCategory.DIGITAL -> DigitalCategory(days, data.today, appliedRange?.dayCount ?: range.dayCount(customDays, LocalDate.parse(data.today)), appliedRange, onOpenDay)
+                StatsCategory.MOOD -> if (selectedDates == null) {
+                    MoodRangeUnavailable()
+                } else MoodCategory(data, days, range, onReload, onOpenCheckIn, onOpenDay,
+                    startDate = selectedDates.start, endDate = selectedDates.endInclusive)
+                StatsCategory.HABITS -> HabitsCategory(days, habitLabels, activeHabitKeys, scaleLabels, scaleMinima, scaleMaxima, labelsLoaded, data.today)
+                StatsCategory.DIGITAL -> DigitalCategory(
+                    digitalDates?.let { bounds -> data.days.filter { day -> runCatching { LocalDate.parse(day.date) }.getOrNull()?.let(bounds::contains) == true } }.orEmpty(),
+                    digitalDates, data.today, selectedDigitalDate, onSelectDigitalDate,
+                )
                 StatsCategory.YEAR -> YearCategory(data, onOpenDay, onOpenHistoryMonth)
             }
         }
@@ -544,10 +713,10 @@ internal fun StatsCategorySelector(category: StatsCategory, onSelect: (StatsCate
 }
 
 @Composable
-private fun PeriodCaption(data: StatsData, range: StatsRange, customDays: Int, days: List<StatsDay>, customRange: ValidatedStatsDateRange?) {
-    val end = customRange?.endInclusive ?: LocalDate.parse(data.today)
-    val count = customRange?.dayCount ?: range.dayCount(customDays, LocalDate.parse(data.today))
-    val start = customRange?.startInclusive ?: LocalDate.parse(data.today).minusDays((count - 1).toLong())
+private fun PeriodCaption(data: StatsData, range: StatsRange, customDays: Int, days: List<StatsDay>, customRange: ValidatedStatsDateRange?, anchor: LocalDate) {
+    val end = customRange?.endInclusive ?: anchor
+    val count = customRange?.dayCount ?: range.dayCount(customDays, anchor)
+    val start = customRange?.startInclusive ?: anchor.minusDays((count - 1).toLong())
     SectionHint("Období: ${start.format(shortDate)} – ${end.format(shortDate)} · ${days.size}/$count dnů se záznamem · ${StatsMath.answeredDays(days)} náladových odpovědí · limit 400 dní")
 }
 
@@ -636,35 +805,71 @@ private fun comparisonCoverage(
 }
 
 @Composable
+internal fun MoodRangeUnavailable() {
+    SectionHeader("Nálada")
+    EmptyState(
+        emoji = "🙂",
+        title = "Rozsah nálady nedostupný",
+        message = "Zatím není žádný zaznamenaný check-in s odpovědí na náladu. Zobrazí se zde, až bude takový záznam.",
+    )
+}
+
+@Composable
 private fun MoodCategory(data: StatsData, days: List<StatsDay>, range: StatsRange, onReload: () -> Unit, onOpenCheckIn: (String) -> Unit, onOpenDay: (String) -> Unit, startDate: LocalDate, endDate: LocalDate) {
     var selectedMood by remember { mutableStateOf<Int?>(null) }
     val visibleDays = remember(days, selectedMood) { StatsMath.filterMood(days, selectedMood) }
     SectionHeader("Nálada")
     if (days.isEmpty()) EmptyWindowCard(range, onReload) else {
         MoodDistributionCard(days, range.label, selectedMood, onSelectMood = { selectedMood = it })
-        MoodTrendCard(visibleDays, year = if (range.year) data.year else null, onOpenDay = if (range.year) null else onOpenDay,
-            axisStart = startDate, axisEnd = endDate)
+        MoodTrendCard(visibleDays, year = if (range.year) data.year else null, onOpenDay = { date ->
+            // Bucket keys are always real dates; do not navigate for a fabricated bucket key.
+            if (data.entryByDate.containsKey(date)) onOpenDay(date)
+        }, axisStart = startDate, axisEnd = endDate)
         WeekdayCard(visibleDays)
         ActivityCard(visibleDays)
         BestWorstDayBlock(visibleDays, entryByDate = data.entryByDate, onOpenCheckIn = onOpenCheckIn)
     }
 }
 
+internal fun habitPeriodOutcomes(
+    days: List<StatsDay>,
+    habitKey: String,
+    activeToday: Boolean,
+    today: String,
+): List<HabitOutcome> = days.map { day ->
+    val checked = day.habits[habitKey]
+    // An explicit habit value itself proves this check-in was recorded, even with mood 0.
+    // Phone-only rows do not prove a check-in and remain unknown when the habit answer is absent.
+    val recorded = day.answered || checked != null
+    val dateIsToday = day.date == today
+    val eligibility = when {
+        checked != null -> HabitEligibility.ELIGIBLE // A saved answer proves the habit was available that day.
+        dateIsToday && activeToday -> HabitEligibility.ELIGIBLE // Current active definition proves only today's availability.
+        else -> HabitEligibility.UNKNOWN // Definitions have no reliable creation/enablement date.
+    }
+    habitOutcome(recorded, eligibility, checked)
+}
+
 @Composable
-private fun HabitsCategory(days: List<StatsDay>, habitLabels: Map<String, String>, scaleLabels: Map<String, String>, scaleMaxima: Map<String, Int>, labelsLoaded: Boolean) {
+private fun HabitsCategory(days: List<StatsDay>, habitLabels: Map<String, String>, activeHabitKeys: Set<String>, scaleLabels: Map<String, String>, scaleMinima: Map<String, Int>, scaleMaxima: Map<String, Int>, labelsLoaded: Boolean, today: String) {
     SectionHeader("Návyky")
     if (days.isEmpty()) { EmptyState(emoji = "✓", title = "Zatím bez dat", message = "V tomto období nejsou načtené dny.") ; return }
-    val keys = days.flatMap { it.habits.keys }.distinct().sorted()
+    val keys = (days.flatMap { it.habits.keys } + activeHabitKeys).distinct().sorted()
     if (keys.isEmpty()) {
         GlassCard(Modifier.fillMaxWidth()) { SectionHeader("Návyky"); SectionHint("V tomto období nebyly v načtených zápisech nalezeny odpovědi návyků.") }
     }
     val namedHabitKeys = keys.filter { it in habitLabels }
     namedHabitKeys.forEach { key ->
-        val d = StatsExploration.habitDistribution(days, key)
+        val outcomes = habitPeriodOutcomes(days, key, key in activeHabitKeys, today)
+        val counts = listOf(
+            "Splněno" to outcomes.count { it == HabitOutcome.MET },
+            "Nesplněno" to outcomes.count { it == HabitOutcome.UNMET },
+            "Neznámé" to outcomes.count { it == HabitOutcome.UNKNOWN },
+        )
         GlassCard(Modifier.fillMaxWidth()) {
             SectionHeader(habitLabels.getValue(key))
             val total = days.size.coerceAtLeast(1)
-            listOf("Splněno" to d.yes, "Nesplněno" to d.no, "Bez odpovědi" to d.unanswered).forEach { (label, count) ->
+            counts.forEach { (label, count) ->
                 ReadOnlyRow(label, count.toString())
                 Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = .06f))) {
                     Box(Modifier.fillMaxWidth(count.toFloat() / total).fillMaxHeight().background(when (label) {
@@ -682,8 +887,8 @@ private fun HabitsCategory(days: List<StatsDay>, habitLabels: Map<String, String
             SectionHint(if (!labelsLoaded) "Načítám názvy návyků…" else "Názvy návyků nejsou dostupné; jejich identifikátory nezobrazuji.")
         }
     }
-    DistributionCard("Spánek", StatsExploration.sleepDistribution(days), "sleep")
-    DistributionCard("Stres", StatsExploration.stressDistribution(days), "stress")
+    DistributionCard("Spánek", StatsExploration.sleepDistribution(days), "sleep", labelOf = { translate(sleepAnswerLabel(it)) })
+    DistributionCard("Stres", StatsExploration.stressDistribution(days), "stress", labelOf = { translate(stressAnswerLabel(it)) })
     val namedScales = scaleLabels.keys.filter { id -> days.any { id in it.scaleValues } }
     if (namedScales.isEmpty()) {
         GlassCard(Modifier.fillMaxWidth()) { SectionHeader("Vlastní škály")
@@ -691,45 +896,69 @@ private fun HabitsCategory(days: List<StatsDay>, habitLabels: Map<String, String
         }
     } else namedScales.forEach { id ->
         val distribution = StatsExploration.scaleDistribution(days, id)
-        DistributionCard(scaleLabels.getValue(id), distribution, "scale_$id", scaleMaxima[id])
+        DistributionCard(
+            scaleLabels.getValue(id), distribution, "scale_$id",
+            minValue = scaleMinima[id], maxValue = scaleMaxima[id],
+            labelOf = { numericScaleAnswerLabel(it, scaleMinima[id] ?: 1, scaleMaxima[id] ?: 5) },
+        )
     }
 }
 
 @Composable
-private fun DistributionCard(title: String, distribution: Map<Int, Int>, @Suppress("UNUSED_PARAMETER") tag: String, maxValue: Int? = null) {
+private fun DistributionCard(
+    title: String,
+    distribution: Map<Int, Int>,
+    @Suppress("UNUSED_PARAMETER") tag: String,
+    minValue: Int? = null,
+    maxValue: Int? = null,
+    labelOf: (Int) -> String = { it.toString() },
+) {
     GlassCard(Modifier.fillMaxWidth()) {
         SectionHeader(title)
         if (distribution.isEmpty()) { SectionHint("V tomto období nejsou odpovědi."); return@GlassCard }
-        val top = maxValue ?: distribution.keys.maxOrNull() ?: 1
+        val min = minValue ?: distribution.keys.minOrNull() ?: 1
+        val max = maxValue ?: distribution.keys.maxOrNull() ?: 5
         val total = distribution.values.sum().coerceAtLeast(1)
         distribution.toSortedMap().forEach { (value, count) ->
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("$value", Modifier.width(30.dp), color = TextSecondary)
+                Text(labelOf(value), Modifier.width(104.dp), color = TextSecondary, style = MaterialTheme.typography.labelSmall, maxLines = 2)
                 Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)).background(Color.White.copy(alpha = .06f))) {
-                    Box(Modifier.fillMaxWidth(count.toFloat() / total).fillMaxHeight().background(moodColor(((value.toFloat() / top) * 5).roundToInt().coerceIn(1, 5))))
+                    val position = if (max > min) (value - min).toFloat() / (max - min) else 0.5f
+                    Box(Modifier.fillMaxWidth(count.toFloat() / total).fillMaxHeight().background(moodColor((position * 4 + 1).roundToInt().coerceIn(1, 5))))
                 }
                 Text("  $count", color = TextPrimary)
             }
+        }
+        if (minValue != null && maxValue != null) {
+            SectionHint("Rozsah $min–$max · minimum a maximum označují jen číselné krajní body.")
         }
         SectionHint("Odpovědi: ${distribution.values.sum()} · chybějící hodnoty se nezapočítávají.")
     }
 }
 
+internal fun hasDigitalData(days: List<StatsDay>): Boolean = days.any { day ->
+    day.screenTimeSeconds != null && day.screenTimeSeconds >= 0 ||
+        day.unlocks != null || day.topApps.isNotEmpty()
+}
+
 @Composable
-private fun DigitalCategory(days: List<StatsDay>, today: String, periodDays: Int, customRange: ValidatedStatsDateRange?, onOpenDay: (String) -> Unit) {
+internal fun DigitalCategory(days: List<StatsDay>, bounds: DateRange?, today: String, selectedDate: String?, onSelectDate: (String?) -> Unit) {
     SectionHeader("Digitální")
-    if (days.none { it.screenTimeSeconds != null && it.screenTimeSeconds >= 0 } && days.none { it.unlocks != null }) {
+    SectionHint("Digitální statistiky vždy vynechávají dnešek. Ostatní přehledy končí posledním zaznamenaným dnem; dnešek zahrnou, pokud je check-in dokončen.")
+    if (bounds == null) {
+        EmptyState(emoji = "📱", title = "Digitální data zatím nedostupná", message = "V tomto vlastním období není žádný dokončený den pro digitální statistiky.")
+    } else if (!hasDigitalData(days)) {
         EmptyState(emoji = "📱", title = "Digitální data zatím nedostupná", message = "V tomto období není synchronizovaný čas u obrazovky.")
     } else {
-        val rangeDays = periodDays.coerceIn(1, 400)
+        val start = bounds.start
+        val end = bounds.endInclusive
+        val rangeDays = bounds.dayCount.coerceIn(1, 400)
         val synced = days.count { it.screenTimeSeconds != null }
         GlassCard(Modifier.fillMaxWidth()) {
             SectionHeader("Pokrytí synchronizace")
-            SectionHint("$synced z $rangeDays dnů · chybějící synchronizace není nula")
+            SectionHint("${start.format(shortDate)} – ${end.format(shortDate)} · $synced z $rangeDays dnů · chybějící synchronizace není nula")
         }
-        val end = customRange?.endInclusive ?: LocalDate.parse(today)
-        val start = customRange?.startInclusive ?: end.minusDays((periodDays - 1).coerceAtLeast(0).toLong())
-        ScreenTimeCharts(entries = days, today = today, startDate = start.toString(), endDate = end.toString(), onOpenDay = onOpenDay)
+        ScreenTimeCharts(entries = days, today = today, startDate = start.toString(), endDate = end.toString(), selectedDate = selectedDate, onSelectDate = onSelectDate)
     }
 }
 
@@ -935,109 +1164,84 @@ private fun MoodDistributionCard(days: List<StatsDay>, rangeLabel: String, selec
  * exists on the time axis, but they are excluded from the line — see
  * [StatsMath.movingAverage].
  */
+internal data class MoodTrendPresentation(
+    val cadence: BucketCadence,
+    val slots: List<MoodTrendSlot>,
+)
+
+/** Build truthful daily or calendar-aggregate slots from the exact inclusive range. */
+internal fun buildMoodTrendPresentation(days: List<StatsDay>, range: DateRange): MoodTrendPresentation {
+    val observations = days.mapNotNull { day ->
+        val date = runCatching { LocalDate.parse(day.date) }.getOrNull() ?: return@mapNotNull null
+        if (date !in range) return@mapNotNull null
+        DatedValue(date, day.mood.takeIf { day.answered }?.toDouble())
+    }
+    val cadence = StatsTimeBuckets.cadenceFor(range.dayCount)
+    val buckets = StatsTimeBuckets.aggregate(range, cadence, observations)
+    val slots = buckets.map { bucket ->
+        val bucketDates = observations.filter { it.date >= bucket.start && it.date <= bucket.endInclusive }
+        val representativeDate = bucketDates.lastOrNull { it.value != null }?.date ?: bucket.start
+        val average = bucket.mean
+        val periodLabel = if (bucket.start == bucket.endInclusive) bucket.start.toString()
+            else "${bucket.start} – ${bucket.endInclusive}"
+        val aggregate = cadence != BucketCadence.DAILY
+        MoodTrendSlot(
+            key = representativeDate.toString(),
+            label = when (cadence) {
+                BucketCadence.DAILY -> shortDateOf(bucket.start.toString())
+                BucketCadence.WEEKLY -> "${bucket.start.dayOfMonth}/${bucket.start.monthValue}"
+                BucketCadence.MONTHLY -> "${bucket.start.monthValue}/${bucket.start.year % 100}"
+            },
+            title = periodLabel,
+            mood = average?.roundToInt() ?: 0,
+            written = average != null,
+            moodText = if (average == null) translate("Bez odpovědi") else if (aggregate)
+                "Průměr ${formatAverageMood(average)} / 5" else moodChoiceText(average.roundToInt()),
+            detailRows = if (aggregate) listOf(
+                "Období" to periodLabel,
+                "Platné odpovědi" to "${bucket.observationCount} / ${bucket.expectedDays}",
+                "Průměr nálady" to (average?.let { "${formatAverageMood(it)} / 5" } ?: "—"),
+            ) else listOf("Datum" to periodLabel),
+        )
+    }
+    return MoodTrendPresentation(cadence, slots)
+}
+
 @Composable
-private fun MoodTrendCard(days: List<StatsDay>, year: Int? = null, onOpenDay: ((String) -> Unit)? = null, axisStart: LocalDate? = null, axisEnd: LocalDate? = null) {
-    val monthly = year != null
-    val months = if (year != null) StatsMath.monthlyMood(days, year) else emptyList()
-    val calendarDays = if (!monthly && axisStart != null && axisEnd != null) StatsMath.calendarMoodDays(days, axisStart, axisEnd) else days
-    val points = if (monthly) emptyList() else StatsMath.moodTrend(calendarDays)
-
-    val slots: List<MoodTrendSlot> = if (monthly) {
-        months.map { month ->
-            val monthAverage = month.averageMood
-            MoodTrendSlot(
-                key = "m${month.month}",
-                label = StatsMath.monthShortName(month.month),
-                title = "${StatsMath.monthFullName(month.month)} $year",
-                mood = monthAverage?.roundToInt() ?: 0,
-                written = month.answered,
-                moodText = monthAverage?.let {
-                    moodChoiceText(it.roundToInt())
-                } ?: translate("Bez odpovědi"),
-                detailRows = if (monthAverage == null) {
-                    emptyList()
-                } else {
-                    listOf(
-                        "Ø nálada" to "${formatAverageMood(monthAverage)} / 5",
-                        "Zapsaných dní" to "${month.answeredDays} ${dayWord(month.answeredDays)}",
-                    )
-                },
-            )
-        }
-    } else {
-        points.map { point ->
-            val written = point.mood in StatsMath.MOOD_MIN..StatsMath.MOOD_MAX
-            MoodTrendSlot(
-                key = point.date,
-                label = shortDateOf(point.date),
-                title = shortDateOf(point.date),
-                mood = point.mood,
-                written = written,
-                moodText = if (written) {
-                    moodChoiceText(point.mood)
-                } else {
-                    translate("Bez odpovědi")
-                },
-                detailRows = emptyList(),
-            )
-        }
+internal fun MoodTrendCard(days: List<StatsDay>, year: Int? = null, onOpenDay: ((String) -> Unit)? = null, axisStart: LocalDate? = null, axisEnd: LocalDate? = null) {
+    val range = if (axisStart != null && axisEnd != null) DateRange(axisStart, axisEnd) else {
+        val yearValue = year ?: LocalDate.now().year
+        DateRange(LocalDate.of(yearValue, 1, 1), LocalDate.of(yearValue, 12, 31))
     }
-
-    // Twelve monthly points smooth with a 3-month window, not the daily 7-day one: the
-    // series is ten times shorter, so the same window would flatten a whole quarter.
-    val average: List<Double?> = if (monthly) {
-        StatsMath.movingAverageOf(
-            values = months.map { it.averageMood },
-            window = StatsMath.MONTH_MOVING_AVERAGE_WINDOW,
-        )
-    } else {
-        StatsMath.movingAverage(calendarDays)
+    val presentation = remember(days, range) { buildMoodTrendPresentation(days, range) }
+    val aggregate = presentation.cadence != BucketCadence.DAILY
+    val slots = presentation.slots
+    val average = List<Double?>(slots.size) { null } // Never put a rolling mean in the selected-day detail.
+    val bucketLabel = when (presentation.cadence) {
+        BucketCadence.DAILY -> "Denní hodnoty"
+        BucketCadence.WEEKLY -> "Průměr za týden"
+        BucketCadence.MONTHLY -> "Průměr za měsíc"
     }
-    val averageLabel = if (monthly) {
-        "${StatsMath.MONTH_MOVING_AVERAGE_WINDOW}měsíční klouzavý průměr"
-    } else {
-        "${StatsMath.MOVING_AVERAGE_WINDOW}denní klouzavý průměr"
-    }
-
     GlassCard(modifier = Modifier.fillMaxWidth()) {
-        SectionHeader(
-            "📈 Vývoj nálady",
-            trailing = {
-                Text(
-                    text = if (monthly) {
-                        // The days count of a year ("254 dní") says nothing about the
-                        // chart; the year itself is what the columns belong to.
-                        "· $year"
-                    } else {
-                        "· ${slots.size} ${dayWord(slots.size)}"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextTertiary,
-                )
-            },
-        )
+        SectionHeader("📈 Vývoj nálady", trailing = {
+            Text("· ${range.start.format(shortDate)} – ${range.endInclusive.format(shortDate)}", style = MaterialTheme.typography.labelSmall, color = TextTertiary)
+        })
         VSpace(4)
-        SectionHint(
-            if (monthly) {
-                "Sloupce = průměrná nálada za měsíc, indigo čára = $averageLabel. " +
-                    "Klepni na měsíc pro detail."
-            } else {
-                "Sloupce = denní nálada, indigo čára = $averageLabel. Klepni na den pro detail."
-            },
-        )
+        SectionHint(if (aggregate)
+            "Sloupce ukazují průměr za kalendářní období; detail uvádí přesný rozsah a počet platných odpovědí."
+        else "Každý sloupec je konkrétní den. Klepnutím zobrazíš jeho náladu a případný záznam.")
         VSpace(14)
-
         MoodTrendChart(
             slots = slots,
             average = average,
-            averageLabel = averageLabel,
-            averageDetailLabel = if (monthly) averageLabel else "7denní průměr",
-            caption = if (monthly) MoodTrendCaption.PerSlot else MoodTrendCaption.EdgeDates,
-            summary = if (monthly) monthSummary(months) else null,
-            onOpenDay = if (monthly) null else onOpenDay,
+            averageLabel = bucketLabel,
+            averageDetailLabel = "",
+            caption = if (aggregate) MoodTrendCaption.PerSlot else MoodTrendCaption.EdgeDates,
+            onOpenDay = onOpenDay,
         )
     }
 }
+
 
 /**
  * "Nejlepší: Srpen 4,1 / 5 · nejslabší: Únor 2,9 / 5" — the year's one-line takeaway, or
@@ -1116,103 +1320,30 @@ private fun WeekdayCard(days: List<StatsDay>) {
  * of `null` — the screen prints "—" instead of inventing a number.
  */
 @Composable
-private fun ActivityCard(days: List<StatsDay>) {
-    val stats = StatsMath.activityStats(days)
-
+internal fun ActivityCard(days: List<StatsDay>) {
+    val associations = StatsTimeBuckets.rankActivityMoodAssociations(days.mapNotNull { day ->
+        val date = runCatching { LocalDate.parse(day.date) }.getOrNull() ?: return@mapNotNull null
+        ActivityMoodDay(date, day.mood.takeIf { day.answered }?.toDouble(), day.activities.toSet())
+    })
     GlassCard(modifier = Modifier.fillMaxWidth()) {
-        SectionHeader("🎯 Aktivity vs nálada")
+        SectionHeader("🎯 Aktivity a nálada")
         VSpace(4)
-        SectionHint("Průměrná nálada dnů, kdy jsi aktivitu zmínil (jen zodpovězené dny). Klepni na řádek pro detail.")
+        SectionHint("Popisné srovnání nálady se dny bez aktivity; nejde o příčinu ani účinek. Každá skupina potřebuje alespoň 5 platných odpovědí.")
         VSpace(14)
-
-        if (stats.isEmpty()) {
+        if (associations.isEmpty()) {
             SectionHint("V tomto období nemáš u zápisů žádné aktivity.")
             return@GlassCard
         }
-
-        stats.forEachIndexed { index, stat ->
-            ActivityRow(stat = stat)
-            if (index != stats.lastIndex) VSpace(12)
-        }
-    }
-}
-
-@Composable
-private fun ActivityRow(stat: ActivityStat) {
-    var expanded by remember(stat.name) { mutableStateOf(false) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTagOrEmpty("stats_activity_row")
-            .clickable { expanded = !expanded },
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = stat.name,
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(10.dp))
-            Box(
-                modifier = Modifier
-                    .width(70.dp)
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(Color.White.copy(alpha = 0.06f)),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth((stat.averageMood / 5.0).toFloat().coerceIn(0.02f, 1f))
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(moodColor(stat.averageMood.roundToInt())),
-                )
+        associations.forEachIndexed { index, association ->
+            Text(association.activity, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+            if (association.status is AssociationStatus.Sufficient) {
+                ReadOnlyRow("S aktivitou · n=${association.withCount}", "${formatAverageMood(association.withMean!!)} / 5")
+                ReadOnlyRow("Bez aktivity · n=${association.withoutCount}", "${formatAverageMood(association.withoutMean!!)} / 5")
+                ReadOnlyRow("Rozdíl průměrů", signed(association.meanDifference!!))
+            } else {
+                SectionHint("Nedostatek dat · s aktivitou n=${association.withCount}, bez aktivity n=${association.withoutCount}; potřeba alespoň 5 v každé skupině.")
             }
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = formatAverageMood(stat.averageMood),
-                style = MaterialTheme.typography.labelMedium,
-                color = TextPrimary,
-                textAlign = TextAlign.End,
-                modifier = Modifier.width(28.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "×${stat.count}",
-                style = MaterialTheme.typography.labelSmall,
-                color = TextTertiary,
-                modifier = Modifier.width(30.dp),
-            )
-        }
-
-        if (expanded) {
-            VSpace(8)
-            ReadOnlyRow(label = "Ø nálada", value = "${formatAverageMood(stat.averageMood)} / 5")
-            VSpace(6)
-            ReadOnlyRow(label = "Zmíněno", value = "${stat.count} ${dayWord(stat.count)}")
-            VSpace(6)
-            ReadOnlyRow(
-                label = "Korelace s náladou",
-                value = stat.correlation?.let { "r = ${formatAverageMood(it)}" } ?: "—",
-            )
-            stat.bestDay?.let { best ->
-                VSpace(6)
-                ReadOnlyRow(
-                    label = "▲ Nejlepší den",
-                    value = "${shortDateOf(best.date)} ${moodEmojiOf(best.mood)}",
-                )
-            }
-            stat.worstDay?.let { worst ->
-                VSpace(6)
-                ReadOnlyRow(
-                    label = "▼ Nejhorší den",
-                    value = "${shortDateOf(worst.date)} ${moodEmojiOf(worst.mood)}",
-                )
-            }
+            if (index != associations.lastIndex) VSpace(12)
         }
     }
 }

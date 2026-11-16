@@ -55,6 +55,7 @@ class StatsDeps(
                     ),
                 ),
                 pickers = PickersRepository(client, session),
+                goals = GoalsRepository(client, session),
             )
         }
     }

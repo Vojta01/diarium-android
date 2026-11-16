@@ -12,6 +12,7 @@ import cz.digitalnivedomi.diarium.core.i18n.Lang
 import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.core.stats.StatsMath
 import cz.digitalnivedomi.diarium.ui.checkin.components.formatMinutes
+import cz.digitalnivedomi.diarium.ui.checkin.components.scaleRangeHint
 import cz.digitalnivedomi.diarium.ui.checkin.moodChoiceText
 import cz.digitalnivedomi.diarium.ui.history.HistoryCalendar
 import cz.digitalnivedomi.diarium.ui.history.monthEmptyText
@@ -75,6 +76,134 @@ class DynamicEnglishStringsTest {
     }
 
     // ── Dashboard week summary ────────────────────────────────────────────────
+
+    @Test
+    fun `digital period captions translate for available and empty ranges`() {
+        assertEquals(
+            "Digital period: 2026-09-03 – 2026-09-09 · 7 days",
+            translate("Digitální období: 2026-09-03 – 2026-09-09 · 7 dní"),
+        )
+        assertEquals(
+            "Digital period unavailable: the selected range contains no completed day.",
+            translate("Digitální období nedostupné: zvolený rozsah neobsahuje žádný dokončený den."),
+        )
+    }
+
+    @Test
+    fun `stats mood trend labels guidance and bucket details translate with dynamic counts`() {
+        assertEquals("Daily values", translate("Denní hodnoty"))
+        assertEquals("Weekly average", translate("Průměr za týden"))
+        assertEquals("Monthly average", translate("Průměr za měsíc"))
+        assertEquals("Valid responses", translate("Platné odpovědi"))
+        assertEquals("Average mood", translate("Průměr nálady"))
+        assertEquals(
+            "Bars show the average for each calendar period; details show the exact date range and number of valid responses.",
+            translate("Sloupce ukazují průměr za kalendářní období; detail uvádí přesný rozsah a počet platných odpovědí."),
+        )
+        assertEquals(
+            "Each bar represents a specific day. Tap to see its mood and any entry.",
+            translate("Každý sloupec je konkrétní den. Klepnutím zobrazíš jeho náladu a případný záznam."),
+        )
+        assertEquals("🎯 Activities and mood", translate("🎯 Aktivity a nálada"))
+        assertEquals("Difference between averages", translate("Rozdíl průměrů"))
+        assertEquals("2026-11-01 – 2026-11-30", translate("2026-11-01 – 2026-11-30"))
+        assertEquals("4 / 30", translate("4 / 30"))
+        assertEquals("Average 3.4 / 5", translate("Průměr 3.4 / 5"))
+    }
+
+    @Test
+    fun `activity group labels and insufficient counts translate without losing values`() {
+        assertEquals("With activity · n=1", translate("S aktivitou · n=1"))
+        assertEquals("Without activity · n=23", translate("Bez aktivity · n=23"))
+        assertEquals(
+            "Not enough data · with activity n=4, without activity n=12; at least 5 are needed in each group.",
+            translate("Nedostatek dat · s aktivitou n=4, bez aktivity n=12; potřeba alespoň 5 v každé skupině."),
+        )
+    }
+
+    @Test
+    fun `beta11 static trend and digital cutoff hints translate as complete UI strings`() {
+        assertEquals(
+            "Daily screen time in minutes; the dashed line shows a linear trend, not connections between daily values. Missing days are gaps, and 0 min is a true zero.",
+            translate("Denní čas v minutách; čárkovaná čára ukazuje lineární trend, ne spojení denních hodnot. Chybějící dny jsou mezery a 0 min je skutečná nula."),
+        )
+        assertEquals(
+            "Digital statistics always exclude today. Other summaries end on the last recorded day and include today only when its check-in is complete.",
+            translate("Digitální statistiky vždy vynechávají dnešek. Ostatní přehledy končí posledním zaznamenaným dnem; dnešek zahrnou, pokud je check-in dokončen."),
+        )
+        assertEquals("Move the slider to set a value; ✕ clears it.", translate("Posuň slider na hodnotu; ✕ ji vymaže."))
+        assertEquals("Tap to set", translate("Klepnutím nastav"))
+    }
+
+    @Test
+    fun `scale range hints translate exact generated endpoints including signed values`() {
+        assertEquals("-3 = worst · 8 = best", translate(scaleRangeHint(-3, 8)))
+        assertEquals("+2 = worst · -10 = best", translate("+2 = nejhorší · -10 = nejlepší"))
+        assertEquals("-4 = best · +9 = worst", translate("-4 = nejlepší · +9 = nejhorší"))
+        assertEquals(
+            "Range -12–+6 · minimum and maximum indicate numeric endpoints only.",
+            translate("Rozsah -12–+6 · minimum a maximum označují jen číselné krajní body."),
+        )
+        assertEquals(
+            "Range -2–9 · minimum and maximum indicate numeric endpoints only.",
+            translate("Rozsah -2–9 · minimum a maximum označují jen číselné krajní body."),
+        )
+    }
+
+    @Test
+    fun `beta11 dashboard week and digital snapshot render their constructed labels in English`() {
+        val currentStart = LocalDate.of(2026, 11, 9).format(UiDates.numericDate())
+        val currentEnd = LocalDate.of(2026, 11, 15).format(UiDates.numericDate())
+        val previousStart = LocalDate.of(2026, 11, 2).format(UiDates.numericDate())
+        val previousEnd = LocalDate.of(2026, 11, 8).format(UiDates.numericDate())
+        assertEquals(
+            "$currentStart–$currentEnd · previous $previousStart–$previousEnd · 🔥 4 days streak",
+            translate("$currentStart–$currentEnd · předchozí $previousStart–$previousEnd · série 🔥 4"),
+        )
+        assertEquals(
+            "Screen time · $currentStart–$currentEnd · coverage 3/7 days",
+            translate("Čas na obrazovce · $currentStart–$currentEnd · pokrytí 3/7 dní"),
+        )
+        assertEquals(
+            "Top 5 apps · $currentStart–$currentEnd · saved rows on 2/7 days",
+            translate("Top 5 aplikací · $currentStart–$currentEnd · uložené řádky v 2/7 dnech"),
+        )
+        assertEquals(
+            "Previous 12.0 · coverage 7/7 · change ↑ 0.5 points",
+            translate("Minule 12.0 · pokrytí 7/7 · rozdíl ↑ 0.5 bodu"),
+        )
+        assertEquals(
+            "Previous 45 · coverage 7/7 · change ↓ 3 unlocks",
+            translate("Minule 45 · pokrytí 7/7 · rozdíl ↓ 3 odemknutí"),
+        )
+        assertEquals(
+            "Apps for $currentStart · tap the selected day again to see the full period.",
+            translate("Aplikace dne $currentStart · klepni na vybraný den znovu pro celé období."),
+        )
+    }
+
+    @Test
+    fun `beta11 digital chart captions and coverage preserve their generated dates`() {
+        val from = LocalDate.of(2026, 11, 9).format(UiDates.numericDate())
+        val to = LocalDate.of(2026, 11, 15).format(UiDates.numericDate())
+        assertEquals(
+            "$from – $to (7 days). One bar = one day, dashed line = average.",
+            translate("$from – $to (7 dní). Sloupec = jeden den, přerušovaná čára = průměr."),
+        )
+        assertEquals(
+            "$from – $to (7 days), the same period as screen time. One bar = one day, dashed line = average.",
+            translate("$from – $to (7 dní), stejné období jako čas na obrazovce. Sloupec = jeden den, přerušovaná čára = průměr."),
+        )
+        assertEquals(
+            "3/7 days · $from – $to",
+            translate("3/7 dní · $from – $to"),
+        )
+        assertEquals("Mo", StatsMath.weekdayShortName(DayOfWeek.MONDAY))
+        assertEquals(
+            "No screen-time data yet. The app reads usage directly from the phone (UsageStats, like Digital Wellbeing); the first data will appear after the next sync.",
+            translate("Zatím žádná data o čase na obrazovce. Časy čte aplikace přímo z telefonu (UsageStats, stejně jako Digitální rovnováha); první data se objeví po nejbližší synchronizaci."),
+        )
+    }
 
     @Test
     fun `dashboard weekly and digital summary labels translate including dynamic coverage`() {
