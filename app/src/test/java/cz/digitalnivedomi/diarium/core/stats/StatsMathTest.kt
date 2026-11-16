@@ -30,6 +30,32 @@ class StatsMathTest {
     // ── Mood ──────────────────────────────────────────────────────────────────
 
     @Test
+    fun `calendar trend fills absent dates and moving average uses calendar day slots`() {
+        val sparse = listOf(day("2026-09-01", mood = 5), day("2026-09-03", mood = 1))
+        val start = java.time.LocalDate.parse("2026-09-01")
+        val end = java.time.LocalDate.parse("2026-09-04")
+
+        val trend = StatsMath.moodTrend(sparse, start, end)
+        val average = StatsMath.movingAverage(sparse, start, end)
+
+        assertEquals(listOf("2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"), trend.map { it.date })
+        assertEquals(listOf(5, 0, 1, 0), trend.map { it.mood })
+        assertEquals(4, average.size)
+        assertEquals(5.0, average[0]!!, 1e-9)
+        assertEquals(5.0, average[1]!!, 1e-9)
+        assertEquals(3.0, average[2]!!, 1e-9)
+        assertEquals(3.0, average[3]!!, 1e-9)
+    }
+
+    @Test
+    fun `distribution selection filters every mood view without including unanswered days`() {
+        val days = listOf(day("2026-09-01", 5), day("2026-09-02", 2), day("2026-09-03", 0))
+        assertEquals(days, StatsMath.filterMood(days, null))
+        assertEquals(listOf(days[0]), StatsMath.filterMood(days, 5))
+        assertTrue(StatsMath.filterMood(days, 4).isEmpty())
+    }
+
+    @Test
     fun `mood distribution counts each answered value 1 to 5`() {
         val days = listOf(
             day("2026-09-01", mood = 1),

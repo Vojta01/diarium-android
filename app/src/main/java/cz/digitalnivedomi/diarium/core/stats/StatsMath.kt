@@ -28,6 +28,13 @@ data class StatsDay(
     val screenTimeSeconds: Int? = null,
     val unlocks: Int? = null,
     val topApps: List<PhoneTopApp> = emptyList(),
+    /** Answered habit IDs only; false is an explicit response, absent key is unanswered. */
+    val habits: Map<String, Boolean> = emptyMap(),
+    /** Stored quality/stress scales; 0 means unanswered. */
+    val sleepQuality: Int = 0,
+    val stress: Int = 0,
+    /** Positive custom-scale answers only; absent key means unanswered. */
+    val scaleValues: Map<String, Int> = emptyMap(),
 ) {
     /** True when a mood was actually answered (1..5). Mood 0 is "not answered". */
     val answered: Boolean get() = mood in StatsMath.MOOD_MIN..StatsMath.MOOD_MAX
@@ -245,6 +252,9 @@ object StatsMath {
 
     // ── Mood ───────────────────────────────────────────────────────────────────
 
+    fun filterMood(days: List<StatsDay>, mood: Int?): List<StatsDay> =
+        if (mood == null) days else days.filter { it.mood == mood }
+
     /**
      * Counts how many days carried each mood 1..5 — the web's `moodCounts`, where
      * `last30.forEach(e => { if (e.mood >= 1 && e.mood <= 5) moodCounts[e.mood]++ })`.
@@ -280,6 +290,18 @@ object StatsMath {
     fun moodTrend(days: List<StatsDay>): List<MoodPoint> =
         sorted(days).map { MoodPoint(it.date, it.mood) }
 
+    /** Build a complete daily calendar axis; absent rows are unanswered, never omitted. */
+    fun calendarMoodDays(days: List<StatsDay>, startInclusive: LocalDate, endInclusive: LocalDate): List<StatsDay> {
+        if (endInclusive < startInclusive) return emptyList()
+        val byDate = days.associateBy { it.date }
+        return generateSequence(startInclusive) { date -> date.plusDays(1).takeIf { it <= endInclusive } }
+            .map { date -> byDate[date.toString()] ?: StatsDay(date = date.toString()) }
+            .toList()
+    }
+
+    fun moodTrend(days: List<StatsDay>, startInclusive: LocalDate, endInclusive: LocalDate): List<MoodPoint> =
+        moodTrend(calendarMoodDays(days, startInclusive, endInclusive))
+
     /**
      * The web's "7denní průměr": one value per day, each the mean of that day and
      * the days before it inside the window (`slice(max(0, i-6), i+1)`), so the series
@@ -297,6 +319,10 @@ object StatsMath {
         values = sorted(days).map { if (it.answered) it.mood.toDouble() else null },
         window = window,
     )
+
+    /** Calendar-aligned moving average: missing dates occupy null slots in the window. */
+    fun movingAverage(days: List<StatsDay>, startInclusive: LocalDate, endInclusive: LocalDate): List<Double?> =
+        movingAverage(calendarMoodDays(days, startInclusive, endInclusive))
 
     /**
      * The same smoothing over an arbitrary aligned series of slots: one value per slot,

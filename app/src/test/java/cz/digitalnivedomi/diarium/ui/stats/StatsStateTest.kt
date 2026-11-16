@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import cz.digitalnivedomi.diarium.core.data.StatsData
 import cz.digitalnivedomi.diarium.core.stats.StatsDay
 import org.junit.Assert.assertEquals
+import java.time.LocalDate
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -74,16 +75,30 @@ class StatsStateTest {
     }
 
     @Test
-    fun `a failure shows the repository's Czech sentence and drops the days`() {
+    fun `a failure without prior data shows message and keeps data absent`() {
         val holder = StatsStateHolder()
-        holder.show(data(days = listOf(day("2026-09-10", mood = 5))))
 
         holder.showError("Nepodařilo se připojit k serveru.")
 
         assertFalse(holder.state.loading)
         assertEquals("Nepodařilo se připojit k serveru.", holder.state.errorMessage)
-        // Never a silent empty screen: the numbers are gone and the error is what shows.
         assertNull(holder.state.data)
+    }
+
+    @Test
+    fun `a live refresh failure keeps cached data visible and reports stale error`() {
+        val holder = StatsStateHolder()
+        val cached = data(days = listOf(day("2026-09-10", mood = 5)))
+        holder.show(cached)
+
+        holder.markLoading()
+        // The screen replays its owner-bound cache before issuing the refresh.
+        holder.show(cached)
+        holder.showError("Nepodařilo se připojit k serveru.")
+
+        assertFalse(holder.state.loading)
+        assertEquals(cached, holder.state.data)
+        assertEquals("Nepodařilo se připojit k serveru.", holder.state.errorMessage)
     }
 
     @Test
@@ -210,5 +225,89 @@ class StatsStateTest {
         assertFalse(StatsRange.WEEK.year)
         assertFalse(StatsRange.MONTH.year)
         assertTrue(StatsRange.YEAR.year)
+    }
+
+    @Test
+    fun `custom comparison uses actual inclusive dates and preceding equal length window`() {
+        val custom = validateCustomDateRange("2025-10-04", "2025-10-09", "2025-11-15")!!
+        val current = comparisonWindow(StatsRange.CUSTOM, custom, LocalDate.parse("2025-11-15"), 6)
+        val previous = current.previous()
+
+        assertEquals(LocalDate.parse("2025-10-04"), current.startInclusive)
+        assertEquals(LocalDate.parse("2025-10-09"), current.endInclusive)
+        assertEquals(6, current.dayCount)
+        assertEquals(LocalDate.parse("2025-09-28"), previous.startInclusive)
+        assertEquals(LocalDate.parse("2025-10-03"), previous.endInclusive)
+        assertEquals(current.dayCount, previous.dayCount)
+    }
+
+    @Test
+    fun `custom inclusive dates validate leap days and loaded boundaries`() {
+        val leap = validateCustomDateRange("2024-02-29", "2024-03-01", "2024-03-01")
+        assertEquals(2, leap?.dayCount)
+        assertNull(validateCustomDateRange("2023-02-29", "2023-03-01", "2023-03-01"))
+        assertNull(validateCustomDateRange("2025-01-01", "2024-12-31", "2025-01-01"))
+        assertNull(validateCustomDateRange("2024-01-01", "2025-01-01", "2024-12-31"))
+        assertNull(validateCustomDateRange("2023-11-26", "2023-11-27", "2024-12-30"))
+        assertEquals(400, validateCustomDateRange("2023-11-27", "2024-12-30", "2024-12-30")?.dayCount)
+    }
+
+    @Test
+    fun `custom range rejects overlong future and reversed selections`() {
+        assertNull(validateCustomDateRange("2024-01-01", "2025-02-05", "2025-02-05"))
+        assertNull(validateCustomDateRange("2025-02-06", "2025-02-05", "2025-02-05"))
+        assertNull(validateCustomDateRange("2025-02-05", "2025-02-06", "2025-02-05"))
+        assertEquals(1, validateCustomDateRange("2025-02-05", "2025-02-05", "2025-02-05")?.dayCount)
+    }
+
+    @Test
+    fun `draft edits do not change applied range until valid apply`() {
+        val holder = StatsStateHolder()
+        val loaded = data(days = listOf(day("2026-09-04", 4), day("2026-09-05", 5), day("2026-09-10", 2)))
+        holder.show(loaded)
+        holder.restore(StatsRange.CUSTOM.name, StatsCategory.MOOD.name, 7, true, "2026-09-04", "2026-09-05")
+        holder.editCustomRange("2026-09-10", "2026-09-10")
+
+        assertEquals("2026-09-04", holder.state.appliedCustomStartDate)
+        assertEquals("2026-09-05", holder.state.appliedCustomEndDate)
+        assertEquals("2026-09-10", holder.state.customStartDate)
+        assertEquals(listOf("2026-09-04", "2026-09-05"), loaded.days.filter {
+            it.date >= holder.state.appliedCustomStartDate && it.date <= holder.state.appliedCustomEndDate
+        }.map { it.date })
+
+        assertTrue(holder.applyCustomRange())
+        assertEquals("2026-09-10", holder.state.appliedCustomStartDate)
+        assertEquals("2026-09-10", holder.state.appliedCustomEndDate)
+    }
+
+    @Test
+    fun `invalid draft reports error while preserving applied dates and chart data`() {
+        val holder = StatsStateHolder()
+        val loaded = data(days = listOf(day("2026-09-04", 4), day("2026-09-05", 5)))
+        holder.show(loaded)
+        holder.restore(StatsRange.CUSTOM.name, StatsCategory.MOOD.name, 2, true, "2026-09-04", "2026-09-05")
+        holder.editCustomRange("not-a-date", "2026-09-10")
+
+        assertFalse(holder.applyCustomRange())
+        assertEquals("2026-09-04", holder.state.appliedCustomStartDate)
+        assertEquals("2026-09-05", holder.state.appliedCustomEndDate)
+        assertEquals("Zadej platné datum v rozsahu načtené historie (max. 400 dní).", holder.state.customRangeError)
+        assertEquals(loaded, holder.state.data)
+        assertEquals(2, holder.state.data!!.days.count {
+            it.date >= holder.state.appliedCustomStartDate && it.date <= holder.state.appliedCustomEndDate
+        })
+    }
+
+    @Test
+    fun `restoring applied state does not overwrite an in-progress draft on shell recomposition`() {
+        val holder = StatsStateHolder()
+        holder.restore(StatsRange.CUSTOM.name, StatsCategory.MOOD.name, 7, false, "2026-09-04", "2026-09-05")
+        holder.editCustomRange("2026-09-08", "2026-09-10")
+        holder.restore(StatsRange.CUSTOM.name, StatsCategory.MOOD.name, 7, false, "2026-09-04", "2026-09-05")
+
+        assertEquals("2026-09-08", holder.state.customStartDate)
+        assertEquals("2026-09-10", holder.state.customEndDate)
+        assertEquals("2026-09-04", holder.state.appliedCustomStartDate)
+        assertEquals("2026-09-05", holder.state.appliedCustomEndDate)
     }
 }

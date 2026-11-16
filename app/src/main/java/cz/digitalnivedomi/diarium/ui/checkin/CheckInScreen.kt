@@ -416,7 +416,7 @@ fun CheckInScreen(
     var templates by remember { mutableStateOf(PickerDefaults.DEFAULT_TEMPLATES) }
     // Read-only goal progress: null while unknown (the section hides), a list once
     // [GoalsRepository.loadProgress] has answered — computed from the diary.
-    var goalProgress by remember { mutableStateOf<List<GoalProgress>?>(null) }
+    var goalProgress by remember(ownerId, state.date) { mutableStateOf<List<GoalProgress>?>(null) }
     var activePhotoUpload by remember { mutableStateOf<Long?>(null) }
     val uploadingPhoto = activePhotoUpload != null
     val currentUploadingPhoto = rememberUpdatedState(uploadingPhoto)
@@ -574,10 +574,46 @@ fun CheckInScreen(
         photoError = null
     }
 
-    // Goals this save pushed over their target. Shown one at a time, at most three;
-    // the queue also gates the reflection dialog, so both never stack.
-    var celebrationQueue by remember { mutableStateOf<List<GoalProgress>>(emptyList()) }
-    var celebrationSeen by remember { mutableStateOf(0) }
+    // Goals this save pushed over their target. One summary per save: the style
+    // is derived from their real frequency, so daily/weekly never stack a second
+    // window behind the reflection dialog and a monthly goal earns the hero moment.
+    var celebrationGoals by remember(ownerId, state.date) { mutableStateOf<List<GoalProgress>>(emptyList()) }
+    // The save request that produced [celebrationGoals]. A second save of the same
+    // goal must restart the celebration, so the component is keyed by this token,
+    // never by `goals.first().goal.id`.
+    var celebrationToken by remember(ownerId, state.date) { mutableStateOf<String?>(null) }
+    // Set synchronously when a save starts and cleared only by that request. While
+    // it is set the reflection dialog stays closed, so a save that meets a goal can
+    // never have its celebration torn down by the dialog the save just opened.
+    var celebrationGate by remember(ownerId, state.date) { mutableStateOf<String?>(null) }
+
+    /**
+     * Progress for the day being saved, or `null` when the read failed.
+     *
+     * `loadProgress` is documented as returning `null` on an expected read failure
+     * and not throwing; the catch here is for the unexpected. Cancellation is not a
+     * failure and must reach the caller. The caller keeps the last visible progress
+     * when this returns `null` rather than blanking the goals section.
+     */
+    suspend fun loadProgressSafely(date: String, expectedOwner: String): List<GoalProgress>? {
+        val repo = goalsRepo ?: return null
+        val entries = entriesRepo ?: return null
+        if (ownerId != expectedOwner || entries.currentUserId() != expectedOwner) return null
+        val asOf = try {
+            LocalDate.parse(date)
+        } catch (_: Exception) {
+            return null
+        }
+        return try {
+            repo.loadProgress(asOf)?.takeIf {
+                ownerId == expectedOwner && entries.currentUserId() == expectedOwner
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     // ── The 2026-09 additions ──
     // One-shot guard for the after-midnight step back to yesterday (see the load effect).
@@ -597,8 +633,24 @@ fun CheckInScreen(
             scales = pickersRepo.scales()
             templates = pickersRepo.templates().ifEmpty { PickerDefaults.DEFAULT_TEMPLATES }
         }
-        if (goalsRepo != null) {
-            goalProgress = goalsRepo.loadProgress()
+    }
+
+    LaunchedEffect(goalsRepo, entriesRepo, ownerId, state.date) {
+        val capturedDate = state.date
+        val capturedOwner = ownerId
+        if (capturedOwner != null && goalsRepo != null) {
+            // Read for the exact date/account currently displayed. A stale or
+            // failed completion is unknown, never a replacement with empty data.
+            val loaded = loadProgressSafely(capturedDate, capturedOwner)
+            if (isGoalSnapshotCurrent(
+                    capturedDate,
+                    capturedOwner,
+                    holder.date,
+                    entriesRepo?.currentUserId(),
+                ) && loaded != null
+            ) {
+                goalProgress = loaded
+            }
         }
     }
 
@@ -1012,13 +1064,8 @@ fun CheckInScreen(
                 if (result.isSuccess) {
                     pendingMoveRecovery = null
                     moveRecoveryError = null
-                    try {
-                        goalProgress = goalsRepo?.loadProgress()
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (_: Exception) {
-                        goalProgress = null
-                    }
+                    val progressAfterMove = ownerId?.let { loadProgressSafely(candidate.targetDate, it) }
+                    if (progressAfterMove != null) goalProgress = progressAfterMove
                     if (candidate.targetDate == holder.date) {
                         holder.setLoading(true)
                         reloadToken++
@@ -1077,13 +1124,8 @@ fun CheckInScreen(
                 if (result.isSuccess) {
                     pendingMoveRecovery = null
                     moveRecoveryError = null
-                    try {
-                        goalProgress = goalsRepo?.loadProgress()
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (_: Exception) {
-                        goalProgress = null
-                    }
+                    val progressAfterMove = ownerId?.let { loadProgressSafely(request.targetDate, it) }
+                    if (progressAfterMove != null) goalProgress = progressAfterMove
                     if (holder.date == request.sourceDate) {
                         holder.setDate(request.targetDate)
                     } else if (holder.date == request.targetDate) {
@@ -1118,11 +1160,6 @@ fun CheckInScreen(
     }
 
     val haptics = rememberHaptics()
-
-    // A saved check-in gets a physical confirmation instead of a silent swap.
-    LaunchedEffect(state.saved) {
-        if (state.saved) haptics.success()
-    }
 
     fun save() {
         if (dateNavigationGuard.get()) return
@@ -1159,32 +1196,68 @@ fun CheckInScreen(
             request.requestId,
             request.entry.aiReflection.takeIf { request.writeAiReflection },
         )
+        // Synchronous gate: markSaved() opens the reflection dialog the moment it
+        // runs, so the celebration would otherwise be hidden behind a dialog it is
+        // supposed to precede. The gate closes that dialog until this save's
+        // progress read has produced a celebration or proved there is none.
+        celebrationGate = request.requestId
         scope.launch {
-            val result = persistEntry(request, baselineUpdatedAt, stagedDraft)
-            if (result.isSuccess) {
-                val receipt = result.getOrThrow()
-                holder.markSaved(request.date, receipt)
-                val progressBefore = goalProgress
-                val progressAfter = goalsRepo?.loadProgress()
-                goalProgress = progressAfter
-                val newlyMet = newlyMetGoals(progressBefore, progressAfter)
-                if (newlyMet.isNotEmpty()) {
-                    celebrationSeen = 0
-                    celebrationQueue = newlyMet
+            try {
+                val entries = entriesRepo
+                suspend fun saveIsCurrent(): Boolean {
+                    val repo = entries ?: return false
+                    return isGoalSnapshotCurrent(
+                        snapshotDate = request.date,
+                        snapshotOwner = request.ownerId,
+                        activeDate = holder.date,
+                        activeOwner = ownerId,
+                    ) && repo.currentUserId() == request.ownerId
                 }
-            } else {
-                val error = result.exceptionOrNull()
-                if (error is QueuedOfflineException) {
-                    holder.markQueuedOffline(request.date)
-                    refreshPendingRecovery(request.date)
-                } else if (error is ConditionalSaveUnknownException &&
-                    entriesRepo.pendingSaveRecord(request.date)?.conditionalRequest?.requestId == request.requestId
-                ) {
-                    holder.markQueuedOffline(request.date)
-                    refreshPendingRecovery(request.date)
+
+                // Capture the goal baseline for this exact date and owner before
+                // the write. A cached screen value can belong to another date or
+                // account; unknown is deliberately non-blocking and suppresses
+                // celebration rather than affecting the entry save.
+                val progressBefore = loadProgressSafely(request.date, request.ownerId)
+                if (!saveIsCurrent()) return@launch
+                val result = persistEntry(request, baselineUpdatedAt, stagedDraft)
+
+                if (result.isSuccess) {
+                    val receipt = result.getOrThrow()
+                    // A save that finished after a date/account switch must not
+                    // mark the new day saved, read its progress or celebrate it.
+                    if (!saveIsCurrent()) return@launch
+                    holder.markSaved(request.date, receipt)
+                    if (shouldPlayCheckInSuccessHaptic(CheckInWriteKind.SAVE_BUTTON)) haptics.success()
+                    val progressAfter = loadProgressSafely(request.date, request.ownerId)
+                    // A failed reload keeps the progress the user can already see;
+                    // null here only means "could not verify", never "no goals".
+                    if (progressAfter != null && saveIsCurrent()) goalProgress = progressAfter
+                    if (!saveIsCurrent()) return@launch
+                    val newlyMet = newlyMetGoals(progressBefore, progressAfter)
+                    if (newlyMet.isNotEmpty()) {
+                        celebrationToken = celebrationKey(request.requestId, newlyMet)
+                        celebrationGoals = newlyMet
+                    }
                 } else {
-                    holder.markError(error?.message ?: "Uložení se nezdařilo.", request.date)
+                    if (!saveIsCurrent()) return@launch
+                    val error = result.exceptionOrNull()
+                    if (error is QueuedOfflineException) {
+                        holder.markQueuedOffline(request.date)
+                        refreshPendingRecovery(request.date)
+                    } else if (error is ConditionalSaveUnknownException &&
+                        entriesRepo.pendingSaveRecord(request.date)?.conditionalRequest?.requestId == request.requestId
+                    ) {
+                        holder.markQueuedOffline(request.date)
+                        refreshPendingRecovery(request.date)
+                    } else {
+                        holder.markError(error?.message ?: "Uložení se nezdařilo.", request.date)
+                    }
                 }
+            } finally {
+                // Only this request may clear its own gate: a second save that
+                // already started owns a newer token.
+                if (celebrationGate == request.requestId) celebrationGate = null
             }
         }
     }
@@ -1254,24 +1327,54 @@ fun CheckInScreen(
                         request.requestId,
                         request.entry.aiReflection.takeIf { request.writeAiReflection },
                     )
-                    val stored = persistEntry(request, holder.state.baselineUpdatedAt, stagedDraft)
-                    if (stored.isFailure) {
-                        val failure = stored.exceptionOrNull()
-                        if (failure is QueuedOfflineException || failure is ConditionalSaveUnknownException) {
-                            holder.markQueuedOffline(date)
-                            refreshPendingRecovery(date)
-                        } else {
-                            holder.markError(failure?.message ?: "Uložení se nezdařilo.", date)
+                    // The pre-reflection save opens no dialog itself, but the gate
+                    // still belongs to this request: a celebration must finish (or
+                    // prove empty) before the AI flow continues.
+                    celebrationGate = request.requestId
+                    try {
+                        val progressBefore = loadProgressSafely(request.date, owner)
+                        if (holder.date != request.date || ownerId != owner || entries.currentUserId() != owner) {
+                            return@launch
                         }
-                        holder.markReflectionError("Nejdřív je potřeba bezpečně uložit dnešní zápis.")
-                        return@launch
+                        val stored = persistEntry(request, holder.state.baselineUpdatedAt, stagedDraft)
+                        if (stored.isFailure) {
+                            val failure = stored.exceptionOrNull()
+                            if (failure is QueuedOfflineException || failure is ConditionalSaveUnknownException) {
+                                holder.markQueuedOffline(date)
+                                refreshPendingRecovery(date)
+                            } else {
+                                holder.markError(failure?.message ?: "Uložení se nezdařilo.", date)
+                            }
+                            holder.markReflectionError("Nejdřív je potřeba bezpečně uložit dnešní zápis.")
+                            return@launch
+                        }
+                        if (holder.date != date) return@launch
+                        if (ownerId != owner || entries.currentUserId() != owner) {
+                            holder.markReflectionError(AiReflectionRepository.MESSAGE_SIGNED_OUT)
+                            return@launch
+                        }
+                        holder.markReflectionStored(date, stored.getOrThrow())
+                        // This user action persisted an unsaved check-in; the later
+                        // AI reflection write is a separate background update and
+                        // must not produce a second success haptic.
+                        if (shouldPlayCheckInSuccessHaptic(CheckInWriteKind.AI_PREFLIGHT_SAVE)) haptics.success()
+                        // Same captured day as the save: a historical check-in must
+                        // compare that day's progress, not today's.
+                        val progressAfter = loadProgressSafely(request.date, owner)
+                        if (progressAfter != null && holder.date == request.date &&
+                            entries.currentUserId() == owner
+                        ) goalProgress = progressAfter
+                        if (holder.date != date || ownerId != owner || entries.currentUserId() != owner) {
+                            return@launch
+                        }
+                        val newlyMet = newlyMetGoals(progressBefore, progressAfter)
+                        if (newlyMet.isNotEmpty()) {
+                            celebrationToken = celebrationKey(request.requestId, newlyMet)
+                            celebrationGoals = newlyMet
+                        }
+                    } finally {
+                        if (celebrationGate == request.requestId) celebrationGate = null
                     }
-                    if (holder.date != date) return@launch
-                    if (entries.currentUserId() != owner) {
-                        holder.markReflectionError(AiReflectionRepository.MESSAGE_SIGNED_OUT)
-                        return@launch
-                    }
-                    holder.markReflectionStored(date, stored.getOrThrow())
                 }
 
                 // Capture the live row identity/revision, not an old dashboard/UI copy.
@@ -1883,9 +1986,10 @@ fun CheckInScreen(
         Spacer(Modifier.height(48.dp))
     }
 
-    // The reflection dialog waits behind the celebration queue: the AI request has
-    // already started (the LaunchedEffect above fires on `showReflectionDialog`), so
-    // the dialog opens with the text ready — never as a second window above it.
+    // The reflection dialog stays closed while a celebration is pending or shown:
+    // the AI request has already started (its LaunchedEffect fires on
+    // `showReflectionDialog`), so the dialog opens with the text ready — never as
+    // a second window above the celebration.
     if (movePickerOpen) {
         MoveDateDialog(
             currentDate = state.date,
@@ -1901,7 +2005,7 @@ fun CheckInScreen(
         )
     }
 
-    if (state.showReflectionDialog && celebrationQueue.isEmpty()) {
+    if (state.showReflectionDialog && celebrationGoals.isEmpty() && celebrationGate == null) {
         ReflectionDialog(
             entry = state.entry,
             activities = activities,
@@ -1916,16 +2020,20 @@ fun CheckInScreen(
         )
     }
 
-    // Goal celebration (backlog 29, variant A): one goal at a time, at most three,
-    // tap or 2.2 s dismisses. The third card also carries the remainder count.
-    celebrationQueue.firstOrNull()?.let { goal ->
+    // One celebration per save. A monthly goal raises the whole group to the
+    // full-screen style; daily/weekly goals stay compact and never queue. The key
+    // is the save request, so a second save of the same goal restarts the run and
+    // an identical recomposition cannot reshuffle it.
+    val token = celebrationToken
+    if (celebrationGoals.isNotEmpty() && token != null) {
         GoalCelebration(
-            goal = goal,
-            extra = if (celebrationSeen == 2) (celebrationQueue.size - 1).coerceAtLeast(0) else 0,
+            goals = celebrationGoals,
+            celebrationKey = token,
             onDone = {
-                celebrationSeen += 1
-                celebrationQueue =
-                    if (celebrationSeen >= 3) emptyList() else celebrationQueue.drop(1)
+                if (celebrationToken == token) {
+                    celebrationGoals = emptyList()
+                    celebrationToken = null
+                }
             },
         )
     }

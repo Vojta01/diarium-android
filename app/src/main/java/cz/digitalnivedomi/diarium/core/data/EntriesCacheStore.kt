@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.util.Base64
+import java.lang.ref.WeakReference
 
 /**
  * File-backed snapshot of the `entries` rows the dashboard last saw, so a cold
@@ -31,15 +32,51 @@ import java.util.Base64
  * Reads and writes go through [mutex] and `Dispatchers.IO`, so two coroutines
  * can never interleave on the file, and a write never leaves a half-written
  * snapshot: [persist] writes a temp sibling first and swaps it in with a
- * rename.
+ * rename. A conservative shared in-memory generation token lets a range GET update
+ * only the cache version observed before dispatch; if any local mutation wins
+ * while it is in flight, the GET is discarded. This coordination is process-local;
+ * multiple Android processes would need an OS file lock or transactional store.
+ * The cache is not evidence that the server range was complete, so remotely
+ * deleted rows may remain offline.
  */
 class EntriesCacheStore(
     private val file: File,
     val ownerId: String? = null,
+    private val replaceFile: (File, File) -> Boolean = { temp, target -> temp.renameTo(target) },
 ) {
 
-    /** Serialises this store's file access; see the class KDoc. */
-    private val mutex = Mutex()
+    /** All stores for the same canonical owner/file share a lock and CAS version. */
+    private val shared = sharedState(file, ownerId)
+    private val mutex get() = shared.mutex
+
+    /** Capture before dispatching a range GET. */
+    suspend fun generationSnapshot(): Long = mutex.withLock { shared.generation }
+
+    /** Merge fetched rows only if no cache mutation has happened since the GET began. */
+    suspend fun upsertRowsIfGeneration(rows: List<JSONObject>, expectedGeneration: Long): Boolean =
+        mutex.withLock {
+            if (shared.generation != expectedGeneration) return@withLock false
+            withContext(Dispatchers.IO) {
+                val stored = readRowsOrNull() ?: JSONObject()
+                var changed = false
+                rows.forEach { row ->
+                    val date = row.plainString("date").takeIf { it.isNotBlank() } ?: return@forEach
+                    val rowOwner = row.plainString("user_id")
+                    if (ownerId != null && rowOwner != ownerId) {
+                        throw IOException("Server row does not match the cache owner.")
+                    }
+                    val merged = stored.optJSONObject(date) ?: JSONObject()
+                    row.keys().forEach { key -> merged.put(key, row.get(key)) }
+                    stored.put(date, merged)
+                    changed = true
+                }
+                if (changed) {
+                    persist(stored)
+                    shared.generation++
+                }
+                true
+            }
+        }
 
     /**
      * Returns the cached rows whose `date` lies in `[from, to]` (inclusive),
@@ -86,7 +123,10 @@ class EntriesCacheStore(
                     stored.put(date, merged)
                     changed = true
                 }
-                if (changed) persist(stored)
+                if (changed) {
+                    persist(stored)
+                    shared.generation++
+                }
             }
         }
     }
@@ -112,6 +152,7 @@ class EntriesCacheStore(
                 stored.remove(from)
                 stored.put(to, JSONObject(movedRow.toString()))
                 persist(stored)
+                shared.generation++
             }
         }
     }
@@ -129,6 +170,7 @@ class EntriesCacheStore(
                 if (stored.has(date)) {
                     stored.remove(date)
                     persist(stored)
+                    shared.generation++
                 }
             }
         }
@@ -175,12 +217,11 @@ class EntriesCacheStore(
      * Replaces the file with a complete snapshot: the payload is written to a
      * temp sibling first and renamed onto the target, so a kill at any point
      * leaves either the old snapshot or the new one — never a half-written
-     * file. A failed rename (which should not happen: the temp file lives in
-     * the target's own directory) falls back to a plain copy rather than
-     * dropping the snapshot.
+     * file. A failed rename is an error: copying over an existing target would
+     * truncate the last known-good snapshot and is not an atomic fallback.
      */
     private fun persist(rows: JSONObject) {
-        val directory = file.parentFile ?: return
+        val directory = file.parentFile ?: throw IOException("Entries cache has no parent directory.")
         if (!directory.exists()) directory.mkdirs()
         val root = JSONObject()
             .put("version", if (ownerId == null) LEGACY_FORMAT_VERSION else OWNER_FORMAT_VERSION)
@@ -190,7 +231,7 @@ class EntriesCacheStore(
         val temp = File.createTempFile(TEMP_FILE_PREFIX, ".tmp", directory)
         try {
             temp.writeText(payload)
-            if (!temp.renameTo(file)) temp.copyTo(file, overwrite = true)
+            if (!replaceFile(temp, file)) throw IOException("Could not atomically replace entries cache.")
         } finally {
             // After a successful rename the temp file is already gone; on the
             // failure paths this removes the leftover.
@@ -205,6 +246,23 @@ class EntriesCacheStore(
         private const val LEGACY_FORMAT_VERSION = 1
         private const val OWNER_FORMAT_VERSION = 2
         private const val TEMP_FILE_PREFIX = "entries_cache_"
+
+        private class SharedState {
+            val mutex = Mutex()
+            var generation: Long = 0
+        }
+
+        private data class StateKey(val ownerId: String?, val canonicalPath: String)
+        private val states = mutableMapOf<StateKey, WeakReference<SharedState>>()
+
+        /** Weak registry: live stores retain state; dead owners/files can be collected. */
+        private fun sharedState(file: File, ownerId: String?): SharedState = synchronized(states) {
+            val canonicalPath = runCatching { file.canonicalPath }
+                .getOrElse { file.absoluteFile.normalize().path }
+            val key = StateKey(ownerId, canonicalPath)
+            states.entries.removeAll { it.value.get() == null }
+            states[key]?.get() ?: SharedState().also { states[key] = WeakReference(it) }
+        }
 
         /** Stable per-owner file name; base64url keeps arbitrary IDs out of path syntax. */
         fun fileName(ownerId: String): String =

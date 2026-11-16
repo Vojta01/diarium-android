@@ -21,6 +21,7 @@ fun DashboardRoute(
     // so the loaded dashboard survives a push/pop; the default keeps previews and tests
     // working with a holder of their own.
     holder: DashboardStateHolder = remember { DashboardStateHolder() },
+    onOpenStatistics: (DashboardMetricKind) -> Unit = {},
     /** Supplied by the authenticated app shell so failed staging survives navigation. */
     stageRetryHolder: GeneratedReflectionStageRetryHolder = remember { GeneratedReflectionStageRetryHolder() },
 ) {
@@ -30,6 +31,7 @@ fun DashboardRoute(
         deps = deps,
         onOpenCheckIn = onOpenCheckIn,
         onOpen = onOpen,
+        onOpenStatistics = onOpenStatistics,
         holder = holder,
         stageRetryHolder = stageRetryHolder,
     )

@@ -218,14 +218,54 @@ class StatsRepositoryTest {
         assertTrue(StatsMath.screenTimeWindow(data.days, 7).isEmpty())
     }
 
-    private fun repository(store: SessionStore = signedInStore()): StatsRepository {
+    @Test
+    fun `a cache miss is not an empty success and does not trigger a network request`() = runTest {
+        val cached = repository().loadCached(TODAY)
+        assertNull(cached)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun `cache hit remains owner scoped and available when the live refresh fails`() = runTest {
+        val directory = java.nio.file.Files.createTempDirectory("stats-cache-test").toFile()
+        val ownerCache = EntriesCacheStore(java.io.File(directory, "owner-a.json"), USER_ID)
+        ownerCache.upsertRows(listOf(JSONObject().put("user_id", USER_ID).put("date", TODAY).put("mood", 4)))
+        failure = IOException("offline")
+        val repository = repository(cache = ownerCache)
+
+        val cached = repository.loadCached(TODAY)
+        val live = repository.load(TODAY)
+
+        assertEquals(4, cached?.days?.single()?.mood)
+        assertTrue(live.isFailure)
+        assertEquals("Nepodařilo se připojit k serveru.", live.exceptionOrNull()?.message)
+        // A different owner's cache is never read, even with a populated file.
+        val foreign = EntriesCacheStore(java.io.File(directory, "owner-b.json"), "other-owner")
+        foreign.upsertRows(listOf(JSONObject().put("user_id", "other-owner").put("date", TODAY).put("mood", 1)))
+        assertNull(repository(cache = foreign).loadCached(TODAY))
+    }
+
+    @Test
+    fun `a cache miss followed by a failed live read remains a failure`() = runTest {
+        failure = IOException("offline")
+        val repository = repository()
+        assertNull(repository.loadCached(TODAY))
+        val live = repository.load(TODAY)
+        assertTrue(live.isFailure)
+        assertEquals("Nepodařilo se připojit k serveru.", live.exceptionOrNull()?.message)
+    }
+
+    private fun repository(
+        store: SessionStore = signedInStore(),
+        cache: EntriesCacheStore? = null,
+    ): StatsRepository {
         val client = SupabaseClient(
             sessionStore = store,
             transport = transport,
             baseUrl = BASE_URL,
             anonKey = "anon-test-key",
         )
-        return StatsRepository(EntriesRepository(client, SessionContext(store)))
+        return StatsRepository(EntriesRepository(client, SessionContext(store), cache = cache))
     }
 
     /** A signed-in session; a cleared one means "before login / after logout". */

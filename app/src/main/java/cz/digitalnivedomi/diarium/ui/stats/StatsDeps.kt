@@ -7,6 +7,7 @@ import cz.digitalnivedomi.diarium.core.data.EntriesCacheStore
 import cz.digitalnivedomi.diarium.core.data.EntriesRepository
 import cz.digitalnivedomi.diarium.core.data.GoalsRepository
 import cz.digitalnivedomi.diarium.core.data.PendingSaveStore
+import cz.digitalnivedomi.diarium.core.data.PickersRepository
 import cz.digitalnivedomi.diarium.core.data.SessionContext
 import cz.digitalnivedomi.diarium.core.data.StatsRepository
 import cz.digitalnivedomi.diarium.core.data.SupabaseClient
@@ -25,12 +26,9 @@ import cz.digitalnivedomi.diarium.core.data.SupabaseClient
  */
 class StatsDeps(
     val stats: StatsRepository? = null,
-    /**
-     * Goals ("🎯 Cíle") — read with the statistics and shown as their own section.
-     * Null (offline, no session) simply hides that section: the goals are a bonus to
-     * the numbers, not a reason to take the screen down.
-     */
-    val goals: GoalsRepository? = null,
+    val pickers: PickersRepository? = null,
+    /** Compatibility-only injection for existing previews; Statistics no longer reads goals. */
+    @Suppress("unused") val goals: GoalsRepository? = null,
 ) {
 
     val online: Boolean get() = stats != null
@@ -56,7 +54,7 @@ class StatsDeps(
                         expectedOwnerId = ownerId,
                     ),
                 ),
-                goals = GoalsRepository(client, session),
+                pickers = PickersRepository(client, session),
             )
         }
     }

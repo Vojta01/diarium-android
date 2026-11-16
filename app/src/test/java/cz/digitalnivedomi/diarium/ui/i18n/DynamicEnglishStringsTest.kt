@@ -31,6 +31,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -71,6 +72,40 @@ class DynamicEnglishStringsTest {
     @After
     fun speakCzechAgain() {
         AppLanguage.set(context, Lang.CS)
+    }
+
+    // ── Dashboard week summary ────────────────────────────────────────────────
+
+    @Test
+    fun `dashboard weekly and digital summary labels translate including dynamic coverage`() {
+        assertEquals("Week in numbers", translate("Týden v číslech"))
+        assertEquals("📱 Digital overview", translate("📱 Digitální přehled"))
+        assertEquals("Screen time", translate("Čas u obrazovky"))
+        assertEquals("Unlocks", translate("Odemknutí"))
+        assertEquals("Recorded days", translate("Zapsané dny"))
+        assertEquals("Last 7 days · 🔥 4 days streak", translate("Posledních 7 kalendářních dní · série 🔥 4"))
+        assertEquals("3/7 days", translate("3/7 dní"))
+        assertEquals("Previous 120 min · 3/7 days", translate("Minule 120 min · 3/7 dní"))
+        assertEquals(
+            "Comparison hidden · coverage 3/7 vs. 5/7 days",
+            translate("Srovnání skryto · pokrytí 3/7 vs. 5/7 dní"),
+        )
+        assertEquals("No previous data", translate("Bez minulých dat"))
+        assertEquals(
+            "Daily screen time · gray = no data, short indigo bar = 0 min.",
+            translate("Denní čas u obrazovky · šedá = bez dat, krátký indigo sloupec = 0 min."),
+        )
+        assertEquals("App list has not synced yet.", translate("Seznam aplikací ještě není synchronizovaný."))
+        assertEquals("Digital data has not synced yet.", translate("Digitální údaje se ještě nenasynchronizovaly."))
+        assertEquals("Most-used apps", translate("Nejpoužívanější aplikace"))
+        assertEquals(
+            "Most-used apps · snapshot from 15 Nov 2026",
+            translate("Nejpoužívanější aplikace · snapshot ze dne 15 Nov 2026"),
+        )
+        assertEquals(
+            "On 15 Nov 2026 · no app data yet.",
+            translate("Ze dne 15 Nov 2026 · zatím bez údajů o aplikacích."),
+        )
     }
 
     // ── Dashboard hero ────────────────────────────────────────────────────────
@@ -119,6 +154,16 @@ class DynamicEnglishStringsTest {
         assertEquals("· 7 days", translate("· 7 dní"))
     }
 
+    @Test
+    fun `statistics comparison and current calendar year copy translate`() {
+        assertEquals("Calendar year 2026", translate("Kalendářní rok 2026"))
+        assertEquals("Comparison of equal-length periods", translate("Srovnání stejně dlouhých období"))
+        assertEquals("Mood comparison unavailable: at least 2 recorded moods are needed in each period; now 1 and 4.",
+            translate("Srovnání nálady není dostupné: potřeba alespoň 2 zaznamenané nálady v každém období; nyní 1 a 4."))
+        assertEquals("Selecting a mood filters the other mood summaries; tap it again to clear the filter.",
+            translate("Výběr nálady filtruje ostatní náladové přehledy; klepnutím znovu se filtr zruší."))
+    }
+
     // ── Year summary ──────────────────────────────────────────────────────────
 
     /** "Nejlepší: Srpen 4.1 / 5 · nejslabší: Únor 2.9 / 5" as one rendered line. */
@@ -135,6 +180,21 @@ class DynamicEnglishStringsTest {
     }
 
     // ── Year in pixels ────────────────────────────────────────────────────────
+
+    @Test
+    fun `year pixel spoken labels and year-only qualifier are English`() {
+        val moodLabel = cellLabel("2026-12-02", 4)
+        assertTrue(moodLabel.endsWith("— 🙂 Good"))
+        assertTrue(cellLabel("2026-12-02", 0).endsWith("— no answer"))
+        assertEquals(
+            "Year shows the full calendar year; global period and comparison do not apply to this category.",
+            translate("Rok zobrazuje celý kalendářní rok; globální období a srovnání se na tuto kategorii nevztahují."),
+        )
+        assertEquals(
+            "Tap a day to open it; long-press to open that month in History.",
+            translate("Klepnutím otevřeš den; dlouhým stiskem přejdeš do historie daného měsíce."),
+        )
+    }
 
     /** "Rok 2026" plus the full 400-day limit hint under it. */
     @Test
@@ -384,6 +444,30 @@ class DynamicEnglishStringsTest {
         assertEquals("10 Sep 2026 — no answer", cellLabel("2026-09-10", 0))
     }
 
+    @Test
+    fun `partial weekly coverage gets explicit translated no-comparison copy`() {
+        assertEquals(
+            "Comparison hidden · coverage 3/7 vs. 3/7 days",
+            translate("Srovnání skryto · pokrytí 3/7 vs. 3/7 dní"),
+        )
+        assertEquals(
+            "Comparison hidden · coverage 0/7 vs. 0/7 days",
+            translate("Srovnání skryto · pokrytí 0/7 vs. 0/7 dní"),
+        )
+    }
+
+    @Test
+    fun `new statistics period and comparison copy translate dynamically`() {
+        assertEquals(
+            "Period: 1 Nov 2026 – 15 Nov 2026 · 4/15 days with entries · 3 mood responses · 400-day limit",
+            translate("Období: 1 Nov 2026 – 15 Nov 2026 · 4/15 dnů se záznamem · 3 náladových odpovědí · limit 400 dní"),
+        )
+        assertEquals(
+            "Comparison unavailable: at least 2 recorded moods are needed in each period; there are 1 and 0 now.",
+            translate("Srovnání není dostupné: potřeba alespoň 2 zaznamenané nálady v každém období; nyní 1 a 0."),
+        )
+    }
+
     // ── Dashboard mood chart ──────────────────────────────────────────────────
 
     /** The dashboard chart's tap detail joins emoji and label — both must read English. */
@@ -402,6 +486,26 @@ class DynamicEnglishStringsTest {
         assertEquals("3 days with activity", translate("3 dny s aktivitou"))
         assertEquals("4 days with activity", translate("4 dny s aktivitou"))
         assertEquals("17 days with activity", translate("17 dní s aktivitou"))
+    }
+
+    // ── Goal celebration ──────────────────────────────────────────────────────
+
+    /** The single-goal line is composed, so the period phrase is translated inside it. */
+    @Test
+    fun `a single goal's count and period translate as one line`() {
+        assertEquals("3 / 3 · today", translate("3 / 3 · dnes"))
+        assertEquals("4 / 4 · this week", translate("4 / 4 · tento týden"))
+        assertEquals("5 / 5 · this month", translate("5 / 5 · tento měsíc"))
+    }
+
+    /** A group summary never says "1 goal" for two goals, and "+1" stays singular. */
+    @Test
+    fun `goal group and remainder plurals translate`() {
+        assertEquals("2 goals met", translate("2 cíle splněno"))
+        assertEquals("5 goals met", translate("5 cílů splněno"))
+        assertEquals("+ 1 more goal met", translate("+ 1 dalších cílů splněno"))
+        assertEquals("+ 2 more goals met", translate("+ 2 dalších cílů splněno"))
+        assertEquals("Dismiss celebration", translate("Zavřít oslavu"))
     }
 
     // ── Czech stays Czech ─────────────────────────────────────────────────────

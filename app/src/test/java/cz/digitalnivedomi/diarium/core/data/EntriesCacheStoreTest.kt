@@ -140,6 +140,26 @@ class EntriesCacheStoreTest {
     }
 
     @Test
+    fun `failed atomic replacement leaves prior cache intact`() = runTest {
+        val directory = Files.createTempDirectory("cache-replace-failure").toFile()
+        val file = File(directory, "owner.json")
+        val initial = EntriesCacheStore(file, "owner-a")
+        initial.upsertRows(listOf(row("2026-09-10", 4)))
+        val before = file.readText()
+        val failing = EntriesCacheStore(file.canonicalFile, "owner-a") { _, _ -> false }
+
+        try {
+            failing.upsertRows(listOf(row("2026-09-10", 5)))
+            throw AssertionError("replacement should fail")
+        } catch (_: java.io.IOException) {
+            // Expected: the old snapshot remains available for later reads.
+        }
+
+        assertEquals(before, file.readText())
+        assertEquals(4, initial.readRange("2026-09-10", "2026-09-10")?.single()?.entry?.mood)
+    }
+
+    @Test
     fun `cache snapshots are partitioned by owner and ignore ownerless legacy file`() = runTest {
         val directory = Files.createTempDirectory("cache-owner-test").toFile()
         val legacy = EntriesCacheStore(File(directory, EntriesCacheStore.FILE_NAME))

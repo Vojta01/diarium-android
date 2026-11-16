@@ -21,8 +21,20 @@ fun StatsRoute(
      * dashboard and history use, owned by the app shell.
      */
     onOpenCheckIn: (String) -> Unit = {},
+    onOpenHistoryMonth: (java.time.YearMonth) -> Unit = {},
+    savedRange: String? = null,
+    savedCategory: String? = null,
+    savedCustomDays: Int = 30,
+    savedCompare: Boolean = false,
+    savedCustomStart: String = "",
+    savedCustomEnd: String = "",
+    onCustomRangeChanged: (String, String) -> Unit = { _, _ -> },
+    onFiltersChanged: (StatsRange, StatsCategory, Int, Boolean) -> Unit = { _, _, _, _ -> },
 ) {
     val context = LocalContext.current
     val deps = remember(context) { StatsDeps.forContext(context) }
-    StatsScreen(deps = deps, holder = holder, onOpenCheckIn = onOpenCheckIn)
+    StatsScreen(deps = deps, holder = holder, onOpenCheckIn = onOpenCheckIn, onOpenHistoryMonth = onOpenHistoryMonth,
+        savedRange = savedRange, savedCategory = savedCategory, savedCustomDays = savedCustomDays,
+        savedCompare = savedCompare, savedCustomStart = savedCustomStart, savedCustomEnd = savedCustomEnd,
+        onCustomRangeChanged = onCustomRangeChanged, onFiltersChanged = onFiltersChanged)
 }

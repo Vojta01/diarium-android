@@ -102,6 +102,8 @@ fun HistoryScreen(
     holder: HistoryStateHolder = remember { HistoryStateHolder() },
     /** The day the grid treats as today; a parameter so a screenshot can pin it. */
     today: LocalDate = LocalDate.now(),
+    initialMonth: java.time.YearMonth? = null,
+    onInitialMonthConsumed: () -> Unit = {},
 ) {
     val state = holder.state
     val repository = deps.history
@@ -116,6 +118,10 @@ fun HistoryScreen(
     var year by rememberSaveable { mutableStateOf(day.year) }
     var month by rememberSaveable { mutableStateOf(day.monthValue) }
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(initialMonth) {
+        initialMonth?.let { year = it.year; month = it.monthValue; selected = null }
+        if (initialMonth != null) onInitialMonthConsumed()
+    }
     var reloadTrigger by remember { mutableStateOf(0) }
     // Scale id -> label / max, so the day detail names a scale instead of showing
     // the uuid an entry's `scale_values` is keyed by.

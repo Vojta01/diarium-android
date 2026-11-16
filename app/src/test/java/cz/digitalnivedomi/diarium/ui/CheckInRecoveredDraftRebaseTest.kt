@@ -117,6 +117,9 @@ class CheckInRecoveredDraftRebaseTest {
             assertTrue(dayReads.last().url.contains("user_id=eq.$OWNER_ID"))
             assertEquals("Bearer synthetic-access-token", dayReads.last().headers["Authorization"])
             assertTrue(requests.none { it.url.endsWith("/rpc/save_daily_entry") })
+            compose.waitUntil(TIMEOUT) {
+                runBlocking { fixture.drafts.loadRecord(DATE) == null }
+            }
             assertNull("the account draft is cleared only after the verified v2 save", fixture.drafts.loadRecord(DATE))
             assertEquals(fixture.sourceRaw, fixture.readLegacySource())
         } finally {

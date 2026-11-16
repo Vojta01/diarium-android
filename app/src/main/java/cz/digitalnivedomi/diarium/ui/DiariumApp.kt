@@ -85,6 +85,9 @@ import cz.digitalnivedomi.diarium.ui.settings.NotificationsSettingsScreen
 import cz.digitalnivedomi.diarium.ui.settings.LegacyRecoveryDeps
 import cz.digitalnivedomi.diarium.ui.settings.LegacyRecoveryScreen
 import cz.digitalnivedomi.diarium.ui.stats.StatsRoute
+import cz.digitalnivedomi.diarium.ui.stats.StatsCategory
+import cz.digitalnivedomi.diarium.ui.stats.StatsRange
+import cz.digitalnivedomi.diarium.ui.stats.StatsNavigationIntent
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -233,6 +236,14 @@ private fun AuthenticatedScaffold(
     // as soon as another one is pushed, so a holder created inside that composable was
     // thrown away and everything re-read on return (see [ScreenStateCache]).
     val screenStates = remember { ScreenStateCache() }
+    var savedStatsRange by rememberSaveable { mutableStateOf(StatsRange.MONTH.name) }
+    var savedStatsCategory by rememberSaveable { mutableStateOf(StatsCategory.MOOD.name) }
+    var savedStatsCustomDays by rememberSaveable { mutableStateOf(30) }
+    var savedStatsCompare by rememberSaveable { mutableStateOf(false) }
+    var savedStatsCustomStart by rememberSaveable { mutableStateOf("") }
+    var savedStatsCustomEnd by rememberSaveable { mutableStateOf("") }
+    var requestedHistoryMonth by rememberSaveable { mutableStateOf<String?>(null) }
+    screenStates.stats.restore(savedStatsRange, savedStatsCategory, savedStatsCustomDays, savedStatsCompare, savedStatsCustomStart, savedStatsCustomEnd)
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -328,6 +339,14 @@ private fun AuthenticatedScaffold(
                             onOpen = { route ->
                                 navController.navigate(route) { launchSingleTop = true }
                             },
+                            onOpenStatistics = { metric ->
+                                val intent = StatsNavigationIntent.fromDashboard(metric)
+                                savedStatsRange = intent.range.name
+                                savedStatsCategory = intent.category.name
+                                screenStates.stats.selectRange(intent.range)
+                                screenStates.stats.selectCategory(intent.category)
+                                switchTab(Routes.STATS)
+                            },
                         )
                     }
                     composable(Routes.CHECK_IN) {
@@ -344,6 +363,8 @@ private fun AuthenticatedScaffold(
                     composable(Routes.HISTORY) {
                         HistoryRoute(
                             holder = screenStates.history,
+                            initialMonth = requestedHistoryMonth?.let { runCatching { java.time.YearMonth.parse(it) }.getOrNull() },
+                            onInitialMonthConsumed = { requestedHistoryMonth = null },
                             onOpenCheckIn = { date ->
                                 requestedDate = date
                                 switchTab(Routes.CHECK_IN)
@@ -358,6 +379,23 @@ private fun AuthenticatedScaffold(
                             onOpenCheckIn = { date ->
                                 requestedDate = date
                                 switchTab(Routes.CHECK_IN)
+                            },
+                            onOpenHistoryMonth = { month ->
+                                requestedHistoryMonth = month.toString()
+                                switchTab(Routes.HISTORY)
+                            },
+                            savedRange = savedStatsRange,
+                            savedCategory = savedStatsCategory,
+                            savedCustomDays = savedStatsCustomDays,
+                            savedCompare = savedStatsCompare,
+                            savedCustomStart = savedStatsCustomStart,
+                            savedCustomEnd = savedStatsCustomEnd,
+                            onCustomRangeChanged = { start, end -> savedStatsCustomStart = start; savedStatsCustomEnd = end },
+                            onFiltersChanged = { range, category, days, compare ->
+                                savedStatsRange = range.name
+                                savedStatsCategory = category.name
+                                savedStatsCustomDays = days
+                                savedStatsCompare = compare
                             },
                         )
                     }

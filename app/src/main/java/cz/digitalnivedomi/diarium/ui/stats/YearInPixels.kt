@@ -2,7 +2,8 @@ package cz.digitalnivedomi.diarium.ui.stats
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,13 +19,12 @@ import androidx.compose.material3.MaterialTheme
 import cz.digitalnivedomi.diarium.core.i18n.UiDates
 import cz.digitalnivedomi.diarium.ui.i18n.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,14 +43,13 @@ import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
 import cz.digitalnivedomi.diarium.ui.components.SectionHeader
 import cz.digitalnivedomi.diarium.ui.components.VSpace
-import cz.digitalnivedomi.diarium.ui.components.gradientBorder
 import cz.digitalnivedomi.diarium.ui.components.rememberHaptics
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
-import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
 import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import cz.digitalnivedomi.diarium.ui.theme.moodColor
+import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -72,11 +71,18 @@ import java.util.Locale
  * cannot — so the card says so instead of pretending the day was never tracked.
  */
 @Composable
-fun YearInPixels(days: List<StatsDay>, year: Int, today: String, modifier: Modifier = Modifier) {
+fun YearInPixels(
+    days: List<StatsDay>,
+    year: Int,
+    today: String,
+    modifier: Modifier = Modifier,
+    /** Receives every tapped ISO date, including unanswered dates absent from [days]. */
+    onOpenDay: (String) -> Unit = {},
+    /** Receives the calendar month for a long-pressed pixel. */
+    onOpenHistoryMonth: (YearMonth) -> Unit = {},
+) {
     val months = remember(days, year) { StatsMath.yearGrid(year, days) }
     val stats = remember(days, year) { StatsMath.yearStats(year = year, days = days) }
-    var selected by remember(year) { mutableStateOf<String?>(null) }
-
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -91,6 +97,7 @@ fun YearInPixels(days: List<StatsDay>, year: Int, today: String, modifier: Modif
             )
             VSpace(2)
             SectionHint("Každý čtvereček je jeden den. Barva odpovídá náladě, šedý čtvereček znamená den bez odpovědi.")
+            SectionHint("Klepnutím otevřeš den; dlouhým stiskem přejdeš do historie daného měsíce.")
             VSpace(10)
 
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -133,8 +140,8 @@ fun YearInPixels(days: List<StatsDay>, year: Int, today: String, modifier: Modif
             MonthCard(
                 month = month,
                 today = today,
-                selected = selected,
-                onSelect = { date -> selected = if (selected == date) null else date },
+                onOpenDay = onOpenDay,
+                onOpenHistoryMonth = onOpenHistoryMonth,
             )
         }
 
@@ -144,11 +151,12 @@ fun YearInPixels(days: List<StatsDay>, year: Int, today: String, modifier: Modif
 
 /** One month: its name, how much of it is tracked, and its weeks of squares. */
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun MonthCard(
     month: YearMonthGrid,
     today: String,
-    selected: String?,
-    onSelect: (String) -> Unit,
+    onOpenDay: (String) -> Unit,
+    onOpenHistoryMonth: (YearMonth) -> Unit,
 ) {
     val haptics = rememberHaptics()
     GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -192,7 +200,7 @@ private fun MonthCard(
                         Box(modifier = Modifier.weight(1f).aspectRatio(1f).padding(2.dp))
                     } else {
                         val isToday = cell.date == today
-                        val isSelected = cell.date == selected
+                        val isFuture = CheckInDates.parse(cell.date)?.isAfter(CheckInDates.parse(today)) == true
                         val cellShape = RoundedCornerShape(4.dp)
                         // No per-cell animation state here on purpose: a year is ~370
                         // cells, so a layer per cell would cost more than it shows.
@@ -205,44 +213,28 @@ private fun MonthCard(
                                 .clip(cellShape)
                                 .background(
                                     if (cell.mood > 0) {
-                                        moodColor(cell.mood).copy(alpha = if (isSelected) 1f else 0.85f)
+                                        moodColor(cell.mood).copy(alpha = 0.85f)
                                     } else {
                                         Color.White.copy(alpha = 0.04f)
                                     },
                                 )
                                 .then(
-                                    when {
-                                        isSelected -> Modifier.gradientBorder(
-                                            cellShape,
-                                            listOf(IndigoLight, Indigo),
-                                            width = 1.5.dp,
-                                        )
-                                        isToday -> Modifier.border(1.5.dp, Indigo, cellShape)
-                                        else -> Modifier
-                                    },
+                                    if (isToday) Modifier.border(1.5.dp, Indigo, cellShape) else Modifier,
                                 )
-                                .clickable {
-                                    haptics.selection()
-                                    onSelect(cell.date)
-                                },
+                                .semantics { contentDescription = cellLabel(cell.date, cell.mood) }
+                                .combinedClickable(
+                                    enabled = !isFuture,
+                                    onClick = {
+                                        haptics.selection()
+                                        onOpenDay(cell.date)
+                                    },
+                                    onLongClick = {
+                                        haptics.selection()
+                                        onOpenHistoryMonth(YearMonth.from(CheckInDates.parse(cell.date)!!))
+                                    },
+                                ),
                         )
                     }
-                }
-            }
-        }
-
-        selected?.let { date ->
-            if (belongsTo(month, date)) {
-                val cell = month.weeks.flatten().firstOrNull { it.date == date }
-                if (cell != null) {
-                    VSpace(10)
-                    GlassDivider()
-                    VSpace(10)
-                    Text(
-                        text = cellLabel(date, cell.mood),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (cell.mood > 0) TextPrimary else TextSecondary,
-                    )
                 }
             }
         }
@@ -260,7 +252,7 @@ internal fun cellLabel(date: String, mood: Int): String {
     val parsed = CheckInDates.parse(date)
     val formatted = parsed?.format(dayMonthYear) ?: date
     if (mood <= 0) return translate("$formatted — bez odpovědi")
-    return "$formatted — ${moodChoiceText(mood)}"
+    return translate("$formatted — ${moodChoiceText(mood)}")
 }
 
 /** Emoji + label for the legend, in the web's 5 → 1 order. */
@@ -320,9 +312,6 @@ private fun LegendCard() {
 
 private val dayMonthYear: DateTimeFormatter
     get() = UiDates.numericDate()
-
-private fun belongsTo(month: YearMonthGrid, date: String): Boolean =
-    month.weeks.flatten().any { it.date == date }
 
 /** The web prints `toFixed(1)`, so the year average keeps a dot rather than a Czech comma. */
 private fun formatMood(value: Double): String = String.format(Locale.US, "%.1f", value)

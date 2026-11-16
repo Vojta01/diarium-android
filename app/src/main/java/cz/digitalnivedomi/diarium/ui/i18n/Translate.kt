@@ -7,7 +7,7 @@ import cz.digitalnivedomi.diarium.core.i18n.AppLanguage
  *
  * Lookup order:
  *  1. [EnStrings.exact] — the ~750 static strings, keyed by the exact Czech literal.
- *  2. [RULES] — 83 patterns for strings built at runtime (counts, dates, names, plurals).
+ *  2. [RULES] — 104 patterns for strings built at runtime (counts, dates, names, plurals).
  *  3. Fallback — return the Czech text unchanged. A missed string shows Czech in the English
  *     UI (visible, not broken) instead of crashing or rendering an empty label.
  *
@@ -60,6 +60,58 @@ private fun rule(pattern: String, build: (MatchResult) -> String) =
     Rule(Regex(pattern), build)
 
 private val RULES: List<Rule> = listOf(
+    rule("""^Kalendářní rok (\d{4})$""") { m -> "Calendar year ${m.groupValues[1]}" },
+    rule("""^Rok zobrazuje celý kalendářní rok; globální období a srovnání se na tuto kategorii nevztahují\.$""") {
+        "Year shows the full calendar year; global period and comparison do not apply to this category."
+    },
+    rule("""^(.+) — bez odpovědi$""") { m -> "${m.groupValues[1]} — no answer" },
+    rule("""^(.+) — (😄|🙂|😐|😟|😡) (.+)$""") { m ->
+        "${m.groupValues[1]} — ${m.groupValues[2]} ${translate(m.groupValues[3])}"
+    },
+    rule("""^Výběr nálady filtruje ostatní náladové přehledy; klepnutím znovu se filtr zruší\.$""") {
+        "Selecting a mood filters the other mood summaries; tap again to clear the filter."
+    },
+    rule("""^Srovnání nálady není dostupné: potřeba alespoň 2 zaznamenané nálady v každém období; nyní (\d+) a (\d+)\.$""") { m ->
+        "Mood comparison unavailable: at least 2 recorded moods are needed in each period; now ${m.groupValues[1]} and ${m.groupValues[2]}."
+    },
+    rule("""^Digitální srovnání času není dostupné: potřeba alespoň 2 synchronizované dny v každém období; nyní (\d+) a (\d+)\. Chybějící synchronizace není nula\.$""") { m ->
+        "Screen-time comparison unavailable: at least 2 synced days are needed in each period; now ${m.groupValues[1]} and ${m.groupValues[2]}. Missing sync is not zero."
+    },
+    rule("""^(.+) – (.+) vs\. (.+) – (.+) · (\d+) a (\d+) odpovědí\. Jde o popisné srovnání, ne příčinu\.$""") { m ->
+        "${m.groupValues[1]} – ${m.groupValues[2]} vs. ${m.groupValues[3]} – ${m.groupValues[4]} · ${m.groupValues[5]} and ${m.groupValues[6]} responses. This is descriptive, not causal."
+    },
+    rule("""^(.+) · Δ (.+)$""") { m -> "${translate(m.groupValues[1])} · change ${m.groupValues[2]}" },
+    // Dashboard weekly summary: coverage and comparisons are dynamically composed.
+    rule("""^(\d+)/7 dní$""") { m -> "${m.groupValues[1]}/7 days" },
+    rule("""^(\d+) / 7$""") { m -> "${m.groupValues[1]} / 7" },
+    rule("""^Posledních (\d+) kalendářních dní · série 🔥 (\d+)$""") { m ->
+        "Last ${days(m.groupValues[1].toInt())} · 🔥 ${days(m.groupValues[2].toInt())} streak"
+    },
+    rule("""^Období: (.+) – (.+) · (\d+)/(\d+) dnů se záznamem · (\d+) náladových odpovědí · limit 400 dní$""") { m ->
+        "Period: ${m.groupValues[1]} – ${m.groupValues[2]} · ${m.groupValues[3]}/${m.groupValues[4]} days with entries · " +
+            "${m.groupValues[5]} mood responses · 400-day limit"
+    },
+    rule("""^Srovnání není dostupné: potřeba alespoň 2 zaznamenané nálady v každém období; nyní (\d+) a (\d+)\.$""") { m ->
+        "Comparison unavailable: at least 2 recorded moods are needed in each period; there are ${m.groupValues[1]} and ${m.groupValues[2]} now."
+    },
+    rule("""^(.+) vs\. (.+) · (\d+) a (\d+) zaznamenaných nálad\. Jde o popisné srovnání, ne příčinu\.$""") { m ->
+        "${m.groupValues[1]} vs. ${m.groupValues[2]} · ${m.groupValues[3]} and ${m.groupValues[4]} recorded moods. This is a descriptive comparison, not a cause."
+    },
+    rule("""^(\d+) z (\d+) dnů · chybějící synchronizace není nula$""") { m ->
+        "${m.groupValues[1]} of ${m.groupValues[2]} days · missing sync is not zero"
+    },
+    rule("""^Minule (.+) · (\d+)/7 dní$""") { m ->
+        "Previous ${m.groupValues[1]} · ${m.groupValues[2]}/7 days"
+    },
+    rule("""^Srovnání skryto · pokrytí (\d+)/7 vs\. (\d+)/7 dní$""") { m ->
+        "Comparison hidden · coverage ${m.groupValues[1]}/7 vs. ${m.groupValues[2]}/7 days"
+    },
+    rule("""^Ze dne ([A-Za-z0-9. ]+) · zatím bez údajů o aplikacích\.$""") { m ->
+        "On ${m.groupValues[1]} · no app data yet."
+    },
+    rule("""^Nejpoužívanější aplikace · snapshot ze dne ([A-Za-z0-9. ]+)$""") { m ->
+        "Most-used apps · snapshot from ${m.groupValues[1]}"
+    },
     // --- goals / periods -------------------------------------------------------------
     rule("""^Odemčeno (\d+)/(\d+)$""") { m ->
         "Unlocked ${m.groupValues[1]}/${m.groupValues[2]}"
@@ -103,7 +155,20 @@ private val RULES: List<Rule> = listOf(
         "🔥 ${days(m.groupValues[1].toInt())} in a row"
     },
     rule("""^\+ (\d+) dalších cílů splněno$""") { m ->
-        "+ ${m.groupValues[1]} more goals met"
+        val count = m.groupValues[1].toInt()
+        if (count == 1) "+ 1 more goal met" else "+ $count more goals met"
+    },
+    // The celebration card composes a single goal's count and period into one
+    // line ("3 / 3 · dnes"); translating only the period fragment left the whole
+    // sentence Czech. The period group is itself a dictionary key.
+    rule("""^(\d+) / (\d+) · (dnes|tento týden|tento měsíc)$""") { m ->
+        "${m.groupValues[1]} / ${m.groupValues[2]} · ${translate(m.groupValues[3])}"
+    },
+    // A group celebration reports the aggregate, never one goal's count. Czech
+    // distinguishes 2–4 ("cíle") from 5+ ("cílů"); English does not.
+    rule("""^(\d+) (?:cíl|cíle|cílů) splněno$""") { m ->
+        val count = m.groupValues[1].toInt()
+        if (count == 1) "1 goal met" else "$count goals met"
     },
     rule("""^Nejdelší série \(za (\d+) dní\)$""") { m ->
         "Longest streak (over ${days(m.groupValues[1].toInt())})"
@@ -225,6 +290,12 @@ private val RULES: List<Rule> = listOf(
     // --- screen time / unlocks -------------------------------------------------------
     rule("""^Chvilku strpení, stahuju posledních (\d+) dní\.$""") { m ->
         "One moment, loading the last ${days(m.groupValues[1].toInt())}."
+    },
+    rule("""^(\d+) z (\d+) dnů · chybějící synchronizace není nula$""") { m ->
+        "${m.groupValues[1]} of ${m.groupValues[2]} days · missing sync is not zero"
+    },
+    rule("""^Odpovědi: (\d+) · chybějící hodnoty se nezapočítávají\.$""") { m ->
+        "Answers: ${m.groupValues[1]} · missing values are excluded."
     },
     rule("""^Za posledních (\d+) dní, podle času na obrazovce\.$""") { m ->
         "Over the last ${days(m.groupValues[1].toInt())}, by screen time."

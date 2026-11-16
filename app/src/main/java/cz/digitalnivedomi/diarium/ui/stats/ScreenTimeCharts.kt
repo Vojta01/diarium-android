@@ -105,13 +105,22 @@ import kotlin.math.roundToInt
  * never drawn as zero screen time, and never as zero unlocks.
  */
 @Composable
-fun ScreenTimeCharts(entries: List<StatsDay>, today: String, modifier: Modifier = Modifier) {
+fun ScreenTimeCharts(
+    entries: List<StatsDay>, today: String, modifier: Modifier = Modifier,
+    /** Inclusive ISO-8601 range. Pass both bounds to follow the global selection. */
+    startDate: String? = null, endDate: String? = null,
+    /** Opens the shared day detail; null retains the backwards-compatible inline detail. */
+    onOpenDay: ((String) -> Unit)? = null,
+) {
     var windowDays by remember { mutableStateOf(SCREEN_TIME_WEEK) }
     var selectedDate by remember { mutableStateOf<String?>(null) }
 
-    val window = StatsMath.screenTimeWindow(days = entries, windowDays = windowDays)
-    val summary = StatsMath.screenTimeSummary(window)
-    val unlocks = ScreenTimeBars.unlockSummary(window)
+    val explicitRange = startDate != null && endDate != null
+    val window = if (explicitRange) ScreenTimeDateRange.days(entries, startDate!!, endDate!!)
+        else StatsMath.screenTimeWindow(days = entries, windowDays = windowDays)
+    val effectiveDays = window.size.coerceAtLeast(1)
+    val summary = inclusiveScreenTimeSummary(window)
+    val unlocks = inclusiveUnlockSummary(window)
     val windowDates = window.map { it.date }.toSet()
     val windowEntries = entries.filter { it.date in windowDates }
     val breakdown = StatsMath.topApps(windowEntries, limit = APP_LIST_LIMIT)
@@ -119,6 +128,7 @@ fun ScreenTimeCharts(entries: List<StatsDay>, today: String, modifier: Modifier 
     // One selection for both charts: tapping the same day again clears it.
     val onSelectDate: (String) -> Unit = { date ->
         selectedDate = if (selectedDate == date) null else date
+        onOpenDay?.invoke(date)
     }
 
     Column(
@@ -127,7 +137,8 @@ fun ScreenTimeCharts(entries: List<StatsDay>, today: String, modifier: Modifier 
     ) {
         ScreenTimeCard(
             window = window,
-            windowDays = windowDays,
+            windowDays = effectiveDays,
+            showRangeChips = !explicitRange,
             today = today,
             selectedDate = selectedDate,
             summary = summary,
@@ -140,7 +151,8 @@ fun ScreenTimeCharts(entries: List<StatsDay>, today: String, modifier: Modifier 
 
         UnlockCard(
             window = window,
-            windowDays = windowDays,
+            windowDays = effectiveDays,
+            showRangeChip = !explicitRange,
             today = today,
             selectedDate = selectedDate,
             summary = unlocks,
@@ -153,10 +165,12 @@ fun ScreenTimeCharts(entries: List<StatsDay>, today: String, modifier: Modifier 
                 day = selected,
                 entry = entries.firstOrNull { it.date == selected.date },
                 onClose = { selectedDate = null },
+                onOpenDay = onOpenDay?.let { open -> { open(selected.date) } },
             )
         }
 
-        TopAppsCard(breakdown = breakdown, windowDays = windowDays, totalSeconds = summary.totalSeconds)
+        CoverageLabel(window = window)
+        TopAppsCard(breakdown = breakdown, windowDays = effectiveDays, totalSeconds = summary.totalSeconds)
     }
 }
 
@@ -170,6 +184,7 @@ fun ScreenTimeCharts(entries: List<StatsDay>, today: String, modifier: Modifier 
 private fun ScreenTimeCard(
     window: List<ScreenTimeDay>,
     windowDays: Int,
+    showRangeChips: Boolean,
     today: String,
     selectedDate: String?,
     summary: ScreenTimeSummary,
@@ -188,7 +203,7 @@ private fun ScreenTimeCard(
         SectionHint(windowCaption(window = window, windowDays = windowDays))
 
         VSpace(12)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (showRangeChips) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SelectableChip(
                 text = "7 dní",
                 selected = windowDays == SCREEN_TIME_WEEK,
@@ -201,7 +216,7 @@ private fun ScreenTimeCard(
             ) { onSelectRange(SCREEN_TIME_MONTH) }
         }
 
-        if (window.none { ScreenTimeBars.drawsBar(it.seconds) }) {
+        if (window.none { it.seconds != null }) {
             VSpace(14)
             SectionHint(EMPTY_SCREEN_TIME)
             return@GlassCard
@@ -261,6 +276,7 @@ private fun ScreenTimeCard(
 private fun UnlockCard(
     window: List<ScreenTimeDay>,
     windowDays: Int,
+    showRangeChip: Boolean,
     today: String,
     selectedDate: String?,
     summary: UnlockSummary,
@@ -269,13 +285,15 @@ private fun UnlockCard(
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         SectionHeader(
             "🔓 Odemknutí",
-            trailing = {
-                Text(
-                    text = "· $windowDays dní",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextTertiary,
-                )
-            },
+            trailing = if (showRangeChip) {
+                {
+                    Text(
+                        text = "· $windowDays dní",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextTertiary,
+                    )
+                }
+            } else null,
         )
         VSpace(6)
         Text(
@@ -287,7 +305,7 @@ private fun UnlockCard(
         SectionHint(unlockCaption(window = window, windowDays = windowDays))
 
         val average = summary.averageUnlocks
-        if (average == null) {
+        if (window.none { it.unlocks != null }) {
             VSpace(14)
             SectionHint(EMPTY_UNLOCKS)
             return@GlassCard
@@ -297,7 +315,7 @@ private fun UnlockCard(
         Row(modifier = Modifier.fillMaxWidth()) {
             SummaryCell(
                 label = "Průměr denně",
-                value = unlockAverageLabel(average),
+                value = unlockAverageLabel(average ?: 0.0),
                 modifier = Modifier.weight(1f),
             )
             SummaryCell(
@@ -391,9 +409,9 @@ private fun BarChartTrack(
                 val value = metric.valueOf(day) ?: 0
                 // A day the worker never reported draws no column at all; the label row
                 // is what tells "the phone said zero" from "nothing was ever synced".
-                if (!ScreenTimeBars.drawsBar(value)) return@forEachIndexed
+                if (metric.valueOf(day) == null) return@forEachIndexed
                 val barHeight = size.height * ScreenTimeBars.barFraction(value, maxValue) * BAR_HEADROOM * grown
-                if (barHeight <= 0f) return@forEachIndexed
+                if (barHeight <= 0f && value != 0) return@forEachIndexed
                 // Same bucket colour as before (the mapping stays web-identical), just
                 // painted as a top-bright ramp with a pill cap so a column reads as a
                 // lit object instead of a flat stripe.
@@ -401,7 +419,7 @@ private fun BarChartTrack(
                 drawRoundRect(
                     brush = Gradients.fill(listOf(bucket, bucket.copy(alpha = 0.42f)), vertical = true),
                     topLeft = Offset(index * slot + (slot - barWidth) / 2f, size.height - barHeight),
-                    size = Size(barWidth, barHeight),
+                    size = Size(barWidth, barHeight.coerceAtLeast(2f)),
                     cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
                     alpha = if (selectedDate == null || selectedDate == day.date) 1f else 0.35f,
                 )
@@ -428,7 +446,7 @@ private fun BarChartTrack(
                         .fillMaxHeight()
                         .testTagOrEmpty(metric.testTag)
                         .clickable {
-                            haptics.selection()
+                            if (selectedDate != day.date) haptics.selection()
                             onSelectDate(day.date)
                         },
                 )
@@ -580,7 +598,7 @@ private fun SummaryCell(label: String, value: String, modifier: Modifier = Modif
 
 /** The tapped day: its totals and, when the worker captured them, its own apps. */
 @Composable
-private fun SelectedDayCard(day: ScreenTimeDay, entry: StatsDay?, onClose: () -> Unit) {
+private fun SelectedDayCard(day: ScreenTimeDay, entry: StatsDay?, onClose: () -> Unit, onOpenDay: (() -> Unit)?) {
     val seconds = day.seconds ?: 0
     val apps = entry?.topApps?.sortedByDescending { it.minutes }.orEmpty()
     // Round per app: the model keeps fractional minutes so a 30–59 s app still
@@ -591,10 +609,10 @@ private fun SelectedDayCard(day: ScreenTimeDay, entry: StatsDay?, onClose: () ->
     GlassCard(modifier = Modifier.fillMaxWidth(), accent = Indigo) {
         SectionHeader("📅 Detail dne", trailing = { Text(shortDateLabel(day.date), style = MaterialTheme.typography.labelSmall, color = TextTertiary) })
         VSpace(10)
-        if (seconds <= 0) {
+        if (day.seconds == null && day.unlocks == null) {
             SectionHint(NO_DAY_DATA)
         } else {
-            ReadOnlyRow(label = "Čas na obrazovce", value = formatMinutes(seconds / 60))
+            ReadOnlyRow(label = "Čas na obrazovce", value = day.seconds?.let { formatMinutes(it / 60) } ?: "—")
             VSpace(6)
             ReadOnlyRow(
                 label = "Odemknutí",
@@ -628,6 +646,10 @@ private fun SelectedDayCard(day: ScreenTimeDay, entry: StatsDay?, onClose: () ->
         }
 
         VSpace(14)
+        if (onOpenDay != null) {
+            SecondaryButton(text = "Otevřít detail dne", testTag = "screen_time_open_day", onClick = onOpenDay)
+            VSpace(8)
+        }
         SecondaryButton(text = "Zavřít", testTag = "screen_time_close", onClick = onClose)
     }
 }
@@ -715,12 +737,35 @@ private fun AppRow(name: String, seconds: Int, share: Double, dotColor: Color) {
     }
 }
 
+private fun inclusiveScreenTimeSummary(window: List<ScreenTimeDay>): ScreenTimeSummary {
+    val reported = window.filter { it.seconds != null }
+    val max = reported.maxOfOrNull { it.seconds!! }
+    return ScreenTimeSummary(reported.map { it.seconds!!.toDouble() }.averageOrNull(), reported.sumOf { it.seconds!! }, max,
+        reported.firstOrNull { it.seconds == max }?.date)
+}
+
+private fun inclusiveUnlockSummary(window: List<ScreenTimeDay>): UnlockSummary {
+    val reported = window.filter { it.unlocks != null }
+    val max = reported.maxOfOrNull { it.unlocks!! }
+    return UnlockSummary(reported.map { it.unlocks!!.toDouble() }.averageOrNull(), reported.sumOf { it.unlocks!! }, max,
+        reported.firstOrNull { it.unlocks == max }?.date)
+}
+
+private fun List<Double>.averageOrNull(): Double? = if (isEmpty()) null else average()
+
+@Composable
+private fun CoverageLabel(window: List<ScreenTimeDay>) {
+    if (window.isEmpty()) return
+    val covered = window.count { it.seconds != null || it.unlocks != null }
+    SectionHint("Sync coverage: $covered/${window.size} days (${shortDateLabel(window.first().date)} – ${shortDateLabel(window.last().date)}). — means not synced; 0 is a recorded zero.")
+}
+
 /** "posledních 7 dní (4. 9. – 10. 9.)", or the empty-state hint. */
 private fun windowCaption(window: List<ScreenTimeDay>, windowDays: Int): String {
     if (window.isEmpty()) return "Za posledních $windowDays dní nemám žádná data o času na obrazovce."
-    val from = shortDayMonth(window.first().date)
-    val to = shortDayMonth(window.last().date)
-    return "Posledních $windowDays dní ($from – $to). Sloupec = jeden den, přerušovaná čára = průměr."
+    val from = shortDateLabel(window.first().date)
+    val to = shortDateLabel(window.last().date)
+    return "$from – $to ($windowDays dní). Sloupec = jeden den, přerušovaná čára = průměr."
 }
 
 /**
@@ -729,9 +774,9 @@ private fun windowCaption(window: List<ScreenTimeDay>, windowDays: Int): String 
  */
 private fun unlockCaption(window: List<ScreenTimeDay>, windowDays: Int): String {
     if (window.isEmpty()) return "Za posledních $windowDays dní nemám žádná data o odemknutích."
-    val from = shortDayMonth(window.first().date)
-    val to = shortDayMonth(window.last().date)
-    return "Posledních $windowDays dní ($from – $to), stejné období jako čas na obrazovce. " +
+    val from = shortDateLabel(window.first().date)
+    val to = shortDateLabel(window.last().date)
+    return "$from – $to ($windowDays dní), stejné období jako čas na obrazovce. " +
         "Sloupec = jeden den, přerušovaná čára = průměr."
 }
 

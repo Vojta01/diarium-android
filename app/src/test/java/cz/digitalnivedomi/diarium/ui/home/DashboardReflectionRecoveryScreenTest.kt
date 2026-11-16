@@ -321,6 +321,59 @@ class DashboardReflectionRecoveryScreenTest {
         }
     }
 
+    @Test
+    fun `dashboard renders reshaped hierarchy and keeps today and statistics intents wired`(): Unit = runBlocking {
+        AppLanguage.set(context, Lang.CS)
+        val fixture = fixture()
+        val checkInDates = CopyOnWriteArrayList<String>()
+        val statisticsIntents = CopyOnWriteArrayList<DashboardMetricKind>()
+        try {
+            compose.setContent {
+                DiariumTheme {
+                    DashboardScreen(
+                        deps = fixture.deps,
+                        holder = DashboardStateHolder(),
+                        today = LocalDate.parse(DATE),
+                        onOpenCheckIn = { checkInDates += it },
+                        onOpenStatistics = { statisticsIntents += it },
+                    )
+                }
+            }
+            compose.waitUntil(TIMEOUT) {
+                compose.onAllNodesWithTag("dashboard_digital_summary").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithTag("dashboard_today_card").assertExists()
+            compose.onNodeWithTag("dashboard_week_summary").assertExists()
+            compose.onNodeWithTag("dashboard_digital_summary").assertExists()
+            compose.onNodeWithTag("dashboard_week_day_$DATE").assertExists()
+            assertTrue(
+                "metric breakdown dialog must not render",
+                compose.onAllNodesWithTag("dashboard_metric_dialog").fetchSemanticsNodes().isEmpty(),
+            )
+            listOf(
+                "📈 Vývoj nálady",
+                "📱 Čas na obrazovce",
+                "Cíle a další",
+                "Nejpoužívanější aplikace",
+            ).forEach { text ->
+                assertTrue(
+                    "unexpected legacy dashboard content: $text",
+                    compose.onAllNodesWithText(text, substring = false).fetchSemanticsNodes().isEmpty(),
+                )
+            }
+
+            compose.onNodeWithText("✏️ Upravit dnešní check-in").performScrollTo().performClick()
+            assertEquals(listOf(DATE), checkInDates)
+            compose.onNodeWithTag("dashboard_metric_mood").performScrollTo().performClick()
+            assertEquals(listOf(DashboardMetricKind.MOOD), statisticsIntents)
+
+            compose.onNodeWithTag("dashboard_week_day_$DATE").performScrollTo().performClick()
+            compose.onNodeWithTag("day_detail_dialog").assertExists()
+        } finally {
+            fixture.close()
+        }
+    }
+
     private fun fixture(
         failFirstDraftWrite: Boolean = false,
         failAllDraftWrites: Boolean = false,

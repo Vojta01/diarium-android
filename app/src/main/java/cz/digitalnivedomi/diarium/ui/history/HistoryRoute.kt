@@ -19,8 +19,10 @@ fun HistoryRoute(
     // Supplied by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
     // the month that was read must not be re-read just because a day detail was opened.
     holder: HistoryStateHolder = remember { HistoryStateHolder() },
+    initialMonth: java.time.YearMonth? = null,
+    onInitialMonthConsumed: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val deps = remember(context) { HistoryDeps.forContext(context) }
-    HistoryScreen(deps = deps, onOpenCheckIn = onOpenCheckIn, holder = holder)
+    HistoryScreen(deps = deps, onOpenCheckIn = onOpenCheckIn, holder = holder, initialMonth = initialMonth, onInitialMonthConsumed = onInitialMonthConsumed)
 }

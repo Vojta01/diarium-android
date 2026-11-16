@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import cz.digitalnivedomi.diarium.auth.SessionStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.json.JSONArray
 import org.json.JSONObject
@@ -16,6 +18,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * The load contract the check-in screen depends on: "no row" and "the read failed"
@@ -227,9 +231,119 @@ class EntriesRepositoryLoadTest {
         assertNull(pendingA.peek(DATE))
     }
 
+    @Test
+    fun `late range GET cannot overwrite a newer local save in cache`() = runTest {
+        val directory = java.nio.file.Files.createTempDirectory("entries-range-race").toFile()
+        val cacheFile = java.io.File(directory, "owner.json")
+        val cache = EntriesCacheStore(cacheFile, USER_ID)
+        val saveCache = EntriesCacheStore(cacheFile.canonicalFile, USER_ID)
+        cache.upsertRows(listOf(
+            JSONObject().put("user_id", USER_ID).put("date", DATE).put("mood", 2).put("note", "cached before GET"),
+        ))
+        val enteredGet = CountDownLatch(1)
+        val releaseGet = CountDownLatch(1)
+        val raceTransport = HttpTransport { request ->
+            when (request.method) {
+                "GET" -> {
+                    enteredGet.countDown()
+                    check(releaseGet.await(5, TimeUnit.SECONDS)) { "test did not release the stale GET" }
+                    HttpResponse(200, JSONArray().put(
+                        JSONObject().put("user_id", USER_ID).put("date", DATE).put("mood", 1).put("note", "old GET"),
+                    ).toString())
+                }
+                "POST" -> HttpResponse(200, "{}")
+                else -> error("unexpected request ${request.method}")
+            }
+        }
+        val repository = EntriesRepository(
+            client = SupabaseClient(sessionStore, raceTransport, BASE_URL, "anon-test-key"),
+            session = SessionContext(sessionStore),
+            cache = cache,
+        )
+        val saveRepository = EntriesRepository(
+            client = SupabaseClient(sessionStore, raceTransport, BASE_URL, "anon-test-key"),
+            session = SessionContext(sessionStore),
+            cache = saveCache,
+        )
+
+        val delayedRead = async(Dispatchers.Default) { repository.loadRange(DATE, NEW_DATE) }
+        assertTrue("range GET did not start", enteredGet.await(5, TimeUnit.SECONDS))
+        val newer = DiaryEntry(mood = 5, note = "new local save")
+        assertTrue(saveRepository.save(newer, NEW_DATE).isSuccess)
+        releaseGet.countDown()
+        assertTrue(delayedRead.await().isSuccess)
+
+        val cached = cache.readRange(DATE, NEW_DATE)!!.associateBy { it.date }
+        assertEquals(2, cached[DATE]?.entry?.mood)
+        assertEquals("cached before GET", cached[DATE]?.entry?.note)
+        assertEquals(5, cached[NEW_DATE]?.entry?.mood)
+        assertEquals("new local save", cached[NEW_DATE]?.entry?.note)
+    }
+
+    @Test
+    fun `late loadDates response cannot overwrite a save through another repository`() = runTest {
+        val directory = java.nio.file.Files.createTempDirectory("entries-dates-race").toFile()
+        val file = java.io.File(directory, "owner.json")
+        val readCache = EntriesCacheStore(file, USER_ID)
+        val saveCache = EntriesCacheStore(file, USER_ID)
+        val enteredGet = CountDownLatch(1)
+        val releaseGet = CountDownLatch(1)
+        val readTransport = HttpTransport { request ->
+            if (request.method == "GET") {
+                enteredGet.countDown()
+                check(releaseGet.await(5, TimeUnit.SECONDS)) { "test did not release stale dates GET" }
+                HttpResponse(200, JSONArray().put(
+                    JSONObject().put("user_id", USER_ID).put("date", DATE).put("mood", 1).put("note", "old dates GET"),
+                ).toString())
+            } else HttpResponse(200, "{}")
+        }
+        val readRepository = EntriesRepository(
+            SupabaseClient(sessionStore, readTransport, BASE_URL, "anon-test-key"),
+            SessionContext(sessionStore),
+            cache = readCache,
+        )
+        val saveRepository = EntriesRepository(
+            SupabaseClient(sessionStore, readTransport, BASE_URL, "anon-test-key"),
+            SessionContext(sessionStore),
+            cache = saveCache,
+        )
+
+        val delayedRead = async(Dispatchers.Default) { readRepository.loadDates(listOf(DATE)) }
+        assertTrue("dates GET did not start", enteredGet.await(5, TimeUnit.SECONDS))
+        assertTrue(saveRepository.save(DiaryEntry(mood = 5, note = "new save"), DATE).isSuccess)
+        releaseGet.countDown()
+        assertEquals(1, delayedRead.await()[DATE]?.mood)
+
+        val cached = readCache.readRange(DATE, DATE)?.single()?.entry
+        assertEquals(5, cached?.mood)
+        assertEquals("new save", cached?.note)
+    }
+
+    @Test
+    fun `partial successful range response never evicts unseen cached rows`() = runTest {
+        val directory = java.nio.file.Files.createTempDirectory("entries-truncated-range").toFile()
+        val cache = EntriesCacheStore(java.io.File(directory, "owner.json"), USER_ID)
+        cache.upsertRows(listOf(
+            JSONObject().put("user_id", USER_ID).put("date", "2026-09-09").put("mood", 2),
+            JSONObject().put("user_id", USER_ID).put("date", DATE).put("mood", 3),
+        ))
+        respond = {
+            HttpResponse(200, JSONArray().put(
+                JSONObject().put("user_id", USER_ID).put("date", DATE).put("mood", 4),
+            ).toString())
+        }
+        val repository = repository(cache = cache)
+
+        assertTrue(repository.loadRange("2026-09-01", DATE, limit = 1).isSuccess)
+
+        val cached = cache.readRange("2026-09-01", DATE)!!.associate { it.date to it.entry.mood }
+        assertEquals(mapOf("2026-09-09" to 2, DATE to 4), cached)
+    }
+
     private fun repository(
         pending: PendingSaveStore? = null,
         ownerId: String? = null,
+        cache: EntriesCacheStore? = null,
     ): EntriesRepository =
         EntriesRepository(
             client = SupabaseClient(
@@ -241,6 +355,7 @@ class EntriesRepositoryLoadTest {
             session = SessionContext(sessionStore),
             pending = pending,
             expectedOwnerId = ownerId,
+            cache = cache,
         )
 
     private fun sessionFor(userId: String) = JSONObject().apply {
@@ -252,6 +367,7 @@ class EntriesRepositoryLoadTest {
 
     private companion object {
         const val DATE = "2026-09-10"
+        const val NEW_DATE = "2026-09-11"
         const val USER_ID = "5f2c1b7e-9d3a-4c6f-8a10-2b4d6e8f0a12"
         const val ROW_ID = "ecaf917a-7c84-4ad5-b657-cc5d9af10a36"
         const val OTHER_USER_ID = "9e0a6e91-36c0-4e84-a6ed-f05d92e0d521"

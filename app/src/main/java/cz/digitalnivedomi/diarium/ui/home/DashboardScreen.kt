@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -154,6 +155,8 @@ fun DashboardScreen(
     deps: DashboardDeps = remember { DashboardDeps.offline() },
     onOpenCheckIn: (String) -> Unit = {},
     onOpen: (String) -> Unit = {},
+    /** Backward-compatible statistics intent; navigation is owned by the app shell. */
+    onOpenStatistics: (DashboardMetricKind) -> Unit = {},
     // Owned by the app shell (see [cz.digitalnivedomi.diarium.ui.nav.ScreenStateCache]):
     // the loaded numbers have to outlive this composable, otherwise returning from a
     // sub-screen re-reads everything and lands back at the top of the list.
@@ -246,7 +249,7 @@ fun DashboardScreen(
                 data = data,
                 onOpenCheckIn = onOpenCheckIn,
                 onOpen = onOpen,
-                onReload = { reloadTrigger++ },
+                onOpenStatistics = onOpenStatistics,
                 reflectionRepository = deps.reflection,
                 reflectionEntries = deps.reflectionEntries,
                 reflectionDrafts = deps.reflectionDrafts,
@@ -324,7 +327,7 @@ private fun DashboardContent(
     data: DashboardData,
     onOpenCheckIn: (String) -> Unit,
     onOpen: (String) -> Unit,
-    onReload: () -> Unit,
+    onOpenStatistics: (DashboardMetricKind) -> Unit,
     reflectionRepository: AiReflectionRepository?,
     reflectionEntries: EntriesRepository?,
     reflectionDrafts: DraftStore?,
@@ -337,58 +340,33 @@ private fun DashboardContent(
     profile: ProfileData?,
     stageRetryHolder: GeneratedReflectionStageRetryHolder,
 ) {
-    // One day opened from the mood strip, one hero number opened as a fourteen-day
-    // breakdown. Both live here: they only decide which window is on top of the
-    // screen, nothing about what is loaded.
+    // Day detail is shared by weekly mood dots and On This Day memories.
     var detailDate by remember { mutableStateOf<String?>(null) }
-    var metricKind by remember { mutableStateOf<DashboardMetricKind?>(null) }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(Spacing.section),
     ) {
-        // Cards fade in one after another as the data lands — the stagger is
-        // capped by Entrance, so even a full dashboard settles in ~300ms.
-        // The three headline numbers a day is read from come first, as hero cards;
-        // the cards below stay the detail behind them.
-        StaggeredItem(0) {
-            HeroStats(data = data, onOpenMetric = { kind -> metricKind = kind })
+        StaggeredItem(0) { TodayCard(data = data, onOpenCheckIn = onOpenCheckIn) }
+        StaggeredItem(1) {
+            DashboardWeekSummary(data = data, onOpenMetric = onOpenStatistics)
         }
-        StaggeredItem(1) { StreakCard(data = data) }
         StaggeredItem(2) { WeekCard(data = data, onOpenDay = { date -> detailDate = date }) }
-        // The interactive mood chart (owner request 2026-09-24, Variant A): the
-        // statistics screen's own chart, right under the week strip, which stays.
-        StaggeredItem(3) {
-            MoodChartCard(month = data.month, onOpenDay = { date -> detailDate = date })
-        }
-        // „Tenhle den v historii": a memory from 1 year / 6 months / 1 month back —
-        // only when a real recorded day with content exists (the repository decides,
-        // see pickBestMemory). Taps open the same day detail the week strip uses.
         data.onThisDay?.let { memory ->
-            StaggeredItem(4) {
+            StaggeredItem(3) {
                 OnThisDayCard(memory = memory, onOpenDay = { date -> detailDate = date })
             }
         }
-        // Goals sit right under the mood chart (owner request 2026-10-13): the
-        // cards above say how the days went, this one says what they were for.
-        // Hidden on a failed read (null) — only a list the repository really
-        // returned may say "no goals".
         goalsProgress?.let { goals ->
-            StaggeredItem(4) {
-                GoalsCard(goals = goals, onOpen = onOpen)
-            }
+            StaggeredItem(4) { GoalsCard(goals = goals, onOpen = onOpen) }
         }
-        StaggeredItem(5) { ScreenTimeCard(data = data, onReload = onReload) }
-        StaggeredItem(6) { UnlocksCard(data = data, onReload = onReload) }
-        StaggeredItem(7) { TopAppsCard(data = data, onReload = onReload) }
-        // The card keys off the newest *recorded* day (mood filled, see RecordDay):
-        // a day the phone only synced is not a record and must not blank the card
-        // (2026-09-12). Hidden only when the "Dnes" card already renders that exact
-        // text, so nothing shows twice.
+        StaggeredItem(5) {
+            DigitalSummaryCard(data = data)
+        }
         val anchor = data.newestRecorded ?: data.newestEntry
         val todayShowsIt = !data.todayEntry?.aiReflection.isNullOrBlank()
         if (reflectionOwnerId != null && !todayShowsIt && (anchor != null || data.reflection != null)) {
-            StaggeredItem(8) {
+            StaggeredItem(6) {
                 ReflectionCard(
                     anchor = anchor,
                     latest = data.reflection,
@@ -403,37 +381,14 @@ private fun DashboardContent(
                 )
             }
         }
-        // The M5 screens have no tab of their own (the bar already carries five),
-        // so the overview carries their entrances. Pure navigation, no read.
-        StaggeredItem(8) { EntriesCard(onOpen = onOpen) }
     }
 
-    // The two windows sit beside the scrolling column, not inside it: opening a day
-    // from the metric window is then a plain state change here rather than a dialog
-    // stacked on a dialog.
-    val dayToShow = detailDate
-    if (dayToShow != null) {
+    detailDate?.let { dayToShow ->
         DayDetailDialog(
             date = dayToShow,
             entry = data.entryByDate[dayToShow],
             onDismiss = { detailDate = null },
             onOpenCheckIn = onOpenCheckIn,
-        )
-    }
-    val metricToShow = metricKind
-    if (metricToShow != null) {
-        DashboardMetricDialog(
-            title = metricTitle(metricToShow),
-            kind = metricToShow,
-            accent = metricAccent(metricToShow, data),
-            week = data.week,
-            previousWeek = data.previousWeek,
-            today = data.today,
-            onDismiss = { metricKind = null },
-            onOpenDay = { date ->
-                metricKind = null
-                detailDate = date
-            },
         )
     }
 }
@@ -890,7 +845,7 @@ private fun TodayCard(data: DashboardData, onOpenCheckIn: (String) -> Unit) {
     val entry = data.todayEntry
     val haptics = rememberLightHaptics()
     GlassCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().testTag("dashboard_today_card"),
         accent = moodColor(entry?.mood),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1026,6 +981,7 @@ private fun WeekCard(
     onOpenDay: (String) -> Unit = {},
 ) {
     val haptics = rememberHaptics()
+    val weekDays = dashboardWeekDays(data)
     GlassCard(modifier = Modifier.fillMaxWidth()) {
         SectionHeader("🎭 Nálada")
         VSpace(4)
@@ -1041,7 +997,7 @@ private fun WeekCard(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            data.week.forEach { day ->
+            weekDays.forEach { day ->
                 val isToday = day.date == data.today
                 // Only the mood decides the mark: a synced row with no mood is
                 // missing, exactly like a day with no row (the owner's rule).
@@ -1079,6 +1035,7 @@ private fun WeekCard(
                             haptics.light()
                             onOpenDay(day.date)
                         }
+                        .testTag("dashboard_week_day_${day.date}")
                         .padding(vertical = Spacing.tiny),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
@@ -1116,20 +1073,7 @@ private fun WeekCard(
                 }
             }
         }
-        // No legend: there is no neutral "–" disc any more. A day without a mood
-        // reads as missing, so nothing here needs explaining.
-        VSpace(12)
-        GlassDivider()
-        VSpace(10)
-        val average = data.averageMood
-        if (average == null) {
-            SectionHint("Tento týden ještě nemáš zapsanou žádnou náladu.")
-        } else {
-            ReadOnlyRow(
-                label = "Ø nálada v týdnu",
-                value = "${formatAverageMood(average)} / 5",
-            )
-        }
+        // The sole weekly average lives in "Týden v číslech" above.
     }
 }
 
@@ -1523,7 +1467,7 @@ private fun UsageCard(
 }
 
 /** How many goals the dashboard card shows; the rest live behind the footer link. */
-private const val GOAL_CARD_LIMIT = 4
+private const val GOAL_CARD_LIMIT = 2
 
 /**
  * The fallback emoji on a goal row: a goal carries an activity key, not an icon, and

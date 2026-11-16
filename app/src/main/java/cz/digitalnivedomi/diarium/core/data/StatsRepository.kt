@@ -60,6 +60,20 @@ data class StatsData(
  */
 class StatsRepository(private val entries: EntriesRepository) {
 
+    /** Reads only this authenticated owner's local snapshot for immediate first paint. */
+    suspend fun loadCached(today: String = LocalDate.now().toString()): StatsData? {
+        val from = LocalDate.parse(today).minusDays((LOAD_DAYS - 1).toLong()).toString()
+        return try {
+            entries.loadRangeCachedFirst(from, today)?.let { derive(today, it) }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // A corrupt/unreadable cache is a miss; the authenticated server read below
+            // remains authoritative and its failure must still be surfaced.
+            null
+        }
+    }
+
     /**
      * Loads the statistics window ending at [today] (inclusive, ISO) in one
      * round-trip, already mapped into [StatsMath]'s input.
@@ -136,6 +150,10 @@ class StatsRepository(private val entries: EntriesRepository) {
             screenTimeSeconds = entry.phoneScreenTime,
             unlocks = entry.phoneUnlocks,
             topApps = entry.phoneTopApps,
+            habits = entry.habits,
+            sleepQuality = entry.sleepQuality,
+            stress = entry.stress,
+            scaleValues = entry.positiveScaleValues(),
         )
     }
 }

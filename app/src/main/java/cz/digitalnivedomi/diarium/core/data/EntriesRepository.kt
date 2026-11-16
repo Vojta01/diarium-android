@@ -319,7 +319,8 @@ class EntriesRepository(
         val userId = authorizedUserId()
             ?: return@withContext Result.failure(IllegalStateException(SIGNED_OUT))
         try {
-            val rows = readRange(userId, from, to, limit)
+            val snapshotGeneration = cacheFor(userId)?.generationSnapshot()
+            val rows = readRange(userId, from, to, limit, snapshotGeneration)
             Result.success(withPendingOverlay(rows, from, to, userId))
         } catch (e: CancellationException) {
             // Cancellation is the caller walking away, not a failure to report.
@@ -343,7 +344,13 @@ class EntriesRepository(
      * or a body the client cannot parse, so [loadRange] has a single place that turns
      * each of them into the [Result] the dashboard renders.
      */
-    private suspend fun readRange(userId: String, from: String, to: String, limit: Int): List<DatedEntry> {
+    private suspend fun readRange(
+        userId: String,
+        from: String,
+        to: String,
+        limit: Int,
+        cacheGeneration: Long?,
+    ): List<DatedEntry> {
         val resp = ownerClient(userId).get(
             "entries",
             mapOf(
@@ -359,9 +366,12 @@ class EntriesRepository(
         }
         val rows = resp.asJsonArray() ?: throw IllegalStateException("Server vrátil neplatnou odpověď.")
         val raw = (0 until rows.length()).map { index -> rows.getJSONObject(index) }
-        // Feed the local snapshot — best effort: a cache that cannot be written
-        // must never fail a read that succeeded.
-        runCatching { cacheFor(userId)?.upsertRows(raw) }
+        // A JSON array has no completeness proof (PostgREST may cap it), so only
+        // merge observed rows; never evict unseen cached dates. Also discard this
+        // GET's cache update if any newer local mutation advanced the generation.
+        if (cacheGeneration != null) {
+            runCatching { cacheFor(userId)?.upsertRowsIfGeneration(raw, cacheGeneration) }
+        }
         return raw.map { row -> DatedEntry(row.plainString("date"), fromRow(row)) }
     }
 
@@ -387,6 +397,8 @@ class EntriesRepository(
             if (dates.isEmpty()) return@withContext emptyMap()
             try {
                 val userId = authorizedUserId() ?: return@withContext emptyMap()
+                val cacheStore = cacheFor(userId)
+                val cacheGeneration = cacheStore?.generationSnapshot()
                 val resp = ownerClient(userId).get(
                     "entries",
                     mapOf(
@@ -397,7 +409,9 @@ class EntriesRepository(
                 )
                 val rows = resp.asJsonArray() ?: return@withContext emptyMap()
                 val raw = (0 until rows.length()).map { index -> rows.getJSONObject(index) }
-                runCatching { cacheFor(userId)?.upsertRows(raw) }
+                if (cacheGeneration != null) {
+                    runCatching { cacheStore?.upsertRowsIfGeneration(raw, cacheGeneration) }
+                }
                 val byDate = raw.associate { row -> row.plainString("date") to fromRow(row) }.toMutableMap()
                 pendingFor(userId)?.peekAll()
                     ?.filter { it.date in dates }

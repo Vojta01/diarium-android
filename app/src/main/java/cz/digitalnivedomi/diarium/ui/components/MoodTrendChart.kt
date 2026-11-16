@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,12 +26,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -123,6 +126,9 @@ fun chartBarBrush(base: Color): Brush =
  * @param summary optional line under the captions (the year's one-line takeaway).
  * @param onOpenDay when non-null, the tap detail appends an "Otevřít celý den ›" action
  *   calling it with the selected slot's [MoodTrendSlot.key].
+ * @param previousAverage optional prior-period line, aligned by slot index; null entries
+ *   break the dashed ghost line rather than being interpolated.
+ * @param previousAverageLabel optional legend text for [previousAverage].
  */
 @Composable
 fun MoodTrendChart(
@@ -134,9 +140,17 @@ fun MoodTrendChart(
     modifier: Modifier = Modifier,
     summary: String? = null,
     onOpenDay: ((String) -> Unit)? = null,
+    previousAverage: List<Double?>? = null,
+    previousAverageLabel: String? = null,
 ) {
     var selected by remember(slots.size, slots.firstOrNull()?.key) { mutableStateOf<Int?>(null) }
     val haptics = rememberLightHaptics()
+    fun select(index: Int) {
+        if (selected != index) {
+            selected = index
+            haptics()
+        }
+    }
 
     // One animated fraction per slot, keyed by date (or month number): switching the
     // window re-grows each column into its new value instead of snapping to it.
@@ -173,7 +187,19 @@ fun MoodTrendChart(
     }
 
     Column(modifier = modifier.fillMaxWidth()) {
-        Box(modifier = Modifier.fillMaxWidth().height(CHART_TRACK)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(CHART_TRACK)
+                .testTagOrEmpty("mood_trend_chart_track")
+                .pointerInput(slots.size) {
+                    detectHorizontalDragGestures { change, _ ->
+                        val index = moodTrendIndexAtX(change.position.x, size.width.toFloat(), slots.size)
+                        if (index != null) select(index)
+                        change.consume()
+                    }
+                },
+        ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val count = slots.size
                 if (count == 0) return@Canvas
@@ -216,7 +242,10 @@ fun MoodTrendChart(
                 val line = Path()
                 var started = false
                 average.forEachIndexed { index, value ->
-                    if (value == null) return@forEachIndexed
+                    if (value == null) {
+                        started = false
+                        return@forEachIndexed
+                    }
                     val x = index * slot + slot / 2f
                     val y = size.height - (value.toFloat() / 5f) * size.height * 0.92f * reveal.value
                     if (started) line.lineTo(x, y) else { line.moveTo(x, y); started = true }
@@ -226,6 +255,25 @@ fun MoodTrendChart(
                         path = line,
                         brush = Gradients.fill(Gradients.brand),
                         style = Stroke(width = 3f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                    )
+                }
+                previousAverage?.let { previous ->
+                    val ghost = Path()
+                    var ghostStarted = false
+                    previous.forEachIndexed { index, value ->
+                        if (value == null || index >= count) {
+                            ghostStarted = false
+                            return@forEachIndexed
+                        }
+                        val x = index * slot + slot / 2f
+                        val y = size.height - (value.toFloat() / 5f) * size.height * 0.92f * reveal.value
+                        if (ghostStarted) ghost.lineTo(x, y) else { ghost.moveTo(x, y); ghostStarted = true }
+                    }
+                    if (ghostStarted) drawPath(
+                        path = ghost,
+                        color = TextTertiary.copy(alpha = 0.8f),
+                        style = Stroke(width = 2f, cap = StrokeCap.Round, join = StrokeJoin.Round,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f))),
                     )
                 }
                 average.forEachIndexed { index, value ->
@@ -248,10 +296,7 @@ fun MoodTrendChart(
                             .weight(1f)
                             .fillMaxHeight()
                             .testTagOrEmpty("stats_trend_bar")
-                            .clickable {
-                                haptics()
-                                selected = if (selected == index) null else index
-                            },
+                            .clickable { select(index) },
                     )
                 }
             }
@@ -305,6 +350,10 @@ fun MoodTrendChart(
         VSpace(10)
         // Legend as a glass chip instead of a bare dot + line.
         GlassChip(text = averageLabel, accent = IndigoLight)
+        if (previousAverage != null && previousAverageLabel != null) {
+            VSpace(4)
+            GlassChip(text = previousAverageLabel, accent = TextTertiary)
+        }
 
         selected?.let { index ->
             slots.getOrNull(index)?.let { column ->
@@ -330,10 +379,7 @@ fun MoodTrendChart(
                         style = MaterialTheme.typography.labelMedium,
                         color = IndigoLight,
                         modifier = Modifier
-                            .clickable {
-                                haptics()
-                                onOpenDay(column.key)
-                            }
+                            .clickable { onOpenDay(column.key) }
                             .padding(vertical = 4.dp),
                     )
                 }

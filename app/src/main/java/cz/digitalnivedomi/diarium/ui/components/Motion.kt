@@ -18,6 +18,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import cz.digitalnivedomi.diarium.ui.theme.Dimens
+import cz.digitalnivedomi.diarium.ui.theme.LocalReduceMotion
 import cz.digitalnivedomi.diarium.ui.theme.MotionTokens
 import kotlinx.coroutines.delay
 
@@ -39,8 +40,14 @@ import kotlinx.coroutines.delay
  */
 @Composable
 fun StaggeredItem(index: Int, content: @Composable () -> Unit) {
-    val progress = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
+    val reduceMotion = LocalReduceMotion.current
+    val progress = remember { Animatable(if (reduceMotion) 1f else 0f) }
+    LaunchedEffect(reduceMotion) {
+        if (reduceMotion) {
+            // The card is simply there: no fade, no slide, no stagger delay.
+            progress.snapTo(1f)
+            return@LaunchedEffect
+        }
         val wait = Entrance.delayMillisFor(index)
         if (wait > 0) delay(wait.toLong())
         progress.animateTo(
