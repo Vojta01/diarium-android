@@ -59,6 +59,23 @@ data class StatsUiState(
     val customRangeError: String? = null,
 )
 
+internal fun retainSelectedDateWithinBounds(selected: String?, startInclusive: LocalDate, endInclusive: LocalDate): String? {
+    if (selected == null) return null
+    val parsed = runCatching { LocalDate.parse(selected) }.getOrNull() ?: return null
+    return selected.takeIf { parsed >= startInclusive && parsed <= endInclusive }
+}
+
+data class GoalStatsLoadState(
+    val loading: Boolean = true,
+    val goals: List<cz.digitalnivedomi.diarium.core.data.GoalProgress>? = null,
+    val errorMessage: String? = null,
+) {
+    fun begin(): GoalStatsLoadState = copy(loading = true, errorMessage = null)
+    fun success(value: List<cz.digitalnivedomi.diarium.core.data.GoalProgress>): GoalStatsLoadState =
+        GoalStatsLoadState(loading = false, goals = value, errorMessage = null)
+    fun failure(message: String): GoalStatsLoadState = copy(loading = false, errorMessage = message)
+}
+
 /** Compose state holder; filters are local and never trigger a repository read. */
 class StatsStateHolder {
     var state: StatsUiState by mutableStateOf(StatsUiState())
@@ -132,12 +149,19 @@ internal fun comparisonWindow(
     StatsDateRange.of(today, range.dayCount(customDays, today))
 }
 
+fun StatsData.moodAnchorDate(): LocalDate? = days.asSequence()
+    .filter { it.answered }
+    .mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
+    .filter { it <= runCatching { LocalDate.parse(today) }.getOrElse { LocalDate.MIN } }
+    .maxOrNull()
+
 fun StatsData.forRange(range: StatsRange): List<StatsDay> = forRange(range, 30)
 fun StatsData.forRange(range: StatsRange, customDays: Int): List<StatsDay> {
-    val end = runCatching { LocalDate.parse(today) }.getOrElse { LocalDate.now() }
+    val end = if (range == StatsRange.YEAR) runCatching { LocalDate.parse(today) }.getOrElse { LocalDate.now() }
+        else moodAnchorDate() ?: return emptyList()
     val count = range.dayCount(customDays, end)
     val start = end.minusDays((count - 1).toLong()).toString()
-    return days.filter { it.date >= start && it.date <= today }
+    return days.filter { it.date >= start && it.date <= end.toString() }
 }
 
 fun StatsData.hasComparablePrevious(range: StatsRange, customDays: Int): Boolean {

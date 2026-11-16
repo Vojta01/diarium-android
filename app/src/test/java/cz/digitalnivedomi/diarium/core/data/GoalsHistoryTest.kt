@@ -63,6 +63,94 @@ class GoalsHistoryTest {
         assertTrue(history.all { it.met == null })
     }
 
+    @Test
+    fun `weekly periods before goal creation are unknown even with old records`() {
+        val g = goal("weekly").copy(createdAt = "2026-10-07T12:30:00Z")
+        val days = listOf(
+            day("2026-09-13", key), // six weeks back
+            day("2026-09-20", "other"), // five weeks back, recorded miss
+            day("2026-09-27", key),
+            day("2026-10-04", key),
+            day("2026-10-11", key), // partial creation week
+            day(today, key),
+        )
+        val history = computeHistory(days, g, today)
+
+        assertEquals(listOf(null, null, null, null, null, null, null, true), history.map { it.met })
+        assertEquals(emptyList<String>(), history[0].dates)
+        assertEquals(emptyList<String>(), history[6].dates)
+    }
+
+    @Test
+    fun `weekly creation on period boundary makes that full period judgeable`() {
+        val g = goal("weekly").copy(createdAt = "2026-09-28")
+        val days = listOf(day("2026-09-28", "other"), day("2026-10-04", "other"), day(today, key))
+
+        val history = computeHistory(days, g, today)
+        assertEquals(false, history[5].met) // creation Monday is the period start
+        assertEquals(true, history.last().met)
+        assertEquals(emptyList<String>(), history[4].dates)
+    }
+
+    @Test
+    fun `monthly periods before creation and partial creation month are unknown`() {
+        val g = goal("monthly").copy(createdAt = "2026-06-15T08:00:00Z")
+        val days = listOf(
+            day("2026-05-20", key), // wholly before creation
+            day("2026-06-01", "other"), // partial creation month
+            day("2026-06-30", key),
+            day("2026-07-15", "other"),
+            day("2026-08-15", key),
+            day("2026-09-15", key),
+            day("2026-10-01", key),
+        )
+
+        val history = computeHistory(days, g, today)
+        assertEquals(listOf(null, null, false, true, true, true), history.map { it.met })
+        assertEquals(emptyList<String>(), history[0].dates)
+        assertEquals(emptyList<String>(), history[1].dates)
+    }
+
+    @Test
+    fun `all five prior monthly periods are unknown for a goal created this month`() {
+        val g = goal("monthly").copy(createdAt = "2026-10-01T00:00:00Z")
+        val days = listOf(
+            day("2026-05-12", key),
+            day("2026-07-12", "other"),
+            day("2026-09-12", key),
+            day(today, key),
+        )
+
+        val history = computeHistory(days, g, today)
+        assertEquals(listOf(null, null, null, null, null, true), history.map { it.met })
+        assertTrue(history.take(5).all { it.dates.isEmpty() })
+    }
+
+    @Test
+    fun `creation at month boundary keeps the entire month judgeable`() {
+        val g = goal("monthly").copy(createdAt = "2026-09-01")
+        val history = computeHistory(listOf(day("2026-09-02", "other"), day(today, key)), g, today)
+        assertEquals(false, history[4].met)
+    }
+
+    @Test
+    fun `missing or unparseable creation date preserves legacy history behavior`() {
+        // The prior complete week has an entry; older empty periods remain unknown.
+        val days = listOf(day("2026-10-06", "other"), day(today, key))
+        listOf("", "not-a-date", "2026-02-30T00:00:00Z").forEach { createdAt ->
+            val history = computeHistory(days, goal("weekly").copy(createdAt = createdAt), today)
+            assertEquals(false, history[6].met)
+            assertEquals(true, history.last().met)
+        }
+    }
+
+    @Test
+    fun `current period keeps existing activity-based behavior after goal creation`() {
+        val g = goal("weekly").copy(createdAt = "2026-10-13")
+        val history = computeHistory(listOf(day(today, "other")), g, today)
+        assertEquals(false, history.last().met)
+    }
+
     // ── met rule ────────────────────────────────────────────────────────────
 
     @Test

@@ -1,23 +1,24 @@
 package cz.digitalnivedomi.diarium.ui.home
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -26,9 +27,10 @@ import cz.digitalnivedomi.diarium.core.data.DashboardData
 import cz.digitalnivedomi.diarium.core.data.DashboardDay
 import cz.digitalnivedomi.diarium.core.data.DashboardRepository
 import cz.digitalnivedomi.diarium.core.data.PhoneTopApp
+import cz.digitalnivedomi.diarium.core.data.DiaryEntry
 import cz.digitalnivedomi.diarium.core.data.formatTopAppDuration
 import cz.digitalnivedomi.diarium.core.data.isRecordedDay
-import cz.digitalnivedomi.diarium.core.data.rankTopApps
+
 import cz.digitalnivedomi.diarium.ui.checkin.components.formatMinutes
 import cz.digitalnivedomi.diarium.ui.components.GlassCard
 import cz.digitalnivedomi.diarium.ui.components.GlassDivider
@@ -42,7 +44,7 @@ import java.time.format.DateTimeFormatter
 import cz.digitalnivedomi.diarium.ui.theme.Cyan
 import cz.digitalnivedomi.diarium.ui.theme.Indigo
 import cz.digitalnivedomi.diarium.ui.theme.IndigoLight
-import cz.digitalnivedomi.diarium.ui.theme.Outline
+
 import cz.digitalnivedomi.diarium.ui.theme.Spacing
 import cz.digitalnivedomi.diarium.ui.theme.SuccessGreen
 import cz.digitalnivedomi.diarium.ui.theme.TextPrimary
@@ -50,11 +52,18 @@ import cz.digitalnivedomi.diarium.ui.theme.TextSecondary
 import cz.digitalnivedomi.diarium.ui.theme.TextTertiary
 import java.time.LocalDate
 import java.util.Locale
+
 import kotlin.math.roundToInt
 
 /** A real inclusive seven-calendar-day window ending on [today], independent of list shape. */
 internal fun dashboardCalendarWeek(today: String): List<String> =
     DashboardRepository.weekWindow(today)
+
+/** Completed-week windows: yesterday..6 days earlier, then the adjacent prior week. */
+internal fun dashboardCompletedWeek(today: String, weeksBack: Long = 0): List<String> {
+    val end = LocalDate.parse(today).minusDays(1 + weeksBack * DashboardRepository.WEEK_DAYS)
+    return (DashboardRepository.WEEK_DAYS - 1 downTo 0).map { back -> end.minusDays(back.toLong()).toString() }
+}
 
 internal fun dashboardWeekDays(data: DashboardData): List<DashboardDay> =
     dashboardCalendarWeek(data.today).map { date ->
@@ -72,6 +81,7 @@ internal data class WeekMetric(
     val coveredDays: Int,
     val previousValue: Double?,
     val previousCoveredDays: Int,
+    val difference: Double?,
 )
 
 /** Only two complete calendar weeks are comparable; matching partial samples can differ by day. */
@@ -90,18 +100,24 @@ internal fun dashboardWeekMetric(
     previousDays: List<DashboardDay>,
     kind: DashboardMetricKind,
 ): WeekMetric {
-    val current = windowValues(today, currentDays, kind)
-    val previous = windowValues(LocalDate.parse(today).minusDays(DashboardRepository.WEEK_DAYS.toLong()).toString(), previousDays, kind)
+    val currentWindow = dashboardCompletedWeek(today)
+    val previousWindow = dashboardCompletedWeek(today, weeksBack = 1)
+    val current = windowValues(currentWindow, currentDays, kind)
+    val previous = windowValues(previousWindow, previousDays, kind)
+    val comparable = hasComparableCoverage(current.size, previous.size)
+    val currentValue = aggregate(current, kind)
+    val previousValue = aggregate(previous, kind)
     return WeekMetric(
-        value = aggregate(current, kind),
+        value = currentValue,
         coveredDays = current.size,
-        previousValue = aggregate(previous, kind),
+        previousValue = previousValue,
         previousCoveredDays = previous.size,
+        difference = if (comparable && currentValue != null && previousValue != null) currentValue - previousValue else null,
     )
 }
 
-private fun windowValues(anchor: String, days: List<DashboardDay>, kind: DashboardMetricKind): List<Double> {
-    val expected = dashboardCalendarWeek(anchor).toSet()
+private fun windowValues(expectedDates: List<String>, days: List<DashboardDay>, kind: DashboardMetricKind): List<Double> {
+    val expected = expectedDates.toSet()
     return days.asSequence()
         .filter { it.date in expected }
         .mapNotNull { day ->
@@ -118,6 +134,54 @@ private fun aggregate(values: List<Double>, kind: DashboardMetricKind): Double? 
     values.isEmpty() -> null
     kind == DashboardMetricKind.MOOD -> values.average()
     else -> values.sum()
+}
+
+/** Aggregate only reported rows from the seven completed calendar days. */
+internal fun aggregateDashboardTopApps(today: String, entries: Map<String, DiaryEntry>): List<PhoneTopApp> {
+    val dates = dashboardCompletedWeek(today).toSet()
+    return entries.asSequence()
+        .filter { (date, _) -> date in dates }
+        .flatMap { (_, entry) -> entry.phoneTopApps.asSequence() }
+        .filter { it.app.isNotBlank() && it.minutes.isFinite() && it.minutes >= 0.0 }
+        .groupBy { it.app.trim().lowercase(Locale.ROOT) }
+        .map { (key, rows) -> PhoneTopApp(rows.first().app.trim(), rows.sumOf { it.minutes }) to key }
+        .sortedWith(compareByDescending<Pair<PhoneTopApp, String>> { it.first.minutes }.thenBy { it.second })
+        .take(5)
+        .map { it.first }
+}
+
+internal fun dashboardAppCoverage(today: String, entries: Map<String, DiaryEntry>): Int =
+    dashboardCompletedWeek(today).count { date ->
+        entries[date]?.phoneTopApps?.any { it.app.isNotBlank() && it.minutes.isFinite() && it.minutes >= 0.0 } == true
+    }
+
+internal data class DashboardLinearTrend(
+    val startIndex: Int,
+    val startValue: Double,
+    val endIndex: Int,
+    val endValue: Double,
+)
+
+/** Least-squares linear trend over observed values; gaps retain their calendar x positions. */
+internal fun dashboardLinearTrend(values: List<Double?>): DashboardLinearTrend? {
+    val observed = values.mapIndexedNotNull { index, value ->
+        value?.takeIf { it.isFinite() }?.let { index.toDouble() to it }
+    }
+    if (observed.size < 2) return null
+    val meanX = observed.map { it.first }.average()
+    val meanY = observed.map { it.second }.average()
+    val denominator = observed.sumOf { (x, _) -> (x - meanX) * (x - meanX) }
+    if (denominator == 0.0) return null
+    val slope = observed.sumOf { (x, y) -> (x - meanX) * (y - meanY) } / denominator
+    val intercept = meanY - slope * meanX
+    val first = observed.first().first
+    val last = observed.last().first
+    return DashboardLinearTrend(
+        startIndex = first.toInt(),
+        startValue = intercept + slope * first,
+        endIndex = last.toInt(),
+        endValue = intercept + slope * last,
+    )
 }
 
 @Composable
@@ -137,11 +201,11 @@ internal fun DashboardWeekSummary(
     ) {
         SectionHeader("Týden v číslech")
         VSpace(4)
-        SectionHint("Posledních ${DashboardRepository.WEEK_DAYS} kalendářních dní · série 🔥 ${data.streak}")
+        SectionHint("${dashboardPeriodLabel(data.today, weeksBack = 0)} · předchozí ${dashboardPeriodLabel(data.today, weeksBack = 1)} · série 🔥 ${data.streak}")
         VSpace(Spacing.small)
         metrics.forEachIndexed { index, (kind, label) ->
             if (index > 0) GlassDivider()
-            val metric = dashboardWeekMetric(data.today, data.week, data.previousWeek, kind)
+            val metric = dashboardWeekMetric(data.today, data.month, data.month, kind)
             WeekMetricRow(
                 label = label,
                 value = metric.value,
@@ -150,12 +214,13 @@ internal fun DashboardWeekSummary(
                 previousCoverage = metric.previousCoveredDays,
                 comparisonAllowed = hasComparableCoverage(metric.coveredDays, metric.previousCoveredDays),
                 comparisonHint = coverageComparisonHint(metric.coveredDays, metric.previousCoveredDays),
+                difference = metric.difference,
                 kind = kind,
                 onClick = { onOpenMetric(kind) },
             )
         }
-        val moodDays = dashboardCalendarWeek(data.today).count { date ->
-            data.week.firstOrNull { it.date == date }?.mood?.let(::isRecordedDay) == true
+        val moodDays = dashboardCompletedWeek(data.today).count { date ->
+            data.month.firstOrNull { it.date == date }?.mood?.let(::isRecordedDay) == true
         }
         // Recorded days are a separate measure from phone-data coverage and are never
         // inferred from a synced shell row.
@@ -163,7 +228,7 @@ internal fun DashboardWeekSummary(
         WeekMetricRow(
             label = "Zapsané dny",
             value = moodDays.toDouble(),
-            coverage = DashboardRepository.WEEK_DAYS,
+            coverage = moodDays,
             previousValue = null,
             previousCoverage = 0,
             kind = DashboardMetricKind.MOOD,
@@ -172,6 +237,7 @@ internal fun DashboardWeekSummary(
             coverageText = null,
             comparison = null,
             comparisonHint = null,
+            difference = null,
             tag = "dashboard_recorded_days",
         )
     }
@@ -186,12 +252,19 @@ private fun WeekMetricRow(
     previousCoverage: Int,
     comparisonAllowed: Boolean = hasComparableCoverage(coverage, previousCoverage),
     comparisonHint: String? = coverageComparisonHint(coverage, previousCoverage),
+    difference: Double? = null,
     kind: DashboardMetricKind,
     onClick: () -> Unit,
     valueText: String? = null,
     coverageText: String? = "$coverage/7 dní",
     comparison: String? = previousValue?.takeIf { comparisonAllowed }?.let {
-        "Minule ${formatMetric(kind, it)} · $previousCoverage/7 dní"
+        val delta = difference ?: ((value ?: return@let null) - it)
+        val direction = when {
+            delta > 0 -> "↑"
+            delta < 0 -> "↓"
+            else -> "="
+        }
+        "Minule ${formatMetric(kind, it)} · pokrytí $previousCoverage/7 · rozdíl $direction ${formatDifference(kind, kotlin.math.abs(delta))}"
     },
     tag: String = "dashboard_metric_${kind.name.lowercase(Locale.ROOT)}",
 ) {
@@ -234,74 +307,130 @@ private fun formatMetric(kind: DashboardMetricKind, value: Double): String = whe
     DashboardMetricKind.UNLOCKS -> value.roundToInt().toString()
 }
 
+private fun formatDifference(kind: DashboardMetricKind, value: Double): String = when (kind) {
+    DashboardMetricKind.MOOD -> String.format(Locale.US, "%.1f bodu", value)
+    DashboardMetricKind.SCREEN_TIME -> formatMinutes(value.roundToInt())
+    DashboardMetricKind.UNLOCKS -> "${value.roundToInt()} odemknutí"
+}
+
 private val weekSummaryDateFormat: DateTimeFormatter get() = UiDates.numericDate()
 
 /** Use the same locale-aware numeric date API as DashboardScreen; malformed dates stay visible. */
 private fun weekSummaryShortDate(date: String): String =
     CheckInDates.parse(date)?.format(weekSummaryDateFormat) ?: date
 
+private fun dashboardPeriodLabel(today: String, weeksBack: Long): String {
+    val dates = dashboardCompletedWeek(today, weeksBack)
+    return "${weekSummaryShortDate(dates.first())}–${weekSummaryShortDate(dates.last())}"
+}
+
 /** One compact usage strip and a dated app snapshot, without repeating weekly totals. */
 @Composable
-internal fun DigitalSummaryCard(data: DashboardData, modifier: Modifier = Modifier) {
-    val days = dashboardWeekDays(data)
-    val topApps = data.rankedTopApps ?: data.topApps
-    val leadingApp: PhoneTopApp? = topApps?.apps?.let(::rankTopApps)?.firstOrNull()
+internal fun DigitalSummaryCard(
+    data: DashboardData,
+    modifier: Modifier = Modifier,
+    onOpenMetric: (DashboardMetricKind) -> Unit = {},
+) {
+    val dates = dashboardCompletedWeek(data.today)
+    val days = dates.map { date -> data.month.firstOrNull { it.date == date } }
+    val apps = aggregateDashboardTopApps(data.today, data.entryByDate)
+    val appCoverage = dashboardAppCoverage(data.today, data.entryByDate)
+    val observed = days.count { it?.screenTimeSeconds != null }
+    val maxSeconds = days.mapNotNull { it?.screenTimeSeconds?.toFloat() }.maxOrNull() ?: 0f
+    val range = "${weekSummaryShortDate(dates.first())}–${weekSummaryShortDate(dates.last())}"
     GlassCard(modifier = modifier.fillMaxWidth().testTag("dashboard_digital_summary"), accent = Cyan) {
         SectionHeader("📱 Digitální přehled")
         VSpace(4)
-        val observed = days.count { it.screenTimeSeconds != null }
-        SectionHint("Denní čas u obrazovky · šedá = bez dat, krátký indigo sloupec = 0 min.")
+        SectionHint("Čas na obrazovce · $range · pokrytí $observed/7 dní")
         VSpace(Spacing.small)
-        val maxSeconds = days.mapNotNull { it.screenTimeSeconds }.maxOrNull() ?: 0
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            days.forEach { day ->
-                val seconds = day.screenTimeSeconds
-                val height = when {
-                    seconds == null -> 3.dp
-                    maxSeconds == 0 -> 4.dp
-                    else -> (24f * seconds / maxSeconds).dp.coerceAtLeast(4.dp)
+        if (observed == 0) {
+            SectionHint("Čas na obrazovce zatím není synchronizovaný.")
+        } else {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(132.dp)
+                    .testTag("dashboard_digital_chart")
+                    .clickable { onOpenMetric(DashboardMetricKind.SCREEN_TIME) },
+            ) {
+                val count = days.size
+                val slot = size.width / count
+                val baseline = size.height - 12.dp.toPx()
+                val chartHeight = size.height - 24.dp.toPx()
+                drawLine(Color.White.copy(alpha = 0.16f), androidx.compose.ui.geometry.Offset(0f, baseline), androidx.compose.ui.geometry.Offset(size.width, baseline), strokeWidth = 1.dp.toPx())
+                val points = days.mapIndexed { index, day ->
+                    val value = day?.screenTimeSeconds ?: return@mapIndexed null
+                    val x = slot * (index + 0.5f)
+                    val y = if (maxSeconds <= 0f) baseline else baseline - chartHeight * value / maxSeconds
+                    val barWidth = minOf(20.dp.toPx(), slot * 0.48f)
+                    if (value > 0) {
+                        drawRoundRect(IndigoLight.copy(alpha = 0.34f), androidx.compose.ui.geometry.Offset(x - barWidth / 2f, y), androidx.compose.ui.geometry.Size(barWidth, baseline - y), cornerRadius = androidx.compose.ui.geometry.CornerRadius(5.dp.toPx()))
+                    }
+                    drawCircle(IndigoLight, radius = 4.dp.toPx(), center = androidx.compose.ui.geometry.Offset(x, y))
+                    androidx.compose.ui.geometry.Offset(x, y)
                 }
-                Box(
-                    Modifier.weight(1f).height(28.dp),
-                    contentAlignment = Alignment.BottomCenter,
-                ) {
-                    Box(
-                        Modifier
-                            .width(12.dp)
-                            .height(height)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(if (seconds == null) Outline.copy(alpha = 0.35f) else IndigoLight),
+                // Fit a least-squares line to the observed daily values. This is a trend,
+                // not a polyline that simply repeats every bar's ups and downs.
+                dashboardLinearTrend(days.map { it?.screenTimeSeconds?.toDouble() })?.let { trend ->
+                    fun trendPoint(index: Int, value: Double): androidx.compose.ui.geometry.Offset {
+                        val x = slot * (index + 0.5f)
+                        val boundedValue = value.toFloat().coerceIn(0f, maxSeconds)
+                        val y = if (maxSeconds <= 0f) baseline
+                            else baseline - chartHeight * boundedValue / maxSeconds
+                        return androidx.compose.ui.geometry.Offset(x, y)
+                    }
+                    drawLine(
+                        color = Cyan,
+                        start = trendPoint(trend.startIndex, trend.startValue),
+                        end = trendPoint(trend.endIndex, trend.endValue),
+                        strokeWidth = 2.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())),
                     )
                 }
+                points.forEachIndexed { index, point ->
+                    if (point != null) {
+                        drawCircle(Cyan, radius = 2.dp.toPx(), center = point)
+                        val minutes = days[index]?.screenTimeSeconds?.div(60) ?: return@forEachIndexed
+                        drawContext.canvas.nativeCanvas.drawText(
+                            "${minutes}m",
+                            point.x,
+                            (point.y - 8.dp.toPx()).coerceAtLeast(10.dp.toPx()),
+                            android.graphics.Paint().apply {
+                                color = android.graphics.Color.WHITE
+                                textSize = 9.sp.toPx()
+                                textAlign = android.graphics.Paint.Align.CENTER
+                            },
+                        )
+                    }
+                    val label = dates[index].takeLast(2)
+                    drawContext.canvas.nativeCanvas.drawText(label, slot * (index + 0.5f), size.height - 2.dp.toPx(), android.graphics.Paint().apply {
+                        color = android.graphics.Color.LTGRAY
+                        textSize = 10.sp.toPx()
+                        textAlign = android.graphics.Paint.Align.CENTER
+                    })
+                }
             }
+            Text("Denní čas v minutách; čárkovaná čára ukazuje lineární trend, ne spojení denních hodnot. Chybějící dny jsou mezery a 0 min je skutečná nula.", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
         }
         VSpace(Spacing.small)
         GlassDivider()
         VSpace(Spacing.small)
-        when {
-            topApps == null -> SectionHint("Seznam aplikací ještě není synchronizovaný.")
-            leadingApp == null -> SectionHint("Ze dne ${weekSummaryShortDate(topApps.date)} · zatím bez údajů o aplikacích.")
-            else -> {
-                SectionHint("Nejpoužívanější aplikace · snapshot ze dne ${weekSummaryShortDate(topApps.date)}")
-                VSpace(4)
+        SectionHint("Top 5 aplikací · $range · uložené řádky v $appCoverage/7 dnech")
+        VSpace(4)
+        if (apps.isEmpty()) {
+            SectionHint("V tomto období nejsou uložené žádné řádky aplikací.")
+        } else {
+            apps.forEachIndexed { index, app ->
+                if (index > 0) VSpace(4)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(26.dp).clip(CircleShape).background(Cyan.copy(alpha = 0.16f)),
-                        contentAlignment = Alignment.Center,
-                    ) { Text("1", style = MaterialTheme.typography.labelSmall, color = Cyan) }
-                    Spacer(Modifier.width(Spacing.small))
-                    Text(leadingApp.app, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, modifier = Modifier.weight(1f))
-                    Text(formatTopAppDuration(leadingApp.minutes), style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                    Text("${index + 1}.", style = MaterialTheme.typography.labelMedium, color = Cyan, modifier = Modifier.width(26.dp))
+                    Text(app.app, style = MaterialTheme.typography.bodyMedium, color = TextPrimary, modifier = Modifier.weight(1f))
+                    Text(formatTopAppDuration(app.minutes), style = MaterialTheme.typography.labelMedium, color = TextSecondary)
                 }
             }
-        }
-        if (observed == 0 && topApps == null) {
-            VSpace(Spacing.small)
-            SectionHint("Digitální údaje se ještě nenasynchronizovaly.")
+            VSpace(4)
+            SectionHint("Součet uložených řádků; prázdný seznam nelze odlišit od chybějící synchronizace. Denní zdroj obsahuje nejvýše 15 aplikací, takže nejde o úplný žebříček všech aplikací.")
         }
     }
 }

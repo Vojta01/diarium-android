@@ -1,7 +1,11 @@
 package cz.digitalnivedomi.diarium.ui.stats
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import cz.digitalnivedomi.diarium.core.data.Goal
+import cz.digitalnivedomi.diarium.core.data.GoalProgress
+import cz.digitalnivedomi.diarium.core.data.PhoneTopApp
 import cz.digitalnivedomi.diarium.core.data.StatsData
+import cz.digitalnivedomi.diarium.core.stats.HabitOutcome
 import cz.digitalnivedomi.diarium.core.stats.StatsDay
 import org.junit.Assert.assertEquals
 import java.time.LocalDate
@@ -36,6 +40,36 @@ class StatsStateTest {
     ) = StatsData(today = today, days = days)
 
     private fun day(date: String, mood: Int = 0) = StatsDay(date = date, mood = mood)
+
+    @Test
+    fun `global windows anchor at latest answered mood and ignore screen time only and future rows`() {
+        val loaded = data(today = "2026-09-10", days = listOf(
+            day("2026-09-01", 4),
+            StatsDay(date = "2026-09-08", mood = 0, screenTimeSeconds = 120),
+            day("2026-09-09", 3),
+            day("2026-09-10", mood = 0).copy(screenTimeSeconds = 200),
+            day("2026-09-11", 5),
+        ))
+        assertEquals(LocalDate.parse("2026-09-09"), loaded.moodAnchorDate())
+        val week = loaded.forRange(StatsRange.WEEK)
+        assertEquals(listOf("2026-09-08", "2026-09-09"), week.map { it.date })
+    }
+
+    @Test
+    fun `global mood range has no anchor when there are no answered moods`() {
+        val loaded = data(days = listOf(StatsDay(date = "2026-09-10", mood = 0, screenTimeSeconds = 90)))
+        assertNull(loaded.moodAnchorDate())
+        assertTrue(loaded.forRange(StatsRange.WEEK).isEmpty())
+    }
+
+    @Test
+    fun `global range includes exactly seven days ending at latest mood`() {
+        val loaded = data(today = "2026-09-10", days = (1..10).map { day("2026-09-%02d".format(it), 5) })
+        val week = loaded.forRange(StatsRange.WEEK)
+        assertEquals(7, week.size)
+        assertEquals("2026-09-04", week.first().date)
+        assertEquals("2026-09-10", week.last().date)
+    }
 
     @Test
     fun `a fresh holder is loading with nothing on screen`() {
@@ -296,6 +330,216 @@ class StatsStateTest {
         assertEquals(2, holder.state.data!!.days.count {
             it.date >= holder.state.appliedCustomStartDate && it.date <= holder.state.appliedCustomEndDate
         })
+    }
+
+    @Test
+    fun `recorded explicit false is unmet but unproven historical default off stays unknown`() {
+        val outcomes = habitPeriodOutcomes(
+            listOf(
+                StatsDay(date = "2026-09-08", mood = 4, habits = mapOf("h1" to false)),
+                StatsDay(date = "2026-09-09", mood = 4),
+                StatsDay(date = "2026-09-10", mood = 4),
+            ),
+            habitKey = "h1",
+            activeToday = true,
+            today = "2026-09-10",
+        )
+
+        assertEquals(listOf(HabitOutcome.UNMET, HabitOutcome.UNKNOWN, HabitOutcome.UNMET), outcomes)
+    }
+
+    @Test
+    fun `explicit habit answer proves recorded check-in even when mood is unanswered`() {
+        val outcomes = habitPeriodOutcomes(
+            listOf(
+                StatsDay(date = "2026-09-08", mood = 0, habits = mapOf("h1" to false)),
+                StatsDay(date = "2026-09-09", mood = 0, habits = mapOf("h1" to true)),
+                StatsDay(date = "2026-09-10", mood = 0, screenTimeSeconds = 120),
+                StatsDay(date = "2026-09-07", mood = 0),
+            ),
+            habitKey = "h1",
+            activeToday = true,
+            today = "2026-09-10",
+        )
+
+        assertEquals(
+            listOf(HabitOutcome.UNMET, HabitOutcome.MET, HabitOutcome.UNKNOWN, HabitOutcome.UNKNOWN),
+            outcomes,
+        )
+    }
+
+    @Test
+    fun `digital ranges end on the last complete date and clamp applied bounds`() {
+        val today = LocalDate.parse("2026-09-10")
+        val week = digitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
+        assertEquals(LocalDate.parse("2026-09-03"), week!!.start)
+        assertEquals(LocalDate.parse("2026-09-09"), week.endInclusive)
+
+        val custom = digitalStatsDateRange(
+            StatsRange.CUSTOM,
+            30,
+            today,
+            ValidatedStatsDateRange(LocalDate.parse("2026-09-08"), LocalDate.parse("2026-09-10")),
+            2026,
+        )
+        assertEquals(LocalDate.parse("2026-09-08"), custom!!.start)
+        assertEquals(LocalDate.parse("2026-09-09"), custom.endInclusive)
+    }
+
+    @Test
+    fun `custom digital period containing only today has no current or comparison dates`() {
+        val today = LocalDate.parse("2026-09-10")
+        val appliedTodayOnly = ValidatedStatsDateRange(today, today)
+        val displayed = digitalStatsDateRange(StatsRange.CUSTOM, 30, today, appliedTodayOnly, 2026)
+
+        assertNull(displayed)
+        // The explicit custom selection is not replaced with the customDays fallback.
+        assertEquals(today, appliedTodayOnly.startInclusive)
+        assertEquals(today, appliedTodayOnly.endInclusive)
+    }
+
+    @Test
+    fun `digital period caption exactly reflects complete chart bounds and empty range`() {
+        val today = LocalDate.parse("2026-09-10")
+        val defaultWeek = digitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
+        assertEquals(
+            "Digitální období: 2026-09-03 – 2026-09-09 · 7 dní",
+            digitalPeriodCaption(defaultWeek),
+        )
+
+        val todayOnly = digitalStatsDateRange(
+            StatsRange.CUSTOM, 30, today, ValidatedStatsDateRange(today, today), 2026,
+        )
+        assertNull(todayOnly)
+        assertEquals(
+            "Digitální období nedostupné: zvolený rozsah neobsahuje žádný dokončený den.",
+            digitalPeriodCaption(todayOnly),
+        )
+    }
+
+    @Test
+    fun `digital comparison follows displayed complete range despite stale mood anchor and today sync`() {
+        val today = LocalDate.parse("2026-09-10")
+        val days = listOf(
+            day("2026-09-03", mood = 0).copy(screenTimeSeconds = 300),
+            day("2026-09-04", mood = 4).copy(screenTimeSeconds = 400),
+            day("2026-09-09", mood = 0).copy(screenTimeSeconds = 900),
+            day("2026-09-10", mood = 0).copy(screenTimeSeconds = 1_000),
+        )
+        val staleMoodAnchor = LocalDate.parse("2026-09-04")
+        assertEquals(staleMoodAnchor, data(today = today.toString(), days = days).moodAnchorDate())
+
+        val displayed = digitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
+        val current = digitalComparisonWindow(displayed!!)
+        val prior = current.previous()
+        val currentRows = days.filter { it.date >= current.startInclusive.toString() && it.date <= current.endInclusive.toString() }
+        val priorRows = days.filter { it.date >= prior.startInclusive.toString() && it.date <= prior.endInclusive.toString() }
+
+        assertEquals(LocalDate.parse("2026-09-03"), current.startInclusive)
+        assertEquals(LocalDate.parse("2026-09-09"), current.endInclusive)
+        assertEquals(7, current.dayCount)
+        assertEquals(LocalDate.parse("2026-08-27"), prior.startInclusive)
+        assertEquals(LocalDate.parse("2026-09-02"), prior.endInclusive)
+        assertEquals(current.dayCount, prior.dayCount)
+        assertEquals(listOf("2026-09-03", "2026-09-04", "2026-09-09"), currentRows.map { it.date })
+        assertFalse(currentRows.any { it.date == today.toString() })
+        assertTrue(priorRows.isEmpty())
+    }
+
+    @Test
+    fun `custom digital comparison uses exact displayed dates not mood anchor`() {
+        val today = LocalDate.parse("2026-09-15")
+        val custom = ValidatedStatsDateRange(LocalDate.parse("2026-09-08"), LocalDate.parse("2026-09-15"))
+        val days = (1..15).map { dayOfMonth ->
+            day("2026-09-${dayOfMonth.toString().padStart(2, '0')}", mood = if (dayOfMonth == 2) 5 else 0)
+                .copy(screenTimeSeconds = dayOfMonth * 60)
+        }
+        assertEquals(LocalDate.parse("2026-09-02"), data(today = today.toString(), days = days).moodAnchorDate())
+        val displayed = digitalStatsDateRange(StatsRange.CUSTOM, 30, today, custom, 2026)
+        val current = digitalComparisonWindow(displayed!!)
+        val prior = current.previous()
+        val currentRows = days.filter { it.date >= current.startInclusive.toString() && it.date <= current.endInclusive.toString() }
+        val priorRows = days.filter { it.date >= prior.startInclusive.toString() && it.date <= prior.endInclusive.toString() }
+
+        assertEquals(LocalDate.parse("2026-09-08"), current.startInclusive)
+        assertEquals(LocalDate.parse("2026-09-14"), current.endInclusive)
+        assertEquals(7, current.dayCount)
+        assertEquals(LocalDate.parse("2026-09-01"), prior.startInclusive)
+        assertEquals(LocalDate.parse("2026-09-07"), prior.endInclusive)
+        assertEquals(7, prior.dayCount)
+        assertEquals((8..14).map { "2026-09-${it.toString().padStart(2, '0')}" }, currentRows.map { it.date })
+        assertFalse(currentRows.any { it.date == today.toString() })
+        assertEquals((1..7).map { "2026-09-${it.toString().padStart(2, '0')}" }, priorRows.map { it.date })
+    }
+
+    @Test
+    fun `top-app-only records make digital data available but an unsynced day is not zero`() {
+        val appOnly = StatsDay(
+            date = "2026-09-08",
+            screenTimeSeconds = null,
+            unlocks = null,
+            topApps = listOf(PhoneTopApp("Reader", 12.5)),
+        )
+        val unsynced = StatsDay(date = "2026-09-09")
+        val reportedZero = StatsDay(date = "2026-09-10", screenTimeSeconds = 0)
+
+        assertTrue(hasDigitalData(listOf(appOnly)))
+        assertFalse(hasDigitalData(listOf(unsynced)))
+        assertTrue(hasDigitalData(listOf(reportedZero)))
+        assertNull(appOnly.screenTimeSeconds)
+    }
+
+    @Test
+    fun `digital selected date is cleared when applied bounds move`() {
+        val start = LocalDate.parse("2026-09-04")
+        val end = LocalDate.parse("2026-09-10")
+
+        assertEquals("2026-09-08", retainSelectedDateWithinBounds("2026-09-08", start, end))
+        assertNull(retainSelectedDateWithinBounds("2026-09-03", start, end))
+        assertNull(retainSelectedDateWithinBounds("2026-09-11", start, end))
+        assertNull(retainSelectedDateWithinBounds("not-a-date", start, end))
+        assertNull(retainSelectedDateWithinBounds(null, start, end))
+    }
+
+    @Test
+    fun `goal loading distinguishes initial, empty, and failed states`() {
+        val initial = GoalStatsLoadState()
+        assertTrue(initial.loading)
+        assertNull(initial.goals)
+        assertNull(initial.errorMessage)
+
+        val empty = initial.success(emptyList())
+        assertFalse(empty.loading)
+        assertEquals(emptyList<cz.digitalnivedomi.diarium.core.data.GoalProgress>(), empty.goals)
+        assertNull(empty.errorMessage)
+
+        val failed = initial.failure("Offline")
+        assertFalse(failed.loading)
+        assertNull(failed.goals)
+        assertEquals("Offline", failed.errorMessage)
+    }
+
+    @Test
+    fun `goal refresh failure preserves previously loaded goals and retry clears error`() {
+        val goal = GoalProgress(
+            goal = Goal("goal-1", "exercise", "Exercise", 3, "weekly", true),
+            count = 2,
+            streak = 1,
+        )
+        val previous = GoalStatsLoadState().success(listOf(goal))
+        val refreshing = previous.begin()
+        assertTrue(refreshing.loading)
+        assertEquals(listOf(goal), refreshing.goals)
+
+        val failed = refreshing.failure("Offline")
+        assertFalse(failed.loading)
+        assertEquals(listOf(goal), failed.goals)
+        assertEquals("Offline", failed.errorMessage)
+
+        val retried = failed.begin()
+        assertTrue(retried.loading)
+        assertEquals(listOf(goal), retried.goals)
+        assertNull(retried.errorMessage)
     }
 
     @Test

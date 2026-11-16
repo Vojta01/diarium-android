@@ -406,7 +406,9 @@ internal fun computeHistory(
         val end = periodEndBack(todayIso, goal.frequency, periodsBack)
         val from = periodStart(end, goal.frequency)
         val fullEnd = if (periodsBack == 0) periodFullEnd(todayIso, goal.frequency) else end
-        if (days.none { it.date in from..end }) {
+        val createdOn = parseGoalCreationDate(goal.createdAt)
+        val predatesGoal = periodsBack > 0 && createdOn != null && from < createdOn.toString()
+        if (predatesGoal || days.none { it.date in from..end }) {
             GoalPeriodResult(start = from, end = fullEnd, dates = emptyList(), met = null)
         } else {
             val logged = activityDates(days, goal.activityKey, from, end).sorted()
@@ -418,6 +420,13 @@ internal fun computeHistory(
             )
         }
     }
+
+/** Parse the calendar date of an ISO date or ISO timestamp; malformed legacy data is ignored. */
+private fun parseGoalCreationDate(createdAt: String): LocalDate? {
+    val value = createdAt.trim()
+    if (value.length < 10 || (value.length > 10 && value[10] != 'T' && value[10] != ' ')) return null
+    return runCatching { LocalDate.parse(value.substring(0, 10)) }.getOrNull()
+}
 
 /**
  * The web's streak algorithm, quirk included: newest-first dates, streak starts

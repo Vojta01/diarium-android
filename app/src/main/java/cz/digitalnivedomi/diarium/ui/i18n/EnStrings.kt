@@ -29,7 +29,40 @@ internal object EnStrings {
         "Digitální srovnání času není dostupné: potřeba alespoň 2 synchronizované dny v každém období; nyní " to "Screen-time comparison unavailable: at least 2 synced days are needed in each period; now ",
         "Odemknutí: nedostatek synchronizovaných dnů; není zobrazeno jako nula." to "Unlocks: not enough synced days; missing data is not shown as zero.",
         "Srovnání není dostupné: předchozí kalendářní období přesahuje načtené pokrytí." to "Comparison unavailable: the previous calendar period is outside loaded coverage.",
+        // Stats mood trends and activity comparisons.
+        "Denní hodnoty" to "Daily values",
+        "Průměr za týden" to "Weekly average",
+        "Průměr za měsíc" to "Monthly average",
+        "Platné odpovědi" to "Valid responses",
+        "Sloupce ukazují průměr za kalendářní období; detail uvádí přesný rozsah a počet platných odpovědí." to
+            "Bars show the average for each calendar period; details show the exact date range and number of valid responses.",
+        "Každý sloupec je konkrétní den. Klepnutím zobrazíš jeho náladu a případný záznam." to
+            "Each bar represents a specific day. Tap to see its mood and any entry.",
+        "🎯 Aktivity a nálada" to "🎯 Activities and mood",
+        "Popisné srovnání nálady se dny bez aktivity; nejde o příčinu ani účinek. Každá skupina potřebuje alespoň 5 platných odpovědí." to
+            "A descriptive comparison of mood on days with and without the activity; it does not show cause or effect. Each group needs at least 5 valid responses.",
+        "V tomto období nemáš u zápisů žádné aktivity." to "There are no activities in your entries for this period.",
+        "Rozdíl průměrů" to "Difference between averages",
+        // Beta11 dashboard trendline and digital-stats cutoff guidance.
+        "Denní čas v minutách; čárkovaná čára ukazuje lineární trend, ne spojení denních hodnot. Chybějící dny jsou mezery a 0 min je skutečná nula." to
+            "Daily screen time in minutes; the dashed line shows a linear trend, not connections between daily values. Missing days are gaps, and 0 min is a true zero.",
+        "Digitální statistiky vždy vynechávají dnešek. Ostatní přehledy končí posledním zaznamenaným dnem; dnešek zahrnou, pokud je check-in dokončen." to
+            "Digital statistics always exclude today. Other summaries end on the last recorded day and include today only when its check-in is complete.",
+        "Posuň slider na hodnotu; ✕ ji vymaže." to "Move the slider to set a value; ✕ clears it.",
+        "Klepnutím nastav" to "Tap to set",
         // Dashboard weekly summary and digital snapshot.
+        "Čas na obrazovce zatím není synchronizovaný." to "Screen time has not synced yet.",
+        "Zatím žádná data o čase na obrazovce. Časy čte aplikace přímo z telefonu (UsageStats, stejně jako Digitální rovnováha); první data se objeví po nejbližší synchronizaci." to
+            "No screen-time data yet. The app reads usage directly from the phone (UsageStats, like Digital Wellbeing); the first data will appear after the next sync.",
+        "Pro tento den nemám žádná data o čase na obrazovce." to "There is no screen-time data for this day.",
+        "Otevřít detail dne" to "Open day details",
+        "Každý sloupec shrnuje přesně uvedené dny; chybějící synchronizace není nula. Klepni na období a vyber konkrétní den." to
+            "Each bar summarizes exactly the days shown; missing sync is not zero. Tap a period to select a specific day.",
+        "Denní čas v minutách; klepnutím otevřeš statistiky. Chybějící dny zůstávají mezerou, 0 min je skutečná nula." to
+            "Daily screen time in minutes; tap to open statistics. Missing days remain gaps; 0 min is a true zero.",
+        "V tomto období nejsou uložené žádné řádky aplikací." to "No app rows are saved for this period.",
+        "Součet uložených řádků; prázdný seznam nelze odlišit od chybějící synchronizace. Denní zdroj obsahuje nejvýše 15 aplikací, takže nejde o úplný žebříček všech aplikací." to
+            "Total of saved rows; an empty list cannot be distinguished from missing sync. The daily source contains at most 15 apps, so this is not a complete ranking of all apps.",
         "Týden v číslech" to "Week in numbers",
         "Srovnat s předchozím obdobím" to "Compare with previous period",
         "Vlastní délka" to "Custom length",

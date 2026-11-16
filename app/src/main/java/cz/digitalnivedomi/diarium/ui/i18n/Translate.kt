@@ -81,6 +81,62 @@ private val RULES: List<Rule> = listOf(
         "${m.groupValues[1]} – ${m.groupValues[2]} vs. ${m.groupValues[3]} – ${m.groupValues[4]} · ${m.groupValues[5]} and ${m.groupValues[6]} responses. This is descriptive, not causal."
     },
     rule("""^(.+) · Δ (.+)$""") { m -> "${translate(m.groupValues[1])} · change ${m.groupValues[2]}" },
+    // Scale endpoints are user-configured Ints and may be negative or explicitly signed.
+    // Keep the shape anchored so unrelated numeric labels are never rewritten.
+    rule("""^([+-]?\d+) = nejhorší · ([+-]?\d+) = nejlepší$""") { m ->
+        "${m.groupValues[1]} = worst · ${m.groupValues[2]} = best"
+    },
+    rule("""^([+-]?\d+) = nejlepší · ([+-]?\d+) = nejhorší$""") { m ->
+        "${m.groupValues[1]} = best · ${m.groupValues[2]} = worst"
+    },
+    rule("""^Rozsah ([+-]?\d+)–([+-]?\d+) · minimum a maximum označují jen číselné krajní body\.$""") { m ->
+        "Range ${m.groupValues[1]}–${m.groupValues[2]} · minimum and maximum indicate numeric endpoints only."
+    },
+    // Stats mood bucket details and activity-group counts are full interpolated labels.
+    rule("""^(\d{4}-\d{2}-\d{2}) – (\d{4}-\d{2}-\d{2})$""") { m ->
+        "${m.groupValues[1]} – ${m.groupValues[2]}"
+    },
+    rule("""^(\d+) / (\d+)$""") { m -> "${m.groupValues[1]} / ${m.groupValues[2]}" },
+    rule("""^Průměr (.+) / 5$""") { m -> "Average ${m.groupValues[1]} / 5" },
+    rule("""^Rozdíl průměrů$""") { "Difference between averages" },
+    rule("""^S aktivitou · n=(\d+)$""") { m -> "With activity · n=${m.groupValues[1]}" },
+    rule("""^Bez aktivity · n=(\d+)$""") { m -> "Without activity · n=${m.groupValues[1]}" },
+    rule("""^Nedostatek dat · s aktivitou n=(\d+), bez aktivity n=(\d+); potřeba alespoň (\d+) v každé skupině\.$""") { m ->
+        "Not enough data · with activity n=${m.groupValues[1]}, without activity n=${m.groupValues[2]}; at least ${m.groupValues[3]} are needed in each group."
+    },
+    // Dashboard week summary and the digital snapshot are passed to Text as complete
+    // interpolated sentences, not as independently rendered fragments.
+    rule("""^(.+)–(.+) · předchozí (.+)–(.+) · série 🔥 (\d+)$""") { m ->
+        "${m.groupValues[1]}–${m.groupValues[2]} · previous ${m.groupValues[3]}–${m.groupValues[4]} · 🔥 ${days(m.groupValues[5].toInt())} streak"
+    },
+    rule("""^Minule (.+) · pokrytí (\d+)/7 · rozdíl (↑|↓|=) (.+)$""") { m ->
+        val difference = when {
+            m.groupValues[4].endsWith(" bodu") -> m.groupValues[4].removeSuffix(" bodu") + " points"
+            m.groupValues[4].endsWith(" bodů") -> m.groupValues[4].removeSuffix(" bodů") + " points"
+            m.groupValues[4].endsWith(" odemknutí") -> m.groupValues[4].removeSuffix(" odemknutí") + " unlocks"
+            else -> m.groupValues[4]
+        }
+        "Previous ${m.groupValues[1]} · coverage ${m.groupValues[2]}/7 · change ${m.groupValues[3]} $difference"
+    },
+    rule("""^Čas na obrazovce · (.+) · pokrytí (\d+)/7 dní$""") { m ->
+        "Screen time · ${m.groupValues[1]} · coverage ${m.groupValues[2]}/7 days"
+    },
+    rule("""^Top 5 aplikací · (.+) · uložené řádky v (\d+)/7 dnech$""") { m ->
+        "Top 5 apps · ${m.groupValues[1]} · saved rows on ${m.groupValues[2]}/7 days"
+    },
+    rule("""^Aplikace dne (.+) · klepni na vybraný den znovu pro celé období\.$""") { m ->
+        "Apps for ${m.groupValues[1]} · tap the selected day again to see the full period."
+    },
+    rule("""^(.+) – (.+) \((\d+) dní\)\. Sloupec = jeden den, přerušovaná čára = průměr\.$""") { m ->
+        "${m.groupValues[1]} – ${m.groupValues[2]} (${days(m.groupValues[3].toInt())}). One bar = one day, dashed line = average."
+    },
+    rule("""^(.+) – (.+) \((\d+) dní\), stejné období jako čas na obrazovce\. Sloupec = jeden den, přerušovaná čára = průměr\.$""") { m ->
+        "${m.groupValues[1]} – ${m.groupValues[2]} (${days(m.groupValues[3].toInt())}), the same period as screen time. " +
+            "One bar = one day, dashed line = average."
+    },
+    rule("""^(\d+)/(\d+) dní · (.+) – (.+)$""") { m ->
+        "${m.groupValues[1]}/${m.groupValues[2]} days · ${m.groupValues[3]} – ${m.groupValues[4]}"
+    },
     // Dashboard weekly summary: coverage and comparisons are dynamically composed.
     rule("""^(\d+)/7 dní$""") { m -> "${m.groupValues[1]}/7 days" },
     rule("""^(\d+) / 7$""") { m -> "${m.groupValues[1]} / 7" },
@@ -90,6 +146,12 @@ private val RULES: List<Rule> = listOf(
     rule("""^Období: (.+) – (.+) · (\d+)/(\d+) dnů se záznamem · (\d+) náladových odpovědí · limit 400 dní$""") { m ->
         "Period: ${m.groupValues[1]} – ${m.groupValues[2]} · ${m.groupValues[3]}/${m.groupValues[4]} days with entries · " +
             "${m.groupValues[5]} mood responses · 400-day limit"
+    },
+    rule("""^Digitální období: ([0-9]{4}-[0-9]{2}-[0-9]{2}) – ([0-9]{4}-[0-9]{2}-[0-9]{2}) · ([0-9]+) dní$""") { m ->
+        "Digital period: ${m.groupValues[1]} – ${m.groupValues[2]} · ${days(m.groupValues[3].toInt())}"
+    },
+    rule("""^Digitální období nedostupné: zvolený rozsah neobsahuje žádný dokončený den[.]$""") {
+        "Digital period unavailable: the selected range contains no completed day."
     },
     rule("""^Srovnání není dostupné: potřeba alespoň 2 zaznamenané nálady v každém období; nyní (\d+) a (\d+)\.$""") { m ->
         "Comparison unavailable: at least 2 recorded moods are needed in each period; there are ${m.groupValues[1]} and ${m.groupValues[2]} now."
