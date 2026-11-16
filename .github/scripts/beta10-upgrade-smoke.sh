@@ -18,8 +18,8 @@ SDK_APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort
 SDK_AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n1)"
 "$SDK_APKSIGNER" verify --print-certs "$BETA9" | tee "$ARTIFACTS/beta9-certificate.txt"
 "$SDK_APKSIGNER" verify --print-certs "$BETA10" | tee "$ARTIFACTS/beta10-certificate.txt"
-grep -F "Signer #1 certificate SHA-256 digest: $CERT" "$ARTIFACTS/beta9-certificate.txt"
-grep -F "Signer #1 certificate SHA-256 digest: $CERT" "$ARTIFACTS/beta10-certificate.txt"
+grep -F "certificate SHA-256 digest: $CERT" "$ARTIFACTS/beta9-certificate.txt"
+grep -F "certificate SHA-256 digest: $CERT" "$ARTIFACTS/beta10-certificate.txt"
 "$SDK_AAPT" dump badging "$BETA9" | grep -F "package: name='$PACKAGE' versionCode='2000109' versionName='2.0.0-beta9'" | tee "$ARTIFACTS/beta9-badging.txt"
 "$SDK_AAPT" dump badging "$BETA10" | grep -F "package: name='$PACKAGE' versionCode='2000110' versionName='2.0.0-beta10'" | tee "$ARTIFACTS/beta10-badging.txt"
 
