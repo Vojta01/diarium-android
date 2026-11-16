@@ -40,13 +40,42 @@ grep -F "certificate SHA-256 digest: $CERT" "$ARTIFACTS/beta11-certificate.txt"
 
 adb wait-for-device
 adb install "$BETA10"
+check_app_crash() {
+  local log_file="$1"
+  local version="$2"
+  # Emulator services can crash independently (the API 34 image's Bluetooth
+  # service did so in the first run). Fail only on crash evidence attributed to
+  # this package, not any system-wide Fatal signal in the shared logcat buffer.
+  if ! python3 - "$log_file" "$PACKAGE" <<'PY'
+import sys
+from pathlib import Path
+
+log_path, package = sys.argv[1:]
+lines = Path(log_path).read_text(errors="replace").splitlines()
+failures = []
+for i, line in enumerate(lines):
+    if "am_crash" in line and package in line:
+        failures.append(line)
+    if "FATAL EXCEPTION" in line:
+        context = "\n".join(lines[i:min(len(lines), i + 16)])
+        if f"Process: {package}" in context:
+            failures.append(context)
+    if "Fatal signal" in line and f"({package})" in line:
+        failures.append(line)
+if failures:
+    print("\n".join(failures), file=sys.stderr)
+    raise SystemExit(1)
+PY
+  then
+    echo "$version launch produced a fatal app crash" >&2
+    return 1
+  fi
+}
+
 adb shell monkey -p "$PACKAGE" 1
 sleep 8
 adb logcat -d -t 5000 > "$ARTIFACTS/beta10-logcat.txt"
-if grep -E 'FATAL EXCEPTION|Fatal signal|am_crash' "$ARTIFACTS/beta10-logcat.txt"; then
-  echo 'beta10 launch produced a fatal crash' >&2
-  exit 1
-fi
+check_app_crash "$ARTIFACTS/beta10-logcat.txt" beta10
 
 if adb shell run-as "$PACKAGE" sh -c 'mkdir -p files && printf "%s" "$1" > files/agent-upgrade-smoke-marker.txt' sh "$MARKER" 2>/dev/null; then
   echo 'MARKER_SEEDED=true' | tee "$ARTIFACTS/marker-status.txt"
@@ -61,10 +90,7 @@ grep -E 'versionCode=2000111|minSdk=26|targetSdk=34' "$ARTIFACTS/package-after-u
 adb shell monkey -p "$PACKAGE" 1
 sleep 10
 adb logcat -d -t 8000 > "$ARTIFACTS/beta11-logcat.txt"
-if grep -E 'FATAL EXCEPTION|Fatal signal|am_crash' "$ARTIFACTS/beta11-logcat.txt"; then
-  echo 'beta11 launch produced a fatal crash' >&2
-  exit 1
-fi
+check_app_crash "$ARTIFACTS/beta11-logcat.txt" beta11
 if grep -q '^MARKER_SEEDED=true' "$ARTIFACTS/marker-status.txt"; then
   adb shell run-as "$PACKAGE" cat files/agent-upgrade-smoke-marker.txt > "$ARTIFACTS/marker-after-upgrade.txt"
   test "$(cat "$ARTIFACTS/marker-after-upgrade.txt")" = "$MARKER"
