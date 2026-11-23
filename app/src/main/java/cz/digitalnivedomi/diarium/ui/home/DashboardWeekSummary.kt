@@ -166,35 +166,6 @@ internal fun dashboardAppCoverage(today: String, entries: Map<String, DiaryEntry
         entries[date]?.phoneTopApps?.any { it.app.isNotBlank() && it.minutes.isFinite() && it.minutes >= 0.0 } == true
     }
 
-internal data class DashboardLinearTrend(
-    val startIndex: Int,
-    val startValue: Double,
-    val endIndex: Int,
-    val endValue: Double,
-)
-
-/** Legacy linear fit; kept for compatibility with callers/tests, not labelled as a smoothed series. */
-internal fun dashboardLinearTrend(values: List<Double?>): DashboardLinearTrend? {
-    val observed = values.mapIndexedNotNull { index, value ->
-        value?.takeIf { it.isFinite() }?.let { index.toDouble() to it }
-    }
-    if (observed.size < 2) return null
-    val meanX = observed.map { it.first }.average()
-    val meanY = observed.map { it.second }.average()
-    val denominator = observed.sumOf { (x, _) -> (x - meanX) * (x - meanX) }
-    if (denominator == 0.0) return null
-    val slope = observed.sumOf { (x, y) -> (x - meanX) * (y - meanY) } / denominator
-    val intercept = meanY - slope * meanX
-    val first = observed.first().first
-    val last = observed.last().first
-    return DashboardLinearTrend(
-        startIndex = first.toInt(),
-        startValue = intercept + slope * first,
-        endIndex = last.toInt(),
-        endValue = intercept + slope * last,
-    )
-}
-
 @Composable
 internal fun DashboardWeekSummary(
     data: DashboardData,
@@ -393,25 +364,6 @@ internal fun DigitalSummaryCard(
                     val y = if (maxSeconds <= 0f) baseline else baseline - chartHeight * average.toFloat() / maxSeconds
                     drawLine(Cyan.copy(alpha = 0.75f), androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(size.width, y), strokeWidth = 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 3.dp.toPx())))
                 }
-                // Fit a least-squares line to the observed daily values. This is a trend,
-                // not a polyline that simply repeats every bar's ups and downs.
-                dashboardLinearTrend(days.map { it?.screenTimeSeconds?.toDouble() })?.let { trend ->
-                    fun trendPoint(index: Int, value: Double): androidx.compose.ui.geometry.Offset {
-                        val x = slot * (index + 0.5f)
-                        val boundedValue = value.toFloat().coerceIn(0f, maxSeconds)
-                        val y = if (maxSeconds <= 0f) baseline
-                            else baseline - chartHeight * boundedValue / maxSeconds
-                        return androidx.compose.ui.geometry.Offset(x, y)
-                    }
-                    drawLine(
-                        color = Cyan,
-                        start = trendPoint(trend.startIndex, trend.startValue),
-                        end = trendPoint(trend.endIndex, trend.endValue),
-                        strokeWidth = 2.dp.toPx(),
-                        cap = StrokeCap.Round,
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())),
-                    )
-                }
                 points.forEachIndexed { index, point ->
                     if (point != null) {
                         drawCircle(Cyan, radius = 2.dp.toPx(), center = point)
@@ -435,7 +387,7 @@ internal fun DigitalSummaryCard(
                     })
                 }
             }
-            Text("Denní čas v minutách; čárkovaná čára ukazuje lineární trend, ne spojení denních hodnot. Chybějící dny jsou mezery a 0 min je skutečná nula.", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+            Text("Sloupce ukazují denní čas v minutách; čárkovaná čára je průměr zaznamenaných dní. Chybějící dny jsou mezery a 0 min je skutečná nula.", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
         }
         VSpace(Spacing.small)
         GlassDivider()

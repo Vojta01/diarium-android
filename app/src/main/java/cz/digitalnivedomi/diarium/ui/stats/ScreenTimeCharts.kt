@@ -893,17 +893,15 @@ private fun AggregatedDigitalCharts(
     metricCard("🔓 Odemknutí", { it.unlocks }, { it.unlocks }, { it.unlockCoverage }, { it?.let(::unlockCountLabel) ?: ScreenTimeSeries.NO_DATA }, "screen_time_unlock_bucket")
 }
 
-/** Timeline for long ranges: chronological bucket columns plus a least-squares trend.
- * Null observations are gaps (not zero); the fitted line uses only valid buckets. */
+/** Long ranges show chronological observed bucket bars and their labeled mean only. */
 @Composable
 private fun TimelineTrendChart(values: List<Int?>, averageValues: List<Int?>, labels: List<String>, testTag: String) {
-    val trend = digitalLinearTrend(averageValues.map { it?.toDouble() })
     val average = averageBucketTotal(averageValues)
-    val scaleValues = values.filterNotNull().map(Int::toDouble) + averageValues.filterNotNull().map(Int::toDouble) + (trend ?: emptyList())
+    val scaleValues = values.filterNotNull().map(Int::toDouble) + averageValues.filterNotNull().map(Int::toDouble)
     val maxValue = scaleValues.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
     Column {
         Canvas(Modifier.fillMaxWidth().height(132.dp).testTagOrEmpty(testTag)
-            .semantics { contentDescription = "Chronological digital statistics chart with ${values.count { it != null }} measured periods and a linear trend" }) {
+            .semantics { contentDescription = "Chronological digital statistics chart with ${values.count { it != null }} measured periods and the average of reported periods excluding today" }) {
             val left = 8f; val right = size.width - 8f; val top = 8f; val bottom = size.height - 8f
             val dx = if (values.size <= 1) 0f else (right - left) / (values.size - 1)
             val barWidth = (size.width / (values.size * 1.8f)).coerceAtLeast(2f)
@@ -922,20 +920,12 @@ private fun TimelineTrendChart(values: List<Int?>, averageValues: List<Int?>, la
                 val y = bottom - (average / maxValue).toFloat().coerceIn(0f, 1f) * (bottom - top)
                 drawLine(IndigoLight.copy(alpha = .85f), Offset(left, y), Offset(right, y), strokeWidth = 1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f)))
             }
-            if (trend != null && values.size > 1) {
-                val path = androidx.compose.ui.graphics.Path()
-                trend.forEachIndexed { index, value ->
-                    val point = Offset(left + index * dx, bottom - (value / maxValue).toFloat() * (bottom - top))
-                    if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
-                }
-                drawPath(path, color = Color.White.copy(alpha = .9f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 5f))))
-            }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(labels.firstOrNull().orEmpty(), style = MaterialTheme.typography.labelSmall, color = TextTertiary, maxLines = 1)
             Text(labels.lastOrNull().orEmpty(), style = MaterialTheme.typography.labelSmall, color = TextTertiary, maxLines = 1)
         }
-        SectionHint("Sloupec = součet za období; modrá přerušková čára = průměrný součet období; bílá přerušková čára = lineární trend. Chybějící období není nula.")
+        SectionHint("Sloupec = skutečný součet za období; modrá přerušková čára = průměr pozorovaných součtů období (dnešek vynechán). Chybějící období není nula.")
     }
 }
 
@@ -951,16 +941,6 @@ internal fun bucketCompletedTotal(
 internal fun averageBucketTotal(totals: List<Int?>): Double? =
     totals.filterNotNull().takeIf { it.isNotEmpty() }?.map { it.toDouble() }?.average()
 
-internal fun digitalLinearTrend(values: List<Double?>): List<Double>? {
-    val points = values.mapIndexedNotNull { index, value -> value?.let { index.toDouble() to it } }
-    if (points.size < 2) return null
-    val mx = points.map { it.first }.average(); val my = points.map { it.second }.average()
-    val denom = points.sumOf { (x, _) -> (x - mx) * (x - mx) }
-    if (denom == 0.0) return null
-    val slope = points.sumOf { (x, y) -> (x - mx) * (y - my) } / denom
-    val intercept = my - slope * mx
-    return values.indices.map { intercept + slope * it }
-}
 
 private fun inclusiveScreenTimeSummary(window: List<ScreenTimeDay>): ScreenTimeSummary {
     val reported = window.filter { it.seconds != null }

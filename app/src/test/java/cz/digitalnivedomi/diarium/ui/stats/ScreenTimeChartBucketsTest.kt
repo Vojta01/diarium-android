@@ -23,15 +23,10 @@ class ScreenTimeChartBucketsTest {
         assertTrue(!unlockCaption(days, 7, "2026-11-24").contains("Dnešek je neúplné období."))
     }
 
-    @Test fun `linear trend uses observed periods and omits insufficient data`() {
-        assertNull(digitalLinearTrend(listOf(5.0, null, null)))
-        val trend = digitalLinearTrend(listOf(2.0, null, 6.0))!!
-        assertEquals(2.0, trend.first(), 0.0001)
-        assertEquals(6.0, trend.last(), 0.0001)
-        val zeroTrend = digitalLinearTrend(listOf(0.0, null, 4.0))!!
-        assertEquals(0.0, zeroTrend.first(), 0.0001)
-        assertEquals(4.0, zeroTrend.last(), 0.0001)
-        assertNull(digitalLinearTrend(listOf(null, null)))
+    @Test fun `long range comparison mean uses only reported completed periods`() {
+        assertEquals(50.0, averageBucketTotal(listOf(70, null, 30))!!, 0.0001)
+        assertEquals(0.0, averageBucketTotal(listOf(0, null))!!, 0.0001)
+        assertNull(averageBucketTotal(listOf(null, null)))
     }
 
     @Test fun `inclusive global end allows today and rejects reversed or invalid bounds`() {

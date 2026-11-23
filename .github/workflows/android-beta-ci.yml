@@ -7,13 +7,14 @@ on:
       - ci/android-beta8-conflict-resolution
       - ci/android-beta9-usage-conflicts
       - ci/android-beta12-backlog-30-35
+      - ci/android-beta13-bars-mean-tests
 
 permissions:
   contents: read
 
 jobs:
   android-unit-tests:
-    if: startsWith(github.ref, 'refs/heads/ci/android-beta')
+    if: github.ref == 'refs/heads/ci/android-beta13-bars-mean-tests'
     name: Android unit tests (no APK or release)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -54,7 +55,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-beta7-legacy-adoption-test-reports
+          name: android-beta13-bars-mean-test-reports
           path: |
             app/build/test-results/testDebugUnitTest/TEST-*.xml
             app/build/reports/tests/testDebugUnitTest/**
