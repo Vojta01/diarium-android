@@ -35,8 +35,8 @@ class ScreenTimeChartBucketsTest {
     }
 
     @Test fun `inclusive global end allows today and rejects reversed or invalid bounds`() {
-        assertEquals("2026-11-16", completedScreenTimeEnd("2026-11-09", "2026-11-16", "2026-11-16"))
-        assertEquals("2026-11-12", completedScreenTimeEnd("2026-11-09", "2026-11-12", "2026-11-16"))
+        assertEquals("2026-11-16", visibleScreenTimeEnd("2026-11-09", "2026-11-16", "2026-11-16"))
+        assertEquals("2026-11-12", visibleScreenTimeEnd("2026-11-09", "2026-11-12", "2026-11-16"))
         assertNull(completedScreenTimeEnd("2026-11-17", "2026-11-16", "2026-11-16"))
         assertNull(completedScreenTimeEnd("bad", "2026-11-16", "2026-11-16"))
     }
@@ -52,7 +52,28 @@ class ScreenTimeChartBucketsTest {
         )
         assertEquals(75_600, withToday.last().seconds)
         assertNull(withToday.last().unlocks)
-        assertEquals("2026-11-23", completedScreenTimeEnd("2026-11-17", "2026-11-23", "2026-11-23"))
+        assertEquals("2026-11-23", visibleScreenTimeEnd("2026-11-17", "2026-11-23", "2026-11-23"))
+    }
+
+    @Test fun `today reaches chart source bounds but not completed comparison and preserves zero versus missing`() {
+        val today = LocalDate.parse("2026-11-23")
+        val custom = ValidatedStatsDateRange(today.minusDays(2), today)
+        val chartBounds = digitalStatsDateRange(StatsRange.CUSTOM, 30, today, custom, 2026)!!
+        val completeBounds = completedDigitalStatsDateRange(StatsRange.CUSTOM, 30, today, custom, 2026)!!
+        val source = listOf(
+            StatsDay("2026-11-20", screenTimeSeconds = 777), // outside custom selection
+            StatsDay("2026-11-21", screenTimeSeconds = 0, unlocks = 0),
+            StatsDay("2026-11-22", screenTimeSeconds = null, unlocks = null),
+            StatsDay("2026-11-23", screenTimeSeconds = 90, unlocks = null),
+        )
+        val visible = source.filter { runCatching { LocalDate.parse(it.date) }.getOrNull()?.let(chartBounds::contains) == true }
+        val compared = source.filter { runCatching { LocalDate.parse(it.date) }.getOrNull()?.let(completeBounds::contains) == true }
+        assertEquals(listOf("2026-11-21", "2026-11-22", "2026-11-23"), visible.map { it.date })
+        assertEquals(listOf("2026-11-21", "2026-11-22"), compared.map { it.date })
+        assertEquals(0, visible.first().screenTimeSeconds)
+        assertNull(visible[1].screenTimeSeconds)
+        assertEquals(90, visible.last().screenTimeSeconds)
+        assertNull(visible.last().unlocks)
     }
 
     @Test fun `end before today remains unchanged`() {

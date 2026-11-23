@@ -118,13 +118,13 @@ fun ScreenTimeCharts(
     var expandedBucketStart by remember { mutableStateOf<String?>(null) }
 
     val explicitRange = true
-    // Contract: bars represent complete dates only, even if global bounds include today.
-    val effectiveEnd = completedScreenTimeEnd(startDate, endDate, today)
+    // Timeline bars include today's partial observation; aggregate summaries exclude it.
+    val effectiveEnd = visibleScreenTimeEnd(startDate, endDate, today)
     val window = if (effectiveEnd != null && startDate <= effectiveEnd)
         ScreenTimeDateRange.days(entries, startDate, effectiveEnd) else emptyList()
     val effectiveDays = window.size.coerceAtLeast(1)
     val summary = inclusiveScreenTimeSummary(window.filterNot { it.date == today })
-    val unlocks = inclusiveUnlockSummary(window)
+    val unlocks = inclusiveUnlockSummary(window.filterNot { it.date == today })
     val windowDates = window.map { it.date }.toSet()
     val windowEntries = entries.filter { it.date in windowDates }
     val selectedEntries = if (selectedDate == null) windowEntries else windowEntries.filter { it.date == selectedDate }
@@ -765,8 +765,8 @@ private fun AppRow(
     }
 }
 
-/** Clamp the inclusive global end to today; current-day usage remains visible in the timeline. */
-internal fun completedScreenTimeEnd(startDate: String, endDate: String, today: String): String? {
+/** Clamp the inclusive chart end to today; current-day usage remains visible in the timeline. */
+internal fun visibleScreenTimeEnd(startDate: String, endDate: String, today: String): String? {
     val start = runCatching { LocalDate.parse(startDate) }.getOrNull() ?: return null
     val end = runCatching { LocalDate.parse(endDate) }.getOrNull() ?: return null
     val current = runCatching { LocalDate.parse(today) }.getOrNull() ?: return null
@@ -774,6 +774,11 @@ internal fun completedScreenTimeEnd(startDate: String, endDate: String, today: S
     // Current-day usage is a valid partial observation; missing values stay null.
     return minOf(end, current).toString()
 }
+
+/** Completed-day cutoff for comparison summaries; chart bounds intentionally use visibleScreenTimeEnd. */
+internal fun completedScreenTimeEnd(startDate: String, endDate: String, today: String): String? =
+    visibleScreenTimeEnd(startDate, endDate, today)?.let { minOf(it, LocalDate.parse(today).minusDays(1).toString()) }
+        ?.takeIf { it >= startDate }
 
 /** A readable bucket whose [days] retain exact source dates for subsequent drill-down. */
 internal data class ScreenTimeChartBucket(

@@ -371,11 +371,11 @@ class StatsStateTest {
     @Test
     fun `digital ranges end on the last complete date and clamp applied bounds`() {
         val today = LocalDate.parse("2026-09-10")
-        val week = digitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
+        val week = completedDigitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
         assertEquals(LocalDate.parse("2026-09-03"), week!!.start)
         assertEquals(LocalDate.parse("2026-09-09"), week.endInclusive)
 
-        val custom = digitalStatsDateRange(
+        val custom = completedDigitalStatsDateRange(
             StatsRange.CUSTOM,
             30,
             today,
@@ -390,7 +390,7 @@ class StatsStateTest {
     fun `custom digital period containing only today has no current or comparison dates`() {
         val today = LocalDate.parse("2026-09-10")
         val appliedTodayOnly = ValidatedStatsDateRange(today, today)
-        val displayed = digitalStatsDateRange(StatsRange.CUSTOM, 30, today, appliedTodayOnly, 2026)
+        val displayed = completedDigitalStatsDateRange(StatsRange.CUSTOM, 30, today, appliedTodayOnly, 2026)
 
         assertNull(displayed)
         // The explicit custom selection is not replaced with the customDays fallback.
@@ -401,13 +401,13 @@ class StatsStateTest {
     @Test
     fun `digital period caption exactly reflects complete chart bounds and empty range`() {
         val today = LocalDate.parse("2026-09-10")
-        val defaultWeek = digitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
+        val defaultWeek = completedDigitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
         assertEquals(
             "Digitální období: 2026-09-03 – 2026-09-09 · 7 dní",
             digitalPeriodCaption(defaultWeek),
         )
 
-        val todayOnly = digitalStatsDateRange(
+        val todayOnly = completedDigitalStatsDateRange(
             StatsRange.CUSTOM, 30, today, ValidatedStatsDateRange(today, today), 2026,
         )
         assertNull(todayOnly)
@@ -429,7 +429,7 @@ class StatsStateTest {
         val staleMoodAnchor = LocalDate.parse("2026-09-04")
         assertEquals(staleMoodAnchor, data(today = today.toString(), days = days).moodAnchorDate())
 
-        val displayed = digitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
+        val displayed = completedDigitalStatsDateRange(StatsRange.WEEK, 30, today, null, 2026)
         val current = digitalComparisonWindow(displayed!!)
         val prior = current.previous()
         val currentRows = days.filter { it.date >= current.startInclusive.toString() && it.date <= current.endInclusive.toString() }
@@ -455,7 +455,7 @@ class StatsStateTest {
                 .copy(screenTimeSeconds = dayOfMonth * 60)
         }
         assertEquals(LocalDate.parse("2026-09-02"), data(today = today.toString(), days = days).moodAnchorDate())
-        val displayed = digitalStatsDateRange(StatsRange.CUSTOM, 30, today, custom, 2026)
+        val displayed = completedDigitalStatsDateRange(StatsRange.CUSTOM, 30, today, custom, 2026)
         val current = digitalComparisonWindow(displayed!!)
         val prior = current.previous()
         val currentRows = days.filter { it.date >= current.startInclusive.toString() && it.date <= current.endInclusive.toString() }

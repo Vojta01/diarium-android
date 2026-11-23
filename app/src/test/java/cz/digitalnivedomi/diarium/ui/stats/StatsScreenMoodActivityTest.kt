@@ -57,8 +57,8 @@ class StatsScreenMoodActivityTest {
     @Test fun `custom digital range with no complete day is empty and never invents an interval`() {
         val today = LocalDate.parse("2026-11-16")
         val todayOnly = ValidatedStatsDateRange(today, today)
-        assertNull(digitalStatsDateRange(StatsRange.CUSTOM, 30, today, todayOnly, 2026))
-        assertNull(digitalStatsDateRange(
+        assertNull(completedDigitalStatsDateRange(StatsRange.CUSTOM, 30, today, todayOnly, 2026))
+        assertNull(completedDigitalStatsDateRange(
             StatsRange.CUSTOM, 30, today, ValidatedStatsDateRange(today.plusDays(1), today.plusDays(2)), 2026,
         ))
     }
@@ -67,7 +67,7 @@ class StatsScreenMoodActivityTest {
         val today = LocalDate.parse("2026-11-16")
         val custom = ValidatedStatsDateRange(today.minusDays(2), today)
         assertEquals(DateRange(today.minusDays(2), today.minusDays(1)),
-            digitalStatsDateRange(StatsRange.CUSTOM, 30, today, custom, 2026))
+            completedDigitalStatsDateRange(StatsRange.CUSTOM, 30, today, custom, 2026))
     }
 
     @Test fun `digital empty range presents a truthful empty state`() {

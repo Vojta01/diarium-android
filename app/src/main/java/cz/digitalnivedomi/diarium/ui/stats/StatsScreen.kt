@@ -564,7 +564,7 @@ internal fun digitalPeriodCaption(digitalDates: DateRange?): String = digitalDat
     "Digitální období: ${bounds.start} – ${bounds.endInclusive} · ${bounds.dayCount} dní"
 } ?: "Digitální období nedostupné: zvolený rozsah neobsahuje žádný dokončený den."
 
-internal fun digitalStatsDateRange(
+internal fun completedDigitalStatsDateRange(
     range: StatsRange,
     customDays: Int,
     today: LocalDate,
@@ -587,6 +587,27 @@ internal fun digitalStatsDateRange(
     }
     val count = range.dayCount(customDays, lastAvailableDate)
     return DateRange(lastAvailableDate.minusDays((count - 1).toLong()), lastAvailableDate)
+}
+
+/** Visible digital timeline bounds include today; completed comparisons use completedDigitalStatsDateRange. */
+internal fun digitalStatsDateRange(
+    range: StatsRange,
+    customDays: Int,
+    today: LocalDate,
+    customRange: ValidatedStatsDateRange?,
+    year: Int,
+): DateRange? {
+    if (range == StatsRange.CUSTOM) {
+        val applied = customRange ?: return null
+        val end = minOf(applied.endInclusive, today)
+        return if (applied.startInclusive <= end) DateRange(applied.startInclusive, end) else null
+    }
+    if (range == StatsRange.YEAR) {
+        val start = LocalDate.of(year, 1, 1)
+        return DateRange(start, maxOf(start, minOf(LocalDate.of(year, 12, 31), today)))
+    }
+    val count = range.dayCount(customDays, today)
+    return DateRange(today.minusDays((count - 1).toLong()), today)
 }
 
 @Composable
@@ -629,7 +650,8 @@ private fun StatsContent(
         range, customDays, categoryAnchor, LocalDate.parse(data.today), appliedRange, data.year,
         capCustomToMoodAnchor = category == StatsCategory.MOOD,
     )
-    val digitalDates = digitalStatsDateRange(range, customDays, LocalDate.parse(data.today), appliedRange, data.year)
+    val digitalDates = completedDigitalStatsDateRange(range, customDays, LocalDate.parse(data.today), appliedRange, data.year)
+    val digitalChartDates = digitalStatsDateRange(range, customDays, LocalDate.parse(data.today), appliedRange, data.year)
     val days = data.days.filter { day -> runCatching { LocalDate.parse(day.date) }.getOrNull()?.let { selectedDates?.contains(it) == true } == true }
     val previous = if (range == StatsRange.CUSTOM && appliedRange != null) {
         val count = appliedRange.dayCount
@@ -686,8 +708,8 @@ private fun StatsContent(
                     startDate = selectedDates.start, endDate = selectedDates.endInclusive)
                 StatsCategory.HABITS -> HabitsCategory(days, habitLabels, activeHabitKeys, scaleLabels, scaleMinima, scaleMaxima, labelsLoaded, data.today)
                 StatsCategory.DIGITAL -> DigitalCategory(
-                    digitalDates?.let { bounds -> data.days.filter { day -> runCatching { LocalDate.parse(day.date) }.getOrNull()?.let(bounds::contains) == true } }.orEmpty(),
-                    digitalDates, data.today, selectedDigitalDate, onSelectDigitalDate,
+                    digitalChartDates?.let { bounds -> data.days.filter { day -> runCatching { LocalDate.parse(day.date) }.getOrNull()?.let(bounds::contains) == true } }.orEmpty(),
+                    digitalChartDates, data.today, selectedDigitalDate, onSelectDigitalDate,
                 )
                 StatsCategory.YEAR -> YearCategory(data, onOpenDay, onOpenHistoryMonth)
             }
