@@ -16,7 +16,7 @@ class ScreenTimeChartBucketsTest {
     }
 
     @Test fun `captions determine partial today from injected date`() {
-        val days = listOf(ScreenTimeDay("2026-11-23", 60, 2))
+        val days = listOf(ScreenTimeDay("2026-11-23", 60, 2, hasApps = false))
         assertTrue(windowCaption(days, 7, "2026-11-23").contains("Dnešek je neúplné období."))
         assertTrue(unlockCaption(days, 7, "2026-11-23").contains("Dnešek je neúplné období."))
         assertTrue(!windowCaption(days, 7, "2026-11-24").contains("Dnešek je neúplné období."))
