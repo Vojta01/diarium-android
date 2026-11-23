@@ -34,7 +34,9 @@ android {
     val localKeystoreProps = rootProject.file("keystore.properties")
     val envKeystorePath = System.getenv("ANDROID_KEYSTORE_FILE")
     signingConfigs {
-        if (localKeystoreProps.exists() || !envKeystorePath.isNullOrBlank()) {
+        if (System.getenv("ANDROID_UNSIGNED_RELEASE") != "true" &&
+            (localKeystoreProps.exists() || !envKeystorePath.isNullOrBlank())
+        ) {
             create("release") {
                 if (localKeystoreProps.exists()) {
                     val props = Properties().apply {
@@ -104,7 +106,9 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             val stableSigning = signingConfigs.findByName("release")
-            if (stableSigning == null) {
+            if (System.getenv("ANDROID_UNSIGNED_RELEASE") == "true") {
+                // CI-only candidate artifact: intentionally leave release APK unsigned.
+            } else if (stableSigning == null) {
                 logger.warn(
                     "Diarium: no release keystore found (keystore.properties / ANDROID_KEYSTORE_* env vars) — " +
                         "this release APK is signed with the DEBUG key and must not be distributed."
