@@ -1,0 +1,68 @@
+name: Android beta13 release candidate (unsigned)
+
+on:
+  push:
+    branches:
+      - ci/android-beta13-bars-mean-tests
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/ci/android-beta13-bars-mean-tests'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android build packages
+        run: sdkmanager 'platforms;android-34' 'build-tools;34.0.0'
+      - name: Restore required Firebase configuration
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$GOOGLE_SERVICES_JSON" ]]; then
+            echo '::error::GOOGLE_SERVICES_JSON is required for the FCM-enabled release candidate.'
+            exit 1
+          fi
+          printf '%s' "$GOOGLE_SERVICES_JSON" | tr -d ' \n\r' | base64 --decode > app/google-services.json
+          python3 -c 'import json; json.load(open("app/google-services.json"))'
+          unset GOOGLE_SERVICES_JSON
+          echo 'Firebase config restored and validated (content not displayed).'
+      - name: Build unsigned release APK
+        env:
+          ANDROID_UNSIGNED_RELEASE: 'true'
+          APP_VERSION_NAME: 2.0.0-beta13
+          APP_VERSION_CODE: '2000113'
+        run: ./gradlew --no-daemon assembleRelease
+      - name: Verify candidate metadata and unsigned state
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump badging "$apk" | grep -F "versionCode='2000113' versionName='2.0.0-beta13'"
+          if apksigner verify "$apk" >/dev/null 2>&1; then
+            echo '::error::Candidate unexpectedly has a signature.'
+            exit 1
+          fi
+          mkdir -p candidate
+          cp "$apk" candidate/diarium-2.0.0-beta13-unsigned.apk
+          sha256sum candidate/diarium-2.0.0-beta13-unsigned.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diarium-2.0.0-beta13-unsigned-rc
+          path: candidate/diarium-2.0.0-beta13-unsigned.apk
+          if-no-files-found: error
+          retention-days: 3
