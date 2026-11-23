@@ -1,11 +1,11 @@
 # Diarium Android — buildy
 
-Nejnovější: **2.0.0-beta10**
+Nejnovější: **2.0.0-beta12**
 
-* `diarium-2.0.0-beta10.apk` — tato verze (odkaz pro stažení)
+* `diarium-2.0.0-beta12.apk` — tato verze (odkaz pro stažení)
 * `diarium-2.0.0-beta11.apk` — předchozí verze
 * `diarium.apk` — vždy nejnovější (GitHub u raw odkazů cachuje, proto mají
   jednotlivé verze vlastní soubor)
 
-Podepsané stabilním release klíčem, takže se aplikace aktualizuje přes sebe,
-bez odinstalace.
+Podepsané stejným release klíčem jako předchozí beta, takže lze aktualizovat
+přes existující instalaci. Zachování dat aplikace při upgradu nebylo ověřeno.
