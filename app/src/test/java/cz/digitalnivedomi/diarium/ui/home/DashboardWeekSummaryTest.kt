@@ -81,10 +81,10 @@ class DashboardWeekSummaryTest {
         val empty = dashboardWeekMetric(today, emptyList(), emptyList(), DashboardMetricKind.SCREEN_TIME)
         assertNull(empty.value)
         assertEquals(0, empty.coveredDays)
-        val zeros = dashboardCompletedWeek(today).map { day(it, seconds = 0, unlocks = 0) }
+        val zeros = dashboardComparisonWindow(today, previous = false).map { day(it, seconds = 0, unlocks = 0) }
         val zeroMetric = dashboardWeekMetric(today, zeros, emptyList(), DashboardMetricKind.SCREEN_TIME)
         assertEquals(0.0, zeroMetric.value!!, 0.0)
-        assertEquals(dashboardComparisonWindow(today, previous = false).size, zeroMetric.coveredDays)
+        assertEquals(zeros.size, zeroMetric.coveredDays)
         assertEquals(0, dashboardAppCoverage(today, emptyMap()))
     }
 

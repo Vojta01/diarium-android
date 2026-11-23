@@ -109,7 +109,7 @@ class ScreenTimeChartBucketsTest {
             ScreenTimeDay(date, seconds = if (offset == 88) 120 else if (offset == 89) 60 else null,
                 unlocks = if (offset == 89) 0 else null, hasApps = false)
         }
-        val todayBucket = screenTimeBuckets(days).last()
+        val todayBucket = screenTimeBuckets(days, today = today.toString()).last()
         assertEquals(60, bucketObservedTotal(todayBucket.days) { it.seconds })
         assertEquals(0, bucketCompletedTotal(todayBucket.days, today.toString()) { it.seconds })
         assertEquals(0, bucketObservedTotal(todayBucket.days) { it.unlocks })

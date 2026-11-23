@@ -131,7 +131,7 @@ fun ScreenTimeCharts(
     val selectedDay = selectedDate?.let { date -> window.firstOrNull { it.date == date } }
     val selectedTotalSeconds = if (selectedDate == null) summary.totalSeconds else selectedDay?.seconds ?: 0
     val breakdown = StatsMath.topApps(selectedEntries, limit = APP_LIST_LIMIT)
-    val buckets = screenTimeBuckets(window)
+    val buckets = screenTimeBuckets(window, today = today)
     val aggregated = buckets.any { it.days.size > 1 }
 
     Column(
@@ -794,19 +794,23 @@ internal data class ScreenTimeChartBucket(
 }
 
 /** Weekly buckets through 90 days, calendar-month buckets beyond; bounds stay inclusive. */
-internal fun screenTimeBuckets(days: List<ScreenTimeDay>): List<ScreenTimeChartBucket> {
+internal fun screenTimeBuckets(days: List<ScreenTimeDay>, today: String? = null): List<ScreenTimeChartBucket> {
     if (days.isEmpty()) return emptyList()
     val ordered = days.sortedBy { it.date }
     val start = runCatching { LocalDate.parse(ordered.first().date) }.getOrNull() ?: return emptyList()
     val end = runCatching { LocalDate.parse(ordered.last().date) }.getOrNull() ?: return emptyList()
     val span = ChronoUnit.DAYS.between(start, end).toInt() + 1
     // Short periods are genuinely daily: never collapse 7 or 30 dates into one bar.
-    // Calendar weeks keep the longer ~90-day view readable, then months take over.
+    // For 31–90 days, completed dates use calendar weeks and a present today is its
+    // own bucket, so its partial value is visible without blending into a complete week.
+    val todayEntry = ordered.lastOrNull()?.takeIf { it.date == today }
+    val completed = if (todayEntry == null) ordered else ordered.dropLast(1)
     val groups = if (span <= 30) ordered.map { listOf(it) } else if (span <= 90) {
-        ordered.groupBy { date ->
+        val weekly = completed.groupBy { date ->
             val d = LocalDate.parse(date.date)
             d.minusDays((d.dayOfWeek.value - 1).toLong()).toString()
         }.toSortedMap().values.toList()
+        weekly + listOfNotNull(todayEntry?.let { listOf(it) })
     } else {
         ordered.groupBy { YearMonth.from(LocalDate.parse(it.date)).toString() }
             .toSortedMap().values.toList()
