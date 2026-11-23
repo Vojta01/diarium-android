@@ -890,7 +890,7 @@ private fun AggregatedDigitalCharts(
 private fun TimelineTrendChart(values: List<Int?>, averageValues: List<Int?>, labels: List<String>, testTag: String) {
     val trend = digitalLinearTrend(averageValues.map { it?.toDouble() })
     val average = averageBucketTotal(averageValues)
-    val scaleValues = values.filterNotNull() + averageValues.filterNotNull() + (trend ?: emptyList())
+    val scaleValues = values.filterNotNull().map(Int::toDouble) + averageValues.filterNotNull().map(Int::toDouble) + (trend ?: emptyList())
     val maxValue = scaleValues.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
     Column {
         Canvas(Modifier.fillMaxWidth().height(132.dp).testTagOrEmpty(testTag)
