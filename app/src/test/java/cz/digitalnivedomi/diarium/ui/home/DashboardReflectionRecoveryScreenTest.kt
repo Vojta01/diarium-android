@@ -281,6 +281,10 @@ class DashboardReflectionRecoveryScreenTest {
             compose.waitUntil(TIMEOUT) {
                 compose.onAllNodesWithText(GENERATED_TEXT).fetchSemanticsNodes().isNotEmpty()
             }
+            compose.waitUntil(TIMEOUT) {
+                stageRetryHolder.get(OWNER_ID, DATE)?.reflection == GENERATED_TEXT &&
+                    compose.onAllNodesWithTag("dashboard_reflection_copy").fetchSemanticsNodes().isNotEmpty()
+            }
             compose.onNodeWithTag("dashboard_reflection_copy").assertExists()
             assertEquals(GENERATED_TEXT, stageRetryHolder.get(OWNER_ID, DATE)?.reflection)
             assertNull("another account cannot retrieve this staged text", stageRetryHolder.get(OTHER_OWNER_ID, DATE))
