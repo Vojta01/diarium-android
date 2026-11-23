@@ -46,30 +46,29 @@ class DashboardWeekSummaryTest {
     }
 
     @Test
-    fun `completed metric distinguishes missing from zero and withholds partial comparisons`() {
+    fun `week metric compares elapsed weekdays and withholds incomplete coverage`() {
         val today = "2026-11-15"
         val rows = listOf(
-            day("2026-11-08", mood = 5, seconds = 0, unlocks = 0),
-            day("2026-11-09", mood = 3, seconds = 3_600, unlocks = null),
-            day("2026-11-10", mood = 0, seconds = null, unlocks = null),
-            day("2026-11-11", mood = 4, seconds = 1_800, unlocks = 2),
-            day("2026-11-14", mood = 1, seconds = 0, unlocks = 0),
-            day("2026-11-15", mood = 5, seconds = 86_400, unlocks = 99),
-            day("2026-11-01", mood = 2, seconds = 600, unlocks = 1),
-            day("2026-11-02", mood = 0, seconds = null, unlocks = null),
-            day("2026-11-03", mood = 3, seconds = 1_200, unlocks = 2),
-            day("2026-10-31", mood = 5, seconds = 99_999, unlocks = 99),
+            day("2026-11-09", mood = 5, seconds = 0, unlocks = 0),
+            day("2026-11-10", mood = 3, seconds = 3_600, unlocks = null),
+            day("2026-11-11", mood = 0, seconds = null, unlocks = null),
+            day("2026-11-12", mood = 4, seconds = 1_800, unlocks = 2),
+            day("2026-11-13", mood = 1, seconds = 0, unlocks = 0),
+            day("2026-11-14", mood = 5, seconds = 86_400, unlocks = 99),
+            day("2026-11-02", mood = 2, seconds = 600, unlocks = 1),
+            day("2026-11-03", mood = 0, seconds = null, unlocks = null),
+            day("2026-11-04", mood = 3, seconds = 1_200, unlocks = 2),
         )
         val mood = dashboardWeekMetric(today, rows, rows, DashboardMetricKind.MOOD)
-        assertEquals(3.25, mood.value!!, 0.0)
-        assertEquals(4, mood.coveredDays)
+        assertEquals(3.6, mood.value!!, 0.0001)
+        assertEquals(5, mood.coveredDays)
         assertEquals(2.5, mood.previousValue!!, 0.0)
         assertEquals(2, mood.previousCoveredDays)
         assertNull(mood.difference)
 
         val screen = dashboardWeekMetric(today, rows, rows, DashboardMetricKind.SCREEN_TIME)
-        assertEquals(90.0, screen.value!!, 0.0)
-        assertEquals(4, screen.coveredDays)
+        assertEquals(1_530.0, screen.value!!, 0.0)
+        assertEquals(5, screen.coveredDays)
         assertEquals(30.0, screen.previousValue!!, 0.0)
         assertNull(screen.difference)
         assertFalse(hasComparableCoverage(screen.coveredDays, screen.previousCoveredDays))
@@ -92,48 +91,57 @@ class DashboardWeekSummaryTest {
     @Test
     fun `fully covered windows expose signed difference and direction eligibility`() {
         val today = "2026-01-01"
-        val current = dashboardCompletedWeek(today).mapIndexed { index, date -> day(date, mood = 4, seconds = index * 60, unlocks = 1) }
-        val previous = dashboardCompletedWeek(today, 1).mapIndexed { index, date -> day(date, mood = 2, seconds = index * 120, unlocks = 1) }
+        val currentDates = dashboardComparisonWindow(today, previous = false)
+        val previousDates = dashboardComparisonWindow(today, previous = true)
+        val current = currentDates.mapIndexed { index, date -> day(date, mood = 4, seconds = index * 60, unlocks = 1) }
+        val previous = previousDates.mapIndexed { index, date -> day(date, mood = 2, seconds = index * 120, unlocks = 1) }
         val metric = dashboardWeekMetric(today, current + previous, current + previous, DashboardMetricKind.SCREEN_TIME)
-        assertEquals(21.0, metric.value!!, 0.0)
-        assertEquals(42.0, metric.previousValue!!, 0.0)
-        assertEquals(-21.0, metric.difference!!, 0.0)
-        assertTrue(hasComparableCoverage(metric.coveredDays, metric.previousCoveredDays))
+        assertEquals(6.0, metric.value!!, 0.0)
+        assertEquals(12.0, metric.previousValue!!, 0.0)
+        assertEquals(-6.0, metric.difference!!, 0.0)
+        assertTrue(hasComparableCoverage(metric.coveredDays, metric.previousCoveredDays, currentDates.size))
         assertNull(coverageComparisonHint(7, 7))
     }
 
     @Test
-    fun `trend is regression over observed bars and preserves calendar gaps`() {
-        val trend = dashboardLinearTrend(listOf(1.0, 100.0, null, 4.0, 7.0))!!
-        assertEquals(0, trend.startIndex)
-        assertEquals(4, trend.endIndex)
-        // The fitted trend smooths the outlier instead of joining raw bar values.
-        assertTrue(trend.startValue > 1.0)
-        assertTrue(trend.startValue < 100.0)
-        assertTrue(trend.endValue > 0.0)
-        assertTrue(trend.endValue != 7.0)
-        assertNull(dashboardLinearTrend(listOf(null, 0.0, null)))
+    fun `elapsed week compares same weekdays and requires matching observed coverage`() {
+        val today = "2026-11-25" // Wednesday
+        val current = dashboardComparisonWindow(today, previous = false)
+        val previous = dashboardComparisonWindow(today, previous = true)
+        assertEquals(listOf("2026-11-23", "2026-11-24", "2026-11-25"), current)
+        assertEquals(listOf("2026-11-16", "2026-11-17", "2026-11-18"), previous)
+        val rows = (current + previous).map { day(it, seconds = 60, unlocks = 1) }
+        val metric = dashboardWeekMetric(today, rows, rows, DashboardMetricKind.SCREEN_TIME)
+        assertEquals(3, metric.coveredDays)
+        assertEquals(3, metric.previousCoveredDays)
+        assertEquals(0.0, metric.difference!!, 0.0)
+        val missing = dashboardWeekMetric(today, rows.dropLast(1), rows, DashboardMetricKind.SCREEN_TIME)
+        assertNull(missing.difference)
     }
 
     @Test
-    fun `app aggregation is inclusive over completed days normalizes keys ranks and caps five`() {
-        val today = "2026-03-01"
+    fun `average uses finite observations and excludes missing days`() {
+        assertEquals(2.0, dashboardObservedAverage(listOf(1.0, null, 3.0, Double.NaN))!!, 0.0)
+        assertNull(dashboardObservedAverage(listOf(null, Double.NaN)))
+    }
+
+    @Test
+    fun `app aggregation uses elapsed days normalizes keys ranks and caps five`() {
+        val today = "2026-03-04" // Wednesday
         val entries = linkedMapOf(
-            "2026-02-22" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp(" Chat ", 12.5), PhoneTopApp("Maps", 4))),
-            "2026-02-23" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("chat", 7.5), PhoneTopApp("Mail", 9))),
-            "2026-02-24" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("Video", 8), PhoneTopApp("Music", 7))),
-            "2026-02-25" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("Books", 6))),
-            "2026-02-27" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp(" ", Double.NaN))),
-            "2026-02-28" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("Games", 5))),
-            "2026-03-01" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("Today only", 999))),
+            "2026-03-02" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp(" Chat ", 12.5), PhoneTopApp("Maps", 4))),
+            "2026-03-03" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("chat", 7.5), PhoneTopApp("Mail", 9))),
+            "2026-03-04" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("Today", 8), PhoneTopApp("Music", 7))),
+            "2026-03-01" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("Prior week", 999))),
+            "2026-03-05" to DiaryEntry(phoneTopApps = listOf(PhoneTopApp("Future", 999))),
         )
         val apps = aggregateDashboardTopApps(today, entries)
         assertEquals(5, apps.size)
         assertEquals("Chat", apps.first().app)
         assertEquals(20.0, apps.first().minutes, 0.0)
-        assertFalse(apps.any { it.app == "Today only" })
-        assertEquals(listOf("Chat", "Mail", "Video", "Music", "Books"), apps.map { it.app })
-        assertEquals(5, dashboardAppCoverage(today, entries))
+        assertFalse(apps.any { it.app in setOf("Prior week", "Future") })
+        assertEquals(listOf("Chat", "Mail", "Today", "Music", "Maps"), apps.map { it.app })
+        assertEquals(3, dashboardAppCoverage(today, entries))
     }
 
     @Test

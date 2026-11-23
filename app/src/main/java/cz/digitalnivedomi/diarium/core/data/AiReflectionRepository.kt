@@ -49,6 +49,8 @@ class AiReflectionRepository(
         entry: DiaryEntry,
         userName: String? = null,
         birthYear: Int? = null,
+        regenerate: Boolean = false,
+        previousReflection: String? = null,
         onGenerated: (suspend (String) -> Unit)? = null,
     ): Result<String> =
         withContext(Dispatchers.IO) {
@@ -73,7 +75,7 @@ class AiReflectionRepository(
                 method = "POST",
                 url = endpoint,
                 headers = headers,
-                body = buildReflectPayload(entry, userId, date, userName, birthYear).toString(),
+                body = buildReflectPayload(entry, userId, date, userName, birthYear, regenerate).toString(),
             )
             val response = try {
                 transport.execute(request)
@@ -90,8 +92,20 @@ class AiReflectionRepository(
                     IllegalStateException("$MESSAGE_GENERIC (${e.javaClass.simpleName})."),
                 )
             }
+            if (regenerate && response.isSuccessful && response.asJsonObject()?.optBoolean("cached", false) == true) {
+                return@withContext Result.failure(IllegalStateException(MESSAGE_CACHED_REGENERATION))
+            }
             val result = parseReflection(response)
             val text = result.getOrNull() ?: return@withContext result
+            if (regenerate && previousReflection?.trim() == text.trim()) {
+                return@withContext Result.failure(IllegalStateException(MESSAGE_SAME_REGENERATION))
+            }
+            // Never stage a visibly truncated response: DraftStore stores aiReflection
+            // in the ordinary entry draft, which recovery can otherwise replay as accepted.
+            // Until drafts have a separate quarantined AI-text field, fail closed here.
+            if (isObviouslyIncomplete(text)) {
+                return@withContext Result.failure(IllegalStateException(MESSAGE_INCOMPLETE))
+            }
             if (onGenerated != null) {
                 try {
                     withContext(NonCancellable) { onGenerated(text) }
@@ -125,6 +139,17 @@ class AiReflectionRepository(
         const val MESSAGE_CONNECT = "Nepodařilo se připojit k serveru."
         const val MESSAGE_EMPTY = "AI vrátila prázdnou odpověď."
         const val MESSAGE_GENERIC = "Reflexi se nepodařilo vygenerovat"
+        const val MESSAGE_CACHED_REGENERATION = "Server vrátil uloženou reflexi místo nové. Původní reflexe zůstává zachována."
+        const val MESSAGE_SAME_REGENERATION = "Server vrátil stejnou reflexi; původní verze zůstává zachována."
+        const val MESSAGE_INCOMPLETE = "Vygenerovaný text vypadá nedokončeně. Původní reflexe zůstává zachována; text nebyl uložen."
+
+        /** Conservative visual guard, not a semantic completeness guarantee. */
+        fun isObviouslyIncomplete(text: String): Boolean {
+            val trimmed = text.trim()
+            if (trimmed.isEmpty()) return true
+            if (trimmed.endsWith("…") || trimmed.endsWith("...")) return true
+            return trimmed.last().isLetterOrDigit() && trimmed.last() != '。'
+        }
 
         /**
          * The exact body `/api/ai/reflect` expects: the web's snake_case field
@@ -141,10 +166,12 @@ class AiReflectionRepository(
             date: String,
             userName: String? = null,
             birthYear: Int? = null,
+            regenerate: Boolean = false,
         ): JSONObject = JSONObject().apply {
             put("user_id", userId)
             put("date", date)
             put("lang", "cs")
+            if (regenerate) put("regenerate", true)
             if (!userName.isNullOrBlank()) put("userName", userName)
             if (birthYear != null) put("birthYear", birthYear)
             put("mood", entry.mood)

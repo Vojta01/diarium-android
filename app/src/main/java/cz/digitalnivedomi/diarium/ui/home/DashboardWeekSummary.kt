@@ -65,6 +65,14 @@ internal fun dashboardCompletedWeek(today: String, weeksBack: Long = 0): List<St
     return (DashboardRepository.WEEK_DAYS - 1 downTo 0).map { back -> end.minusDays(back.toLong()).toString() }
 }
 
+/** Monday through today; prior window ends on the matching weekday. */
+internal fun dashboardComparisonWindow(today: String, previous: Boolean): List<String> {
+    val date = LocalDate.parse(today)
+    val offset = (date.dayOfWeek.value - 1).toLong()
+    val start = date.minusDays(offset).minusWeeks(if (previous) 1 else 0)
+    return (0..offset.toInt()).map { start.plusDays(it.toLong()).toString() }
+}
+
 internal fun dashboardWeekDays(data: DashboardData): List<DashboardDay> =
     dashboardCalendarWeek(data.today).map { date ->
         data.week.firstOrNull { it.date == date } ?: DashboardDay(
@@ -84,13 +92,13 @@ internal data class WeekMetric(
     val difference: Double?,
 )
 
-/** Only two complete calendar weeks are comparable; matching partial samples can differ by day. */
-internal fun hasComparableCoverage(current: Int, previous: Int): Boolean =
-    current == DashboardRepository.WEEK_DAYS && previous == DashboardRepository.WEEK_DAYS
+/** Compare equivalent weekday windows only when both have full observed coverage. */
+internal fun hasComparableCoverage(current: Int, previous: Int, expected: Int = DashboardRepository.WEEK_DAYS): Boolean =
+    current == expected && previous == expected
 
-internal fun coverageComparisonHint(current: Int, previous: Int): String? =
-    if (!hasComparableCoverage(current, previous)) {
-        "Srovnání skryto · pokrytí $current/${DashboardRepository.WEEK_DAYS} vs. $previous/${DashboardRepository.WEEK_DAYS} dní"
+internal fun coverageComparisonHint(current: Int, previous: Int, expected: Int = DashboardRepository.WEEK_DAYS): String? =
+    if (!hasComparableCoverage(current, previous, expected)) {
+        "Srovnání skryto · pokrytí $current/$expected vs. $previous/$expected dní"
     } else null
 
 /** Nulls are omitted from each denominator; a reported zero remains a real observation. */
@@ -100,11 +108,11 @@ internal fun dashboardWeekMetric(
     previousDays: List<DashboardDay>,
     kind: DashboardMetricKind,
 ): WeekMetric {
-    val currentWindow = dashboardCompletedWeek(today)
-    val previousWindow = dashboardCompletedWeek(today, weeksBack = 1)
+    val currentWindow = dashboardComparisonWindow(today, previous = false)
+    val previousWindow = dashboardComparisonWindow(today, previous = true)
     val current = windowValues(currentWindow, currentDays, kind)
     val previous = windowValues(previousWindow, previousDays, kind)
-    val comparable = hasComparableCoverage(current.size, previous.size)
+    val comparable = hasComparableCoverage(current.size, previous.size, currentWindow.size)
     val currentValue = aggregate(current, kind)
     val previousValue = aggregate(previous, kind)
     return WeekMetric(
@@ -115,6 +123,9 @@ internal fun dashboardWeekMetric(
         difference = if (comparable && currentValue != null && previousValue != null) currentValue - previousValue else null,
     )
 }
+
+internal fun dashboardObservedAverage(values: List<Double?>): Double? =
+    values.filterNotNull().filter { it.isFinite() }.takeIf { it.isNotEmpty() }?.average()
 
 private fun windowValues(expectedDates: List<String>, days: List<DashboardDay>, kind: DashboardMetricKind): List<Double> {
     val expected = expectedDates.toSet()
@@ -136,9 +147,9 @@ private fun aggregate(values: List<Double>, kind: DashboardMetricKind): Double? 
     else -> values.sum()
 }
 
-/** Aggregate only reported rows from the seven completed calendar days. */
+/** Aggregate only reported rows from Monday through today. */
 internal fun aggregateDashboardTopApps(today: String, entries: Map<String, DiaryEntry>): List<PhoneTopApp> {
-    val dates = dashboardCompletedWeek(today).toSet()
+    val dates = dashboardComparisonWindow(today, previous = false).toSet()
     return entries.asSequence()
         .filter { (date, _) -> date in dates }
         .flatMap { (_, entry) -> entry.phoneTopApps.asSequence() }
@@ -151,7 +162,7 @@ internal fun aggregateDashboardTopApps(today: String, entries: Map<String, Diary
 }
 
 internal fun dashboardAppCoverage(today: String, entries: Map<String, DiaryEntry>): Int =
-    dashboardCompletedWeek(today).count { date ->
+    dashboardComparisonWindow(today, previous = false).count { date ->
         entries[date]?.phoneTopApps?.any { it.app.isNotBlank() && it.minutes.isFinite() && it.minutes >= 0.0 } == true
     }
 
@@ -162,7 +173,7 @@ internal data class DashboardLinearTrend(
     val endValue: Double,
 )
 
-/** Least-squares linear trend over observed values; gaps retain their calendar x positions. */
+/** Legacy linear fit; kept for compatibility with callers/tests, not labelled as a smoothed series. */
 internal fun dashboardLinearTrend(values: List<Double?>): DashboardLinearTrend? {
     val observed = values.mapIndexedNotNull { index, value ->
         value?.takeIf { it.isFinite() }?.let { index.toDouble() to it }
@@ -201,7 +212,7 @@ internal fun DashboardWeekSummary(
     ) {
         SectionHeader("Týden v číslech")
         VSpace(4)
-        SectionHint("${dashboardPeriodLabel(data.today, weeksBack = 0)} · předchozí ${dashboardPeriodLabel(data.today, weeksBack = 1)} · série 🔥 ${data.streak}")
+        SectionHint("Tento týden ${dashboardComparisonPeriodLabel(data.today, false)} · minulý týden ${dashboardComparisonPeriodLabel(data.today, true)} · série 🔥 ${data.streak}")
         VSpace(Spacing.small)
         metrics.forEachIndexed { index, (kind, label) ->
             if (index > 0) GlassDivider()
@@ -210,16 +221,18 @@ internal fun DashboardWeekSummary(
                 label = label,
                 value = metric.value,
                 coverage = metric.coveredDays,
+                coverageDenominator = dashboardComparisonWindow(data.today, false).size,
                 previousValue = metric.previousValue,
                 previousCoverage = metric.previousCoveredDays,
-                comparisonAllowed = hasComparableCoverage(metric.coveredDays, metric.previousCoveredDays),
-                comparisonHint = coverageComparisonHint(metric.coveredDays, metric.previousCoveredDays),
+                comparisonAllowed = hasComparableCoverage(metric.coveredDays, metric.previousCoveredDays, dashboardComparisonWindow(data.today, false).size),
+                comparisonHint = coverageComparisonHint(metric.coveredDays, metric.previousCoveredDays, dashboardComparisonWindow(data.today, false).size),
                 difference = metric.difference,
                 kind = kind,
                 onClick = { onOpenMetric(kind) },
             )
         }
-        val moodDays = dashboardCompletedWeek(data.today).count { date ->
+        val currentDates = dashboardComparisonWindow(data.today, previous = false)
+        val moodDays = currentDates.count { date ->
             data.month.firstOrNull { it.date == date }?.mood?.let(::isRecordedDay) == true
         }
         // Recorded days are a separate measure from phone-data coverage and are never
@@ -233,7 +246,7 @@ internal fun DashboardWeekSummary(
             previousCoverage = 0,
             kind = DashboardMetricKind.MOOD,
             onClick = { onOpenMetric(DashboardMetricKind.MOOD) },
-            valueText = "$moodDays / 7",
+            valueText = "$moodDays / ${currentDates.size}",
             coverageText = null,
             comparison = null,
             comparisonHint = null,
@@ -250,13 +263,14 @@ private fun WeekMetricRow(
     coverage: Int,
     previousValue: Double?,
     previousCoverage: Int,
+    coverageDenominator: Int = DashboardRepository.WEEK_DAYS,
     comparisonAllowed: Boolean = hasComparableCoverage(coverage, previousCoverage),
     comparisonHint: String? = coverageComparisonHint(coverage, previousCoverage),
     difference: Double? = null,
     kind: DashboardMetricKind,
     onClick: () -> Unit,
     valueText: String? = null,
-    coverageText: String? = "$coverage/7 dní",
+    coverageText: String? = "$coverage/$coverageDenominator dní",
     comparison: String? = previousValue?.takeIf { comparisonAllowed }?.let {
         val delta = difference ?: ((value ?: return@let null) - it)
         val direction = when {
@@ -264,7 +278,7 @@ private fun WeekMetricRow(
             delta < 0 -> "↓"
             else -> "="
         }
-        "Minule ${formatMetric(kind, it)} · pokrytí $previousCoverage/7 · rozdíl $direction ${formatDifference(kind, kotlin.math.abs(delta))}"
+        "Minule ${formatMetric(kind, it)} · pokrytí $previousCoverage/$coverageDenominator · rozdíl $direction ${formatDifference(kind, kotlin.math.abs(delta))}"
     },
     tag: String = "dashboard_metric_${kind.name.lowercase(Locale.ROOT)}",
 ) {
@@ -324,6 +338,11 @@ private fun dashboardPeriodLabel(today: String, weeksBack: Long): String {
     return "${weekSummaryShortDate(dates.first())}–${weekSummaryShortDate(dates.last())}"
 }
 
+private fun dashboardComparisonPeriodLabel(today: String, previous: Boolean): String {
+    val dates = dashboardComparisonWindow(today, previous)
+    return "${weekSummaryShortDate(dates.first())}–${weekSummaryShortDate(dates.last())}"
+}
+
 /** One compact usage strip and a dated app snapshot, without repeating weekly totals. */
 @Composable
 internal fun DigitalSummaryCard(
@@ -331,7 +350,7 @@ internal fun DigitalSummaryCard(
     modifier: Modifier = Modifier,
     onOpenMetric: (DashboardMetricKind) -> Unit = {},
 ) {
-    val dates = dashboardCompletedWeek(data.today)
+    val dates = dashboardComparisonWindow(data.today, previous = false)
     val days = dates.map { date -> data.month.firstOrNull { it.date == date } }
     val apps = aggregateDashboardTopApps(data.today, data.entryByDate)
     val appCoverage = dashboardAppCoverage(data.today, data.entryByDate)
@@ -341,7 +360,7 @@ internal fun DigitalSummaryCard(
     GlassCard(modifier = modifier.fillMaxWidth().testTag("dashboard_digital_summary"), accent = Cyan) {
         SectionHeader("📱 Digitální přehled")
         VSpace(4)
-        SectionHint("Čas na obrazovce · $range · pokrytí $observed/7 dní")
+        SectionHint("Čas na obrazovce · $range · pokrytí $observed/${dates.size} dní")
         VSpace(Spacing.small)
         if (observed == 0) {
             SectionHint("Čas na obrazovce zatím není synchronizovaný.")
@@ -368,6 +387,11 @@ internal fun DigitalSummaryCard(
                     }
                     drawCircle(IndigoLight, radius = 4.dp.toPx(), center = androidx.compose.ui.geometry.Offset(x, y))
                     androidx.compose.ui.geometry.Offset(x, y)
+                }
+                // Keep raw daily bars and show a distinct average over observed days.
+                dashboardObservedAverage(days.map { it?.screenTimeSeconds?.toDouble() })?.let { average ->
+                    val y = if (maxSeconds <= 0f) baseline else baseline - chartHeight * average.toFloat() / maxSeconds
+                    drawLine(Cyan.copy(alpha = 0.75f), androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(size.width, y), strokeWidth = 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 3.dp.toPx())))
                 }
                 // Fit a least-squares line to the observed daily values. This is a trend,
                 // not a polyline that simply repeats every bar's ups and downs.

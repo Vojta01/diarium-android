@@ -6,6 +6,7 @@ on:
       - ci/android-beta7-legacy-adoption
       - ci/android-beta8-conflict-resolution
       - ci/android-beta9-usage-conflicts
+      - ci/android-beta12-backlog-30-35
 
 permissions:
   contents: read

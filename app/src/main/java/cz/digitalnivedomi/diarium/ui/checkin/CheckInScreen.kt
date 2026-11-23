@@ -1267,7 +1267,7 @@ fun CheckInScreen(
      * server snapshot used in the prompt. Generated text is staged before the UI
      * receives it; the second write then goes through the normal v2 CAS path.
      */
-    fun generateReflection() {
+    fun generateReflection(regenerate: Boolean = false) {
         if (dateNavigationGuard.get()) return
         val repo = reflectionRepo
         if (repo == null) {
@@ -1398,6 +1398,8 @@ fun CheckInScreen(
                     entry = promptEntry,
                     userName = profileName,
                     birthYear = profile.birthYear,
+                    regenerate = regenerate,
+                    previousReflection = promptEntry.aiReflection,
                     onGenerated = { text ->
                         if (draftStore.ownerId != owner) {
                             throw SessionOwnerMismatchException()
@@ -1447,7 +1449,7 @@ fun CheckInScreen(
                                     date,
                                 )
                             }
-                            holder.markReflectionError("Reflexi se nepodařilo bezpečně uložit k zápisu.")
+                            holder.markReflectionError("Původní reflexe zůstává poslední potvrzenou verzí. Nová reflexe je zachována v návrhu; její uložení se nepodařilo potvrdit.")
                         }
                 }.onFailure { failure ->
                     if (holder.date == date) {
@@ -1926,7 +1928,7 @@ fun CheckInScreen(
             reflection = state.reflection,
             loading = state.reflectionLoading,
             error = state.reflectionError,
-            onGenerate = { generateReflection() },
+            onGenerate = { generateReflection(regenerate = !state.reflection.isNullOrBlank()) },
             // Only a day that is really stored can have a reflection filled in
             // later; an unsaved (or empty) day just says the save will write it.
             // A day whose load failed or whose save is in flight is not writable.
@@ -2015,7 +2017,7 @@ fun CheckInScreen(
             loading = state.reflectionLoading,
             error = state.reflectionError,
             canRegenerate = state.saved && !state.reflectionLoading,
-            onRetry = { generateReflection() },
+            onRetry = { generateReflection(regenerate = !state.reflection.isNullOrBlank()) },
             onDismiss = { holder.dismissReflectionDialog() },
         )
     }

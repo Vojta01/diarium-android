@@ -90,9 +90,9 @@ import kotlin.math.roundToInt
  * screen-time card keeps the range switch and the summary the web prints, and the
  * unlock card has its own bars, bands, average line and summary numbers.
  *
- * A supplied inclusive range ends at the last completed day (today is excluded even
- * when it is within the caller's bounds). Daily bars select a date; long ranges use
- * calendar week/month totals and retain their source-day drill-down.
+ * A supplied inclusive range is clamped to today. Today remains visible as a partial
+ * observation in aggregated timelines; completed-day averages and trends exclude it.
+ * Daily bars select a date; long ranges use calendar week/month totals and retain their source-day drill-down.
  *
  * The caller supplies the global inclusive period. A tap reports a selected source date
  * (or null to clear) and never opens check-in. Long periods aggregate into calendar
@@ -123,7 +123,7 @@ fun ScreenTimeCharts(
     val window = if (effectiveEnd != null && startDate <= effectiveEnd)
         ScreenTimeDateRange.days(entries, startDate, effectiveEnd) else emptyList()
     val effectiveDays = window.size.coerceAtLeast(1)
-    val summary = inclusiveScreenTimeSummary(window)
+    val summary = inclusiveScreenTimeSummary(window.filterNot { it.date == today })
     val unlocks = inclusiveUnlockSummary(window)
     val windowDates = window.map { it.date }.toSet()
     val windowEntries = entries.filter { it.date in windowDates }
@@ -141,6 +141,7 @@ fun ScreenTimeCharts(
         if (aggregated) {
             AggregatedDigitalCharts(
                 buckets = buckets,
+                today = today,
                 selectedDate = selectedDate,
                 expandedBucketStart = expandedBucketStart,
                 onExpandBucket = { expandedBucketStart = if (expandedBucketStart == it) null else it },
@@ -209,7 +210,7 @@ private fun ScreenTimeCard(
             color = TextPrimary,
         )
         VSpace(2)
-        SectionHint(windowCaption(window = window, windowDays = windowDays))
+        SectionHint(windowCaption(window = window, windowDays = windowDays, today = today))
 
         VSpace(12)
         if (showRangeChips) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -235,7 +236,7 @@ private fun ScreenTimeCard(
         Row(modifier = Modifier.fillMaxWidth()) {
             SummaryCell(
                 label = "Průměr denně",
-                value = formatMinutes((summary.averageSeconds ?: 0.0).toInt() / 60),
+                value = summary.averageSeconds?.let { formatMinutes(it.toInt() / 60) } ?: "—",
                 modifier = Modifier.weight(1f),
             )
             SummaryCell(
@@ -311,7 +312,7 @@ private fun UnlockCard(
             color = TextPrimary,
         )
         VSpace(2)
-        SectionHint(unlockCaption(window = window, windowDays = windowDays))
+        SectionHint(unlockCaption(window = window, windowDays = windowDays, today = today))
 
         val average = summary.averageUnlocks
         if (window.none { it.unlocks != null }) {
@@ -324,7 +325,7 @@ private fun UnlockCard(
         Row(modifier = Modifier.fillMaxWidth()) {
             SummaryCell(
                 label = "Průměr denně",
-                value = unlockAverageLabel(average ?: 0.0),
+                value = average?.let(::unlockAverageLabel) ?: "—",
                 modifier = Modifier.weight(1f),
             )
             SummaryCell(
@@ -764,13 +765,14 @@ private fun AppRow(
     }
 }
 
-/** Exclude an unfinished current day when either supplied inclusive bound reaches today. */
+/** Clamp the inclusive global end to today; current-day usage remains visible in the timeline. */
 internal fun completedScreenTimeEnd(startDate: String, endDate: String, today: String): String? {
     val start = runCatching { LocalDate.parse(startDate) }.getOrNull() ?: return null
     val end = runCatching { LocalDate.parse(endDate) }.getOrNull() ?: return null
     val current = runCatching { LocalDate.parse(today) }.getOrNull() ?: return null
     if (start > end) return null
-    return if (end >= current) current.minusDays(1).toString() else end.toString()
+    // Current-day usage is a valid partial observation; missing values stay null.
+    return minOf(end, current).toString()
 }
 
 /** A readable bucket whose [days] retain exact source dates for subsequent drill-down. */
@@ -824,6 +826,7 @@ internal fun screenTimeBuckets(days: List<ScreenTimeDay>): List<ScreenTimeChartB
 @Composable
 private fun AggregatedDigitalCharts(
     buckets: List<ScreenTimeChartBucket>,
+    today: String,
     selectedDate: String?,
     expandedBucketStart: String?,
     onExpandBucket: (String) -> Unit,
@@ -843,6 +846,12 @@ private fun AggregatedDigitalCharts(
             VSpace(4)
             SectionHint("Každý sloupec shrnuje přesně uvedené dny; chybějící synchronizace není nula. Klepni na období a vyber konkrétní den.")
             VSpace(12)
+            TimelineTrendChart(
+                values = buckets.map { bucket -> bucketObservedTotal(bucket.days, dayValue) },
+                averageValues = buckets.map { bucket -> bucketCompletedTotal(bucket.days, today, dayValue) },
+                labels = buckets.map { it.label },
+                testTag = "${tag}_timeline",
+            )
             buckets.forEach { bucket ->
                 val current = value(bucket)
                 Row(Modifier.fillMaxWidth().testTagOrEmpty("${tag}_${bucket.startDate}").clickable { onExpandBucket(bucket.startDate) }, verticalAlignment = Alignment.CenterVertically) {
@@ -853,7 +862,8 @@ private fun AggregatedDigitalCharts(
                 Box(Modifier.fillMaxWidth().height(7.dp).clip(CircleShape).background(Color.White.copy(alpha = .06f))) {
                     if (current != null && current > 0) Box(Modifier.fillMaxWidth((current.toFloat() / max).coerceIn(.02f, 1f)).fillMaxHeight().clip(CircleShape).background(IndigoLight))
                 }
-                SectionHint("${coverage(bucket)}/${bucket.days.size} dní · ${shortDateLabel(bucket.startDate)} – ${shortDateLabel(bucket.endDate)}")
+                SectionHint("${coverage(bucket)}/${bucket.days.size} dní · ${shortDateLabel(bucket.startDate)} – ${shortDateLabel(bucket.endDate)}" +
+                    if (bucket.days.any { it.date == today }) " · dnešek je neúplný" else "")
                 if (expandedBucketStart == bucket.startDate) {
                     bucket.days.forEach { day ->
                         val selected = selectedDate == day.date
@@ -872,6 +882,75 @@ private fun AggregatedDigitalCharts(
     }
     metricCard("📱 Čas na obrazovce", { it.seconds }, { it.seconds }, { it.screenTimeCoverage }, { it?.let { seconds -> formatMinutes(seconds / 60) } ?: ScreenTimeSeries.NO_DATA }, "screen_time_bucket")
     metricCard("🔓 Odemknutí", { it.unlocks }, { it.unlocks }, { it.unlockCoverage }, { it?.let(::unlockCountLabel) ?: ScreenTimeSeries.NO_DATA }, "screen_time_unlock_bucket")
+}
+
+/** Timeline for long ranges: chronological bucket columns plus a least-squares trend.
+ * Null observations are gaps (not zero); the fitted line uses only valid buckets. */
+@Composable
+private fun TimelineTrendChart(values: List<Int?>, averageValues: List<Int?>, labels: List<String>, testTag: String) {
+    val trend = digitalLinearTrend(averageValues.map { it?.toDouble() })
+    val average = averageBucketTotal(averageValues)
+    val scaleValues = values.filterNotNull() + averageValues.filterNotNull() + (trend ?: emptyList())
+    val maxValue = scaleValues.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
+    Column {
+        Canvas(Modifier.fillMaxWidth().height(132.dp).testTagOrEmpty(testTag)
+            .semantics { contentDescription = "Chronological digital statistics chart with ${values.count { it != null }} measured periods and a linear trend" }) {
+            val left = 8f; val right = size.width - 8f; val top = 8f; val bottom = size.height - 8f
+            val dx = if (values.size <= 1) 0f else (right - left) / (values.size - 1)
+            val barWidth = (size.width / (values.size * 1.8f)).coerceAtLeast(2f)
+            values.forEachIndexed { index, value ->
+                if (value != null) {
+                    val x = left + index * dx
+                    val y = bottom - (value / maxValue).toFloat() * (bottom - top)
+                    if (value == 0) {
+                        drawCircle(IndigoLight.copy(alpha = .9f), radius = 3f, center = Offset(x, bottom - 1.5f))
+                    } else {
+                        drawRoundRect(IndigoLight.copy(alpha = .75f), Offset(x - barWidth / 2, y), Size(barWidth, bottom - y), CornerRadius(barWidth / 2))
+                    }
+                }
+            }
+            if (average != null) {
+                val y = bottom - (average / maxValue).toFloat().coerceIn(0f, 1f) * (bottom - top)
+                drawLine(IndigoLight.copy(alpha = .85f), Offset(left, y), Offset(right, y), strokeWidth = 1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f)))
+            }
+            if (trend != null && values.size > 1) {
+                val path = androidx.compose.ui.graphics.Path()
+                trend.forEachIndexed { index, value ->
+                    val point = Offset(left + index * dx, bottom - (value / maxValue).toFloat() * (bottom - top))
+                    if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
+                }
+                drawPath(path, color = Color.White.copy(alpha = .9f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 5f))))
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(labels.firstOrNull().orEmpty(), style = MaterialTheme.typography.labelSmall, color = TextTertiary, maxLines = 1)
+            Text(labels.lastOrNull().orEmpty(), style = MaterialTheme.typography.labelSmall, color = TextTertiary, maxLines = 1)
+        }
+        SectionHint("Sloupec = součet za období; modrá přerušková čára = průměrný součet období; bílá přerušková čára = lineární trend. Chybějící období není nula.")
+    }
+}
+
+internal fun bucketObservedTotal(
+    days: List<ScreenTimeDay>, value: (ScreenTimeDay) -> Int?,
+): Int? = days.mapNotNull(value).takeIf { it.isNotEmpty() }?.sum()
+
+/** Completed-day totals are used for the reference average; today's partial value is not comparable. */
+internal fun bucketCompletedTotal(
+    days: List<ScreenTimeDay>, today: String, value: (ScreenTimeDay) -> Int?,
+): Int? = days.filterNot { it.date == today }.mapNotNull(value).takeIf { it.isNotEmpty() }?.sum()
+
+internal fun averageBucketTotal(totals: List<Int?>): Double? =
+    totals.filterNotNull().takeIf { it.isNotEmpty() }?.map { it.toDouble() }?.average()
+
+internal fun digitalLinearTrend(values: List<Double?>): List<Double>? {
+    val points = values.mapIndexedNotNull { index, value -> value?.let { index.toDouble() to it } }
+    if (points.size < 2) return null
+    val mx = points.map { it.first }.average(); val my = points.map { it.second }.average()
+    val denom = points.sumOf { (x, _) -> (x - mx) * (x - mx) }
+    if (denom == 0.0) return null
+    val slope = points.sumOf { (x, y) -> (x - mx) * (y - my) } / denom
+    val intercept = my - slope * mx
+    return values.indices.map { intercept + slope * it }
 }
 
 private fun inclusiveScreenTimeSummary(window: List<ScreenTimeDay>): ScreenTimeSummary {
@@ -898,23 +977,24 @@ private fun CoverageLabel(window: List<ScreenTimeDay>) {
 }
 
 /** "posledních 7 dní (4. 9. – 10. 9.)", or the empty-state hint. */
-private fun windowCaption(window: List<ScreenTimeDay>, windowDays: Int): String {
+internal fun windowCaption(window: List<ScreenTimeDay>, windowDays: Int, today: String): String {
     if (window.isEmpty()) return "Za posledních $windowDays dní nemám žádná data o času na obrazovce."
     val from = shortDateLabel(window.first().date)
     val to = shortDateLabel(window.last().date)
-    return "$from – $to ($windowDays dní). Sloupec = jeden den, přerušovaná čára = průměr."
+    val partial = if (window.last().date == today) " Dnešek je neúplné období." else ""
+    return "$from – $to ($windowDays dní). Sloupec = jeden den, přerušovaná čára = průměr.$partial"
 }
 
 /**
  * The unlock chart's caption: the same window, spelled the same way, plus the sentence
  * that explains why this card has no range switch of its own.
  */
-private fun unlockCaption(window: List<ScreenTimeDay>, windowDays: Int): String {
+internal fun unlockCaption(window: List<ScreenTimeDay>, windowDays: Int, today: String): String {
     if (window.isEmpty()) return "Za posledních $windowDays dní nemám žádná data o odemknutích."
     val from = shortDateLabel(window.first().date)
     val to = shortDateLabel(window.last().date)
     return "$from – $to ($windowDays dní), stejné období jako čas na obrazovce. " +
-        "Sloupec = jeden den, přerušovaná čára = průměr."
+        "Sloupec = jeden den, přerušovaná čára = průměr." + if (window.last().date == today) " Dnešek je neúplné období." else ""
 }
 
 /** "63×" — the unlock chart's counts carry their unit like everywhere else in the app. */

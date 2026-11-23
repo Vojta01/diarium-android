@@ -83,6 +83,7 @@ class AiReflectionRepositoryTest {
         assertEquals(USER_ID, body.getString("user_id"))
         assertEquals("2026-09-10", body.getString("date"))
         assertEquals("cs", body.getString("lang"))
+        assertFalse("ordinary generation must omit regenerate", body.has("regenerate"))
         assertEquals("User", body.getString("userName"))
         // No year passed → the key stays absent, like userName when unknown.
         assertFalse(body.has("birthYear"))
@@ -100,6 +101,20 @@ class AiReflectionRepositoryTest {
         assertEquals("Slunečno", body.getJSONArray("weather").getString(0))
         assertEquals(4, body.getJSONObject("scale_values").getInt("energy"))
         assertEquals(95, body.getInt("phone_screen_time"))
+    }
+
+    @Test
+    fun `explicit regeneration sends regenerate true for the captured date`() = runTest {
+        val result = repository().generate(
+            date = "2026-09-10",
+            entry = DiaryEntry(mood = 4, aiReflection = "old reflection"),
+            regenerate = true,
+        )
+
+        assertTrue(result.isSuccess)
+        val body = JSONObject(sent.single().body!!)
+        assertEquals(true, body.getBoolean("regenerate"))
+        assertEquals("2026-09-10", body.getString("date"))
     }
 
     @Test
@@ -176,6 +191,36 @@ class AiReflectionRepositoryTest {
             AiReflectionRepository.MESSAGE_EMPTY,
             repository().generate(DATE, DiaryEntry()).exceptionOrNull()?.message,
         )
+    }
+
+    @Test
+    fun `cached regeneration fails without staging the previous reflection`() = runTest {
+        response = HttpResponse(200, """{"reflection":"Včera dobrý.","cached":true}""")
+        val staged = mutableListOf<String>()
+        val result = repository().generate(DATE, DiaryEntry(aiReflection = "Včera dobrý."), regenerate = true,
+            previousReflection = "Včera dobrý.", onGenerated = { staged += it })
+        assertEquals(AiReflectionRepository.MESSAGE_CACHED_REGENERATION, result.exceptionOrNull()?.message)
+        assertTrue(staged.isEmpty())
+    }
+
+    @Test
+    fun `same text on regeneration fails without staging replacement`() = runTest {
+        val staged = mutableListOf<String>()
+        val result = repository().generate(DATE, DiaryEntry(aiReflection = "Dnes sis to užil."), regenerate = true,
+            previousReflection = "Dnes sis to užil.", onGenerated = { staged += it })
+        assertEquals(AiReflectionRepository.MESSAGE_SAME_REGENERATION, result.exceptionOrNull()?.message)
+        assertTrue(staged.isEmpty())
+    }
+
+    @Test
+    fun `obviously truncated response is neither staged nor returned as a reflection`() = runTest {
+        response = HttpResponse(200, """{"reflection":"Byl to krásný den a potom"}""")
+        val staged = mutableListOf<String>()
+        val entry = DiaryEntry(aiReflection = "Confirmed reflection")
+        val result = repository().generate(DATE, entry, onGenerated = { staged += it })
+        assertEquals(AiReflectionRepository.MESSAGE_INCOMPLETE, result.exceptionOrNull()?.message)
+        assertTrue(staged.isEmpty())
+        assertEquals("Confirmed reflection", entry.aiReflection)
     }
 
     @Test

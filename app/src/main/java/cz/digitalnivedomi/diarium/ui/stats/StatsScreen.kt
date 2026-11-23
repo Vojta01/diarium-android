@@ -571,19 +571,21 @@ internal fun digitalStatsDateRange(
     customRange: ValidatedStatsDateRange?,
     year: Int,
 ): DateRange? {
-    val lastCompleteDate = today.minusDays(1)
+    // Digital sync is independent of a completed mood check-in: today is eligible
+    // when it has a measured value, and remains a gap when it has not synced.
+    val lastAvailableDate = today
     if (range == StatsRange.CUSTOM) {
         val applied = customRange ?: return null
-        val end = minOf(applied.endInclusive, lastCompleteDate)
+        val end = minOf(applied.endInclusive, lastAvailableDate)
         if (applied.startInclusive <= end) return DateRange(applied.startInclusive, end)
         return null
     }
     if (range == StatsRange.YEAR) {
         val start = LocalDate.of(year, 1, 1)
-        return DateRange(start, maxOf(start, minOf(LocalDate.of(year, 12, 31), lastCompleteDate)))
+        return DateRange(start, maxOf(start, minOf(LocalDate.of(year, 12, 31), lastAvailableDate)))
     }
-    val count = range.dayCount(customDays, lastCompleteDate)
-    return DateRange(lastCompleteDate.minusDays((count - 1).toLong()), lastCompleteDate)
+    val count = range.dayCount(customDays, lastAvailableDate)
+    return DateRange(lastAvailableDate.minusDays((count - 1).toLong()), lastAvailableDate)
 }
 
 @Composable
@@ -944,7 +946,7 @@ internal fun hasDigitalData(days: List<StatsDay>): Boolean = days.any { day ->
 @Composable
 internal fun DigitalCategory(days: List<StatsDay>, bounds: DateRange?, today: String, selectedDate: String?, onSelectDate: (String?) -> Unit) {
     SectionHeader("Digitální")
-    SectionHint("Digitální statistiky vždy vynechávají dnešek. Ostatní přehledy končí posledním zaznamenaným dnem; dnešek zahrnou, pokud je check-in dokončen.")
+    SectionHint("Digitální statistiky zahrnují dnešek jako částečné období, pokud je synchronizováno; chybějící data zůstávají prázdná. Ostatní přehledy končí posledním zaznamenaným dnem.")
     if (bounds == null) {
         EmptyState(emoji = "📱", title = "Digitální data zatím nedostupná", message = "V tomto vlastním období není žádný dokončený den pro digitální statistiky.")
     } else if (!hasDigitalData(days)) {
@@ -1216,7 +1218,9 @@ internal fun MoodTrendCard(days: List<StatsDay>, year: Int? = null, onOpenDay: (
     val presentation = remember(days, range) { buildMoodTrendPresentation(days, range) }
     val aggregate = presentation.cadence != BucketCadence.DAILY
     val slots = presentation.slots
-    val average = List<Double?>(slots.size) { null } // Never put a rolling mean in the selected-day detail.
+    val average = StatsMath.movingAverageOf(slots.map { slot ->
+        if (!slot.written) null else slot.mood.toDouble()
+    }, if (aggregate) StatsMath.MONTH_MOVING_AVERAGE_WINDOW else StatsMath.MOVING_AVERAGE_WINDOW) // Never put a rolling mean in the selected-day detail.
     val bucketLabel = when (presentation.cadence) {
         BucketCadence.DAILY -> "Denní hodnoty"
         BucketCadence.WEEKLY -> "Průměr za týden"

@@ -41,6 +41,22 @@ class ReflectionStateTest {
     }
 
     @Test
+    fun `failed replacement stays visible and dirty for explicit recovery`() {
+        val holder = CheckInStateHolder()
+        holder.load(DiaryEntry(mood = 4, aiReflection = "Stored reflection"), stored = true)
+        holder.markReflectionLoading()
+        holder.setReflection("Generated replacement")
+
+        holder.markReflectionError("Replacement was not saved")
+
+        assertEquals("Generated replacement", holder.state.reflection)
+        assertEquals("Generated replacement", holder.state.entry.aiReflection)
+        assertFalse(holder.state.saved)
+        assertTrue(holder.state.draftDirty)
+        assertEquals("Replacement was not saved", holder.state.reflectionError)
+    }
+
+    @Test
     fun `switching day clears the reflection and its status`() {
         val holder = holderWithReflection("Dnes sis to užil.")
         holder.markReflectionError("AI teď neodpovídá, zkuste to znovu.")
