@@ -88,14 +88,14 @@ class ScreenTimeChartBucketsTest {
             ScreenTimeDay(date, seconds = if (offset == 88) 120 else if (offset == 89) 60 else null,
                 unlocks = if (offset == 89) 0 else null, hasApps = false)
         }
-        val finalBucket = screenTimeBuckets(days).last()
-        assertEquals(180, bucketObservedTotal(finalBucket.days) { it.seconds })
-        assertEquals(120, bucketCompletedTotal(finalBucket.days, today.toString()) { it.seconds })
-        assertEquals(0, bucketObservedTotal(finalBucket.days) { it.unlocks })
+        val todayBucket = screenTimeBuckets(days).last()
+        assertEquals(60, bucketObservedTotal(todayBucket.days) { it.seconds })
+        assertEquals(0, bucketCompletedTotal(todayBucket.days, today.toString()) { it.seconds })
+        assertEquals(0, bucketObservedTotal(todayBucket.days) { it.unlocks })
 
-        val missingToday = finalBucket.days.map { if (it.date == today.toString()) it.copy(seconds = null) else it }
-        assertEquals(120, bucketObservedTotal(missingToday) { it.seconds })
-        assertNull(bucketObservedTotal(finalBucket.days.filterNot { it.date == today.toString() }) { it.seconds })
+        val missingToday = todayBucket.days.map { if (it.date == today.toString()) it.copy(seconds = null) else it }
+        assertNull(bucketObservedTotal(missingToday) { it.seconds })
+        assertNull(bucketObservedTotal(todayBucket.days.filterNot { it.date == today.toString() }) { it.seconds })
     }
 
     @Test fun `31 and 90 inclusive dates use calendar weeks with exact source days`() {

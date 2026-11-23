@@ -571,9 +571,10 @@ internal fun digitalStatsDateRange(
     customRange: ValidatedStatsDateRange?,
     year: Int,
 ): DateRange? {
-    // Digital sync is independent of a completed mood check-in: today is eligible
-    // when it has a measured value, and remains a gap when it has not synced.
-    val lastAvailableDate = today
+    // Digital chart data may display today's partial observation, but period
+    // summaries/comparisons use completed days only. Today remains visible in
+    // the timeline independently of these bounds.
+    val lastAvailableDate = today.minusDays(1)
     if (range == StatsRange.CUSTOM) {
         val applied = customRange ?: return null
         val end = minOf(applied.endInclusive, lastAvailableDate)
